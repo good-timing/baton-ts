@@ -47,3 +47,10 @@ export {
 
 export type { Sink, StdoutSinkOptions, HttpSinkOptions } from "./sinks.js";
 export { StdoutSink, HttpSink, safeWrite } from "./sinks.js";
+
+export type {
+  BatonConfig,
+  ResolveSessionIdHook,
+  SessionResolutionContext,
+} from "./integrations/mcp/index.js";
+export { withBaton, BatonHandle } from "./integrations/mcp/index.js";

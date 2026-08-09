@@ -107,6 +107,32 @@ describe("HttpSink", () => {
     expect(fetchImpl.mock.calls.length).toBe(callsAfterOpen);
   });
 
+  it("serializes concurrent write()-triggered drains against an explicit flush()", async () => {
+    // Regression test: write()'s background drain and an overlapping
+    // flush() must never call drainLocked() concurrently, or both can read
+    // buffer[0]/shift() racily and duplicate or drop a send.
+    const sent: number[] = [];
+    const fetchImpl = vi.fn().mockImplementation((_url: string, init: RequestInit) => {
+      sent.push((JSON.parse(init.body as string) as { sequence_number: number }).sequence_number);
+      return new Promise<Response>((resolve) =>
+        setTimeout(() => resolve(new Response(null, { status: 202 })), 5),
+      );
+    });
+    const sink = new HttpSink("https://collector.example", { apiKey: "k", fetchImpl });
+
+    const writes = [
+      sink.write(makeEvent({ sequence_number: 0 })),
+      sink.write(makeEvent({ sequence_number: 1 })),
+      sink.write(makeEvent({ sequence_number: 2 })),
+    ];
+    await Promise.all([...writes, sink.flush()]);
+    await sink.flush();
+
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+    expect(sent).toEqual([0, 1, 2]);
+    await sink.aclose();
+  });
+
   it("drops the oldest event on buffer overflow", async () => {
     const fetchImpl = vi.fn().mockResolvedValue(new Response(null, { status: 202 }));
     const sink = new HttpSink("https://collector.example", {

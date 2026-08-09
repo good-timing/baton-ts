@@ -150,7 +150,7 @@ export class HttpSink implements Sink {
   private readonly fetchImpl: typeof fetch;
   private overflowWarned = false;
   private closed = false;
-  private drainPromise: Promise<void> | null = null;
+  private drainChain: Promise<void> = Promise.resolve();
   private beforeExitHandler: (() => void) | null = null;
 
   constructor(url: string, options: HttpSinkOptions) {
@@ -170,14 +170,13 @@ export class HttpSink implements Sink {
   async write(event: Event): Promise<void> {
     if (this.closed) throw new Error("HttpSink is closed");
     this.enqueue(event);
-    this.ensureDrainRunning();
+    void this.scheduleDrain();
     this.ensureBeforeExitRegistered();
   }
 
   async flush(): Promise<void> {
     if (this.closed) return;
-    if (this.drainPromise) await this.drainPromise;
-    await this.drainLocked();
+    await this.scheduleDrain();
   }
 
   async aclose(): Promise<void> {
@@ -203,12 +202,17 @@ export class HttpSink implements Sink {
     this.buffer.push(event);
   }
 
-  private ensureDrainRunning(): void {
-    if (!this.drainPromise) {
-      this.drainPromise = this.drainLocked().finally(() => {
-        this.drainPromise = null;
-      });
-    }
+  /** Serializes every call to `drainLocked` — from `write()`'s background
+   * drain and from explicit `flush()` alike — onto one promise chain, so
+   * concurrent tool calls (the normal case once the MCP interceptor is
+   * wired up) can never run two drains at once racing on `buffer[0]`/
+   * `shift()`. Mirrors Python's `asyncio.Lock` around `_drain_locked`. */
+  private scheduleDrain(): Promise<void> {
+    this.drainChain = this.drainChain.then(
+      () => this.drainLocked(),
+      () => this.drainLocked(),
+    );
+    return this.drainChain;
   }
 
   /** Best-effort flush when the process is about to exit without an
