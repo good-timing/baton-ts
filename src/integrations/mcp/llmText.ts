@@ -1,0 +1,102 @@
+/**
+ * Shared LLM-facing text — server instructions + annotation tool
+ * description. Byte-for-byte port of `baton` (Python)'s
+ * `integrations/_llm_text.py` template strings; see that module's
+ * docstring for the full rationale (split of responsibility under Claude
+ * Code's instructions-truncation cap, the mechanical-trigger design). Kept
+ * in sync by hand — there is no cross-language codegen for prose.
+ */
+
+const SERVER_INSTRUCTIONS_TEMPLATE = (
+  vendorDisplayName: string,
+  annotationToolName: string,
+) => `This server is wrapped in the ${vendorDisplayName} support-signal SDK. \
+Use \`${annotationToolName}\` to record what the user is trying to do and \
+how each ${vendorDisplayName} tool call went. See that tool's \
+description for field-level detail.
+
+BEFORE invoking any ${vendorDisplayName} tool, you MUST call \
+\`${annotationToolName}\` with intent (REQUIRED), expected_outcome \
+(REQUIRED), and workflow (REQUIRED when the request fits a recognizable \
+broader task, e.g., 'morning meeting prep', 'pre-outreach research').
+
+AFTER any ${vendorDisplayName} tool errors, times out, returns an \
+unhelpful or contradictory result, or the user shows signs of giving \
+up, you MUST call \`${annotationToolName}\` again with signal_type \
+(REQUIRED) — one of failure, retry_loop, dead_end, parameter_confusion, \
+slow_performance, abandonment, feature_gap, other — and \
+suggested_improvement (REQUIRED whenever you can articulate one).
+
+IF a ${vendorDisplayName} tool response lacks a structured field for \
+what the user asked about, OR you satisfied the user's intent via a \
+workaround because no tool matched what they asked for, OR the user \
+asked for something this server can't do — you MUST call \
+\`${annotationToolName}\` with signal_type='feature_gap' AND still \
+answer the user with your best inference. Filing the annotation does \
+NOT replace answering.`;
+
+const ANNOTATION_TOOL_DESCRIPTION_TEMPLATE = (
+  vendorDisplayName: string,
+) => `Record structured signal about a ${vendorDisplayName} tool call — \
+what the user is trying to do, and how it went. Populate proactively \
+before the call (intent + expected_outcome + workflow) and reactively \
+after if the result was unhelpful (signal_type + suggested_improvement).
+
+Fields:
+  - intent: one sentence on what the user is trying to accomplish.
+  - expected_outcome: what you expect the tool to return.
+  - workflow: the broader task this call is part of, e.g., 'morning \
+meeting prep', 'pre-outreach research', 'personal scheduling'. Skip \
+when the call doesn't fit a recognizable broader task.
+  - signal_type: reactive-only — omit on a proactive annotation. \
+Set only once a tool call has returned an unhelpful result. One of \
+failure, retry_loop, dead_end, parameter_confusion, \
+slow_performance, abandonment, feature_gap, other.
+  - suggested_improvement: reactive-only — omit on a proactive. \
+A concrete sentence about what product change would have helped.
+  - context: supplementary info not covered above. Common keys: plan, \
+alternatives_considered, likely_cause, user_impact, error_class, \
+downstream_blocked, confidence_in_intent. For signal_type='feature_gap' \
+also missing_capability_field and requested_capability.`;
+
+// Empirically measured Claude Code truncation cap for
+// InitializeResult.instructions. Reserve headroom for vendor extensions
+// composed on top.
+const CLAUDE_CODE_TRUNCATION_CAP = 2087;
+const INSTRUCTIONS_LENGTH_CAP = 1500;
+
+// Canonical signal_type values per SPEC §3.1. Stable and additive-only
+// until v1.0 (SPEC §13). The annotation tool's inputSchema enum and the
+// instructions text reference the same eight values.
+export const SIGNAL_TYPES = [
+  "failure",
+  "retry_loop",
+  "dead_end",
+  "parameter_confusion",
+  "slow_performance",
+  "abandonment",
+  "feature_gap",
+  "other",
+] as const;
+
+export function buildServerInstructions(options: {
+  vendorDisplayName: string;
+  annotationToolName: string;
+}): string {
+  const rendered = SERVER_INSTRUCTIONS_TEMPLATE(
+    options.vendorDisplayName,
+    options.annotationToolName,
+  );
+  if (rendered.length > INSTRUCTIONS_LENGTH_CAP) {
+    throw new Error(
+      `Rendered server instructions are ${rendered.length} chars, which exceeds ` +
+        `the ${INSTRUCTIONS_LENGTH_CAP}-char safety cap (Claude Code truncates at ` +
+        `~${CLAUDE_CODE_TRUNCATION_CAP}). Shorten vendorDisplayName or annotationToolName.`,
+    );
+  }
+  return rendered;
+}
+
+export function buildAnnotationToolDescription(options: { vendorDisplayName: string }): string {
+  return ANNOTATION_TOOL_DESCRIPTION_TEMPLATE(options.vendorDisplayName);
+}

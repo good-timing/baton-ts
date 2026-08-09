@@ -7,15 +7,17 @@
  * import { withBaton } from "@baton/sdk";
  *
  * const server = new McpServer({ name: "your-vendor-mcp", version: "1.0.0" });
- * const handle = withBaton(server, { vendorId: "your-vendor", consentToken: "..." });
+ * const handle = withBaton(server, {
+ *   vendorId: "your-vendor",
+ *   vendorDisplayName: "Your Vendor",
+ *   consentToken: "...",
+ * });
  * ```
  *
- * Capture-only (Phase 2 of design-notes/typescript_sdk.md, baton-internal):
- * wraps every tool handler to emit `tool_call_start` → call →
- * `tool_call_end` / `tool_call_error`. No annotation tool, no `instructions`
- * injection, no intent-param injection, no `surface_snapshot` — see
- * CHANGELOG.md for why those are a matched pair gated together, not simply
- * unbuilt.
+ * Wraps every tool call to emit `tool_call_start` → call → `tool_call_end` /
+ * `tool_call_error`, injects server `instructions` (SPEC §5.1.2), and
+ * registers the `<vendor>_annotate` tool (SPEC §5.1.1). No intent-param
+ * injection, no `surface_snapshot` — see README "What's deferred".
  *
  * Interception mechanism: `McpServer` has no middleware API (unlike the
  * standalone `fastmcp` library's `Middleware`/`CallNext`), so this patches
@@ -33,27 +35,32 @@
  * Together these make call ordering irrelevant — `withBaton` can run before
  * or after the vendor's own `registerTool` calls. Relying on only one pass
  * (as a naive `registerTool`-only patch would) silently drops capture for
- * tools registered on the other side of the ordering.
+ * tools registered on the other side of the ordering. The annotation tool
+ * itself is excluded from this wrapping — it emits its own `annotation`
+ * event instead of `tool_call_*`, same as the Python middleware's skip.
+ *
+ * Instructions injection reaches into `server.server`'s private
+ * `_instructions` field — unlike Python's FastMCP (a read-only property
+ * with a private-attribute fallback), the official TS SDK's `Server` has no
+ * settable `instructions` at all post-construction, so there's no
+ * "preferred" public path to fall back from here.
  */
 
 import type { RegisteredTool } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import type { RequestHandlerExtra } from "@modelcontextprotocol/sdk/shared/protocol.js";
-import type { ServerNotification, ServerRequest } from "@modelcontextprotocol/sdk/types.js";
 import { v7 as uuidv7 } from "uuid";
-import {
-  ToolCallEndEventSchema,
-  ToolCallErrorEventSchema,
-  ToolCallStartEventSchema,
-  type Event,
-} from "../../events.js";
-import { safeWrite, StdoutSink, type Sink } from "../../sinks.js";
+import { ToolCallEndEventSchema, ToolCallErrorEventSchema, ToolCallStartEventSchema } from "../../events.js";
+import { StdoutSink, type Sink } from "../../sinks.js";
+import { registerAnnotationTool } from "./annotation.js";
 import { validateBatonConfig, identityScrub, type BatonConfig } from "./config.js";
+import { emit } from "./emit.js";
 import { BatonHandle } from "./handle.js";
+import { buildServerInstructions } from "./llmText.js";
+import type { Extra } from "./mcpTypes.js";
 import { detectAgentRuntime } from "./runtimeAdapter.js";
+import { resolveSessionId } from "./sessionResolution.js";
 import { SessionCounter } from "./sessionCounter.js";
 
-type Extra = RequestHandlerExtra<ServerRequest, ServerNotification>;
 type AnyArgs = unknown[];
 type AnyHandler = (...args: AnyArgs) => unknown;
 
@@ -67,51 +74,18 @@ interface WrapContext {
   defaultAgentRuntime: string;
   scrubber: (value: unknown) => unknown;
   resolveSessionId: BatonConfig["resolveSessionId"];
+  annotationToolName: string;
 }
 
-// `_registeredTools` and `RegisteredTool.handler` are internal to
-// @modelcontextprotocol/sdk, not part of its public .d.ts surface. Reaching
-// into them is deliberate (see module docstring) and requires stepping
-// outside the type system the same way Python's _registry.py does —
-// isolated to this one module so a future SDK internals change has exactly
-// one place to update.
+// `_registeredTools`, `RegisteredTool.handler`, and `server.server._instructions`
+// are internal to @modelcontextprotocol/sdk, not part of its public .d.ts
+// surface. Reaching into them is deliberate (see module docstring) and
+// requires stepping outside the type system the same way Python's
+// _registry.py does — isolated to this one module so a future SDK
+// internals change has exactly one place to update.
 /* eslint-disable @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-member-access */
 
 const wrapped = new WeakSet<object>();
-
-async function emit(sink: Sink, build: () => Event): Promise<void> {
-  let event: Event;
-  try {
-    event = build();
-  } catch (err) {
-    // Event construction (Zod validation) failing must not break the
-    // vendor's tool call any more than a sink failure would — SPEC §11.2
-    // fail-open applies to the whole capture step, not just the write.
-    process.stderr.write(`baton: event construction failed; event dropped: ${String(err)}\n`);
-    return;
-  }
-  await safeWrite(sink, event);
-}
-
-async function resolveSessionId(
-  ctx: WrapContext,
-  extra: Extra,
-  meta: Record<string, unknown> | null,
-  toolName: string,
-  params: Record<string, unknown>,
-): Promise<string> {
-  if (ctx.resolveSessionId) {
-    try {
-      const hookResult = await ctx.resolveSessionId({ meta, toolName, arguments: params });
-      if (typeof hookResult === "string" && hookResult) return hookResult;
-    } catch {
-      // Never propagate a hook failure — fall through to the ladder below,
-      // mirroring Python's resolve_via_hook.
-    }
-  }
-  if (typeof extra.sessionId === "string" && extra.sessionId) return extra.sessionId;
-  return ctx.fallbackSessionId;
-}
 
 function batonWrap(toolName: string, original: AnyHandler, ctx: WrapContext): AnyHandler {
   return async (...callArgs: AnyArgs): Promise<unknown> => {
@@ -120,7 +94,14 @@ function batonWrap(toolName: string, original: AnyHandler, ctx: WrapContext): An
     const meta = (extra._meta as Record<string, unknown> | undefined) ?? null;
     const runtime = detectAgentRuntime(meta) ?? ctx.defaultAgentRuntime;
     const scrubbedMeta = meta ? (ctx.scrubber(meta) as Record<string, unknown>) : null;
-    const sessionId = await resolveSessionId(ctx, extra, meta, toolName, params);
+    const sessionId = await resolveSessionId(
+      ctx.resolveSessionId,
+      ctx.fallbackSessionId,
+      extra,
+      meta,
+      toolName,
+      params,
+    );
 
     const common = {
       tenant_id: ctx.tenantId,
@@ -178,6 +159,11 @@ function batonWrap(toolName: string, original: AnyHandler, ctx: WrapContext): An
 }
 
 function wrapEntry(name: string, entry: unknown, ctx: WrapContext): void {
+  // The annotation tool emits its own `annotation` event from inside
+  // registerAnnotationTool — wrapping it here too would double-emit a
+  // tool_call_start/end around every annotate call, matching Python's
+  // `if tool_name == self._annotation_tool_name: return await call_next(...)` skip.
+  if (name === ctx.annotationToolName) return;
   if (!entry || typeof entry !== "object") return;
   if (wrapped.has(entry)) return;
   const mutable = entry as { handler: unknown };
@@ -194,6 +180,7 @@ function wrapEntry(name: string, entry: unknown, ctx: WrapContext): void {
 export function withBaton(server: McpServer, config: BatonConfig): BatonHandle {
   validateBatonConfig(config);
   const sink = config.sink ?? new StdoutSink();
+  const annotationToolName = config.annotationToolName || `${config.vendorId}_annotate`;
   const ctx: WrapContext = {
     sink,
     counter: new SessionCounter(),
@@ -204,8 +191,34 @@ export function withBaton(server: McpServer, config: BatonConfig): BatonHandle {
     defaultAgentRuntime: config.defaultAgentRuntime ?? "unknown",
     scrubber: config.scrubber ?? identityScrub,
     resolveSessionId: config.resolveSessionId,
+    annotationToolName,
   };
 
+  // Server instructions — load-bearing on instruction-aware runtimes (SPEC
+  // §5.1.2). No public setter exists post-construction; see module
+  // docstring for why this reach-in has no "preferred path" to fall back
+  // from, unlike Python's adapter.
+  const instructions = buildServerInstructions({
+    vendorDisplayName: config.vendorDisplayName,
+    annotationToolName,
+  });
+  (server.server as any)._instructions = instructions;
+
+  const resolvedAnnotationToolName = registerAnnotationTool(server, {
+    sink,
+    counter: ctx.counter,
+    tenantId: ctx.tenantId,
+    vendorId: ctx.vendorId,
+    vendorDisplayName: config.vendorDisplayName,
+    consentToken: ctx.consentToken,
+    fallbackSessionId: ctx.fallbackSessionId,
+    defaultAgentRuntime: ctx.defaultAgentRuntime,
+    scrubber: ctx.scrubber,
+    resolveSessionId: ctx.resolveSessionId,
+    annotationToolName: config.annotationToolName,
+  });
+
+  // Retroactive: sweep whatever's already registered, regardless of call order.
   const existing = (server as any)._registeredTools as Record<string, unknown> | undefined;
   if (existing) {
     for (const [name, entry] of Object.entries(existing)) {
@@ -213,12 +226,27 @@ export function withBaton(server: McpServer, config: BatonConfig): BatonHandle {
     }
   }
 
-  const originalRegisterTool = server.registerTool.bind(server) as (...args: AnyArgs) => RegisteredTool;
+  // Prospective: every future registration goes through here too. Patched
+  // AFTER registerAnnotationTool runs above (deliberately) — the annotate
+  // tool registration hits the original, unpatched registerTool, lands in
+  // _registeredTools, and gets excluded by name in the retroactive sweep
+  // just above instead. Patching registerTool before registering the
+  // annotate tool would work too (wrapEntry's name check guards either
+  // order), but this ordering means the annotate tool only ever needs to
+  // be excluded in the one place, not reasoned about twice.
+  const originalRegisterTool = server.registerTool.bind(server) as (
+    ...args: AnyArgs
+  ) => RegisteredTool;
   server.registerTool = ((name: string, ...rest: AnyArgs) => {
     const registered = originalRegisterTool(name, ...rest);
     wrapEntry(name, registered, ctx);
     return registered;
   }) as typeof server.registerTool;
 
-  return new BatonHandle({ sink, vendorId: config.vendorId, sessionId: ctx.fallbackSessionId });
+  return new BatonHandle({
+    sink,
+    vendorId: config.vendorId,
+    sessionId: ctx.fallbackSessionId,
+    annotationToolName: resolvedAnnotationToolName,
+  });
 }

@@ -4,7 +4,7 @@ import type { Sink } from "../../sinks.js";
  * Handle returned from `withBaton` for graceful shutdown and session
  * correlation. Trimmed mirror of Python's `integrations/_handle.py::BatonHandle`
  * — `escalate()` is not here; it's a Console action-surface feature, out of
- * scope for this capture-only scaffold same as the annotation tool.
+ * scope for this package.
  */
 export class BatonHandle {
   readonly sink: Sink;
@@ -13,11 +13,20 @@ export class BatonHandle {
    * when no real per-call session id resolves. Not every event necessarily
    * carries this id; see `withBaton`'s session-resolution order. */
   readonly sessionId: string;
+  /** The resolved annotation tool name (`{vendorId}_annotate` unless
+   * overridden via `BatonConfig.annotationToolName`). */
+  readonly annotationToolName: string;
 
-  constructor(options: { sink: Sink; vendorId: string; sessionId: string }) {
+  constructor(options: {
+    sink: Sink;
+    vendorId: string;
+    sessionId: string;
+    annotationToolName: string;
+  }) {
     this.sink = options.sink;
     this.vendorId = options.vendorId;
     this.sessionId = options.sessionId;
+    this.annotationToolName = options.annotationToolName;
   }
 
   /** Flush any pending events held by the sink. */

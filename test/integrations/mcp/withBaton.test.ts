@@ -53,7 +53,7 @@ describe("withBaton", () => {
 
   it("captures tool_call_start/end for a tool registered AFTER withBaton (prospective wrap)", async () => {
     const server = new McpServer({ name: "vendor", version: "1.0.0" });
-    withBaton(server, { vendorId: "acme", consentToken: "ct", sink });
+    withBaton(server, { vendorId: "acme", vendorDisplayName: "Acme", consentToken: "ct", sink });
     registerTools(server);
 
     const client = await connectClient(server);
@@ -78,7 +78,7 @@ describe("withBaton", () => {
     // tools exist before withBaton ever runs.
     const server = new McpServer({ name: "vendor", version: "1.0.0" });
     registerTools(server);
-    withBaton(server, { vendorId: "acme", consentToken: "ct", sink });
+    withBaton(server, { vendorId: "acme", vendorDisplayName: "Acme", consentToken: "ct", sink });
 
     const client = await connectClient(server);
     const result = await client.callTool({ name: "echo", arguments: { text: "hi" } });
@@ -90,7 +90,7 @@ describe("withBaton", () => {
   it("captures tool_call_error and rethrows so the client still sees an error result", async () => {
     const server = new McpServer({ name: "vendor", version: "1.0.0" });
     registerTools(server);
-    withBaton(server, { vendorId: "acme", consentToken: "ct", sink });
+    withBaton(server, { vendorId: "acme", vendorDisplayName: "Acme", consentToken: "ct", sink });
 
     const client = await connectClient(server);
     const result = await client.callTool({ name: "boom", arguments: {} });
@@ -115,7 +115,7 @@ describe("withBaton", () => {
   it("keeps sequence numbers monotonic per session across multiple calls", async () => {
     const server = new McpServer({ name: "vendor", version: "1.0.0" });
     registerTools(server);
-    withBaton(server, { vendorId: "acme", consentToken: "ct", sink });
+    withBaton(server, { vendorId: "acme", vendorDisplayName: "Acme", consentToken: "ct", sink });
 
     const client = await connectClient(server);
     await client.callTool({ name: "echo", arguments: { text: "one" } });
@@ -146,7 +146,7 @@ describe("withBaton", () => {
 
     const server = new McpServer({ name: "vendor", version: "1.0.0" });
     registerTools(server);
-    withBaton(server, { vendorId: "acme", consentToken: "ct", sink, scrubber: redactStrings });
+    withBaton(server, { vendorId: "acme", vendorDisplayName: "Acme", consentToken: "ct", sink, scrubber: redactStrings });
 
     const client = await connectClient(server);
     await client.callTool({ name: "echo", arguments: { text: "secret" } });
@@ -162,7 +162,7 @@ describe("withBaton", () => {
     // Wholesale replacement breaks `params`' record shape — event
     // construction (Zod validation) fails; the tool call must still
     // succeed per SPEC §11.2 fail-open.
-    withBaton(server, { vendorId: "acme", consentToken: "ct", sink, scrubber: () => "REDACTED" });
+    withBaton(server, { vendorId: "acme", vendorDisplayName: "Acme", consentToken: "ct", sink, scrubber: () => "REDACTED" });
 
     const client = await connectClient(server);
     const result = await client.callTool({ name: "echo", arguments: { text: "hi" } });
@@ -177,8 +177,152 @@ describe("withBaton", () => {
 
   it("throws at withBaton() time when consentToken is missing", () => {
     const server = new McpServer({ name: "vendor", version: "1.0.0" });
-    expect(() => withBaton(server, { vendorId: "acme", consentToken: "", sink })).toThrow(
-      /consentToken/,
-    );
+    expect(() =>
+      withBaton(server, { vendorId: "acme", vendorDisplayName: "Acme", consentToken: "", sink }),
+    ).toThrow(/consentToken/);
+  });
+
+  it("throws at withBaton() time when vendorDisplayName is missing", () => {
+    const server = new McpServer({ name: "vendor", version: "1.0.0" });
+    expect(() =>
+      withBaton(server, { vendorId: "acme", vendorDisplayName: "", consentToken: "ct", sink }),
+    ).toThrow(/vendorDisplayName/);
+  });
+});
+
+describe("withBaton — instructions + annotation tool", () => {
+  let sink: CapturingSink;
+
+  beforeEach(() => {
+    sink = new CapturingSink();
+  });
+
+  it("injects server instructions referencing the annotation tool name", async () => {
+    const server = new McpServer({ name: "vendor", version: "1.0.0" });
+    const handle = withBaton(server, {
+      vendorId: "acme",
+      vendorDisplayName: "Acme",
+      consentToken: "ct",
+      sink,
+    });
+
+    expect(handle.annotationToolName).toBe("acme_annotate");
+
+    const client = await connectClient(server);
+    const instructions = client.getInstructions();
+
+    expect(instructions).toContain("acme_annotate");
+    expect(instructions).toContain("Acme");
+    // Whitelabel obligation (SPEC §5.4) — no Baton-branded strings reach
+    // the calling agent.
+    expect(instructions?.toLowerCase()).not.toContain("baton");
+  });
+
+  it("registers a discoverable, callable annotate tool", async () => {
+    const server = new McpServer({ name: "vendor", version: "1.0.0" });
+    withBaton(server, { vendorId: "acme", vendorDisplayName: "Acme", consentToken: "ct", sink });
+
+    const client = await connectClient(server);
+    const { tools } = await client.listTools();
+    expect(tools.map((t) => t.name)).toContain("acme_annotate");
+
+    const result = await client.callTool({
+      name: "acme_annotate",
+      arguments: { intent: "look something up", expected_outcome: "a match" },
+    });
+    expect(result.isError).toBeFalsy();
+  });
+
+  it("emits a proactive annotation event and does NOT emit tool_call_start/end for the annotate call itself", async () => {
+    const server = new McpServer({ name: "vendor", version: "1.0.0" });
+    withBaton(server, { vendorId: "acme", vendorDisplayName: "Acme", consentToken: "ct", sink });
+
+    const client = await connectClient(server);
+    await client.callTool({
+      name: "acme_annotate",
+      arguments: { intent: "look something up", expected_outcome: "a match", workflow: "lookup" },
+    });
+
+    expect(sink.events.map((e) => e.event_type)).toEqual(["annotation"]);
+    expect(sink.events[0]!.payload).toMatchObject({
+      intent: "look something up",
+      expected_outcome: "a match",
+      workflow: "lookup",
+      signal_type: null,
+    });
+  });
+
+  it("emits a reactive annotation event with signal_type + suggested_improvement", async () => {
+    const server = new McpServer({ name: "vendor", version: "1.0.0" });
+    registerTools(server);
+    withBaton(server, { vendorId: "acme", vendorDisplayName: "Acme", consentToken: "ct", sink });
+
+    const client = await connectClient(server);
+    await client.callTool({ name: "echo", arguments: { text: "hi" } }); // start/end noise
+    sink.events.length = 0;
+
+    await client.callTool({
+      name: "acme_annotate",
+      arguments: {
+        intent: "look something up",
+        signal_type: "feature_gap",
+        suggested_improvement: "add a bulk lookup tool",
+      },
+    });
+
+    expect(sink.events.map((e) => e.event_type)).toEqual(["annotation"]);
+    expect(sink.events[0]!.payload).toMatchObject({
+      signal_type: "feature_gap",
+      suggested_improvement: "add a bulk lookup tool",
+    });
+  });
+
+  it("annotate call and regular tool calls share one monotonic sequence per session", async () => {
+    const server = new McpServer({ name: "vendor", version: "1.0.0" });
+    registerTools(server);
+    withBaton(server, { vendorId: "acme", vendorDisplayName: "Acme", consentToken: "ct", sink });
+
+    const client = await connectClient(server);
+    await client.callTool({ name: "echo", arguments: { text: "hi" } });
+    await client.callTool({ name: "acme_annotate", arguments: { intent: "x" } });
+
+    expect(sink.events.map((e) => [e.event_type, e.sequence_number])).toEqual([
+      ["tool_call_start", 1],
+      ["tool_call_end", 2],
+      ["annotation", 3],
+    ]);
+    // Same session across both call sites.
+    const sessionIds = new Set(sink.events.map((e) => e.session_id));
+    expect(sessionIds.size).toBe(1);
+  });
+
+  it("respects an annotationToolName override", async () => {
+    const server = new McpServer({ name: "vendor", version: "1.0.0" });
+    const handle = withBaton(server, {
+      vendorId: "acme",
+      vendorDisplayName: "Acme",
+      consentToken: "ct",
+      sink,
+      annotationToolName: "record_feedback",
+    });
+
+    expect(handle.annotationToolName).toBe("record_feedback");
+    const client = await connectClient(server);
+    const { tools } = await client.listTools();
+    expect(tools.map((t) => t.name)).toContain("record_feedback");
+    expect(tools.map((t) => t.name)).not.toContain("acme_annotate");
+  });
+
+  it("throws at withBaton() time on an invalid annotationToolName override", () => {
+    const server = new McpServer({ name: "vendor", version: "1.0.0" });
+    expect(() =>
+      withBaton(server, {
+        vendorId: "acme",
+        vendorDisplayName: "Acme",
+        consentToken: "ct",
+        sink,
+        annotationToolName: "not.valid",
+      }),
+    ).toThrow(/cross-runtime/);
   });
 });

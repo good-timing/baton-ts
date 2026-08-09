@@ -6,7 +6,7 @@ This is the TypeScript counterpart to [`baton`](https://github.com/good-timing/b
 
 ## Status
 
-Capture-only (Phase 2 of the design note in `baton-internal`, private — read it before touching `src/integrations/mcp/`). `withBaton` wraps `@modelcontextprotocol/sdk` `McpServer` tool calls and emits `tool_call_*` events. **Deliberately not built yet:** server `instructions` injection, the `<vendor>_annotate` tool, intent-param injection, `surface_snapshot`. The first two are a matched pair (CHARTER §5.1.2) — see README.md's "What's deferred" for why that's an npm-publish blocker, not a nice-to-have. Don't add one without the other.
+Phase 2 of the design note in `baton-internal` (private — read it before touching `src/integrations/mcp/`). `withBaton` wraps `@modelcontextprotocol/sdk` `McpServer` tool calls (`tool_call_*` events), injects server `instructions`, and registers the `<vendor>_annotate` tool (SPEC §5.1.1–§5.1.2) — ported byte-for-byte from Python's templates, verified against the Python SDK's actual rendered output. **Deliberately not built yet:** intent-param injection, `surface_snapshot`. See README.md's "What's deferred".
 
 ## Wire compatibility — non-negotiable
 
@@ -28,14 +28,14 @@ Use `npm run ci` as the canonical gate (matches GitHub Actions).
 2. No `console.*` in `src/` (`eslint.config.js` enforces this — mirrors Python's ruff `T20`). MCP stdio transport reserves stdout for JSON-RPC framing; use `StdoutSink` for anything that needs to reach a stream.
 3. Public API is the contract. Anything exported from `src/index.ts` is what vendors integrate against; breaking changes need the same `SPEC.md §13` changelog discipline as the Python SDK.
 4. Tests use fake fixtures only — `ajv` against the schema, in-process fetch mocks for `HttpSink`, a real `McpServer`/`Client` pair over `InMemoryTransport` for `withBaton` (the MCP SDK's own in-process test transport — not a mock of it). No real vendor MCP server in this repo, ever.
-5. `src/integrations/mcp/withBaton.ts` reaches into `McpServer`'s private `_registeredTools` / `RegisteredTool.handler` — undocumented internals, not the public `.d.ts` surface. This is deliberate (see that file's module docstring for why retroactive wrapping is required, not optional) and isolated to one file/one `eslint-disable` block, mirroring Python's `_registry.py` "single swap point for upstream rename" pattern. If `@modelcontextprotocol/sdk` restructures `McpServer` internals, this is the one place to fix.
+5. `src/integrations/mcp/withBaton.ts` reaches into `McpServer`'s private `_registeredTools` / `RegisteredTool.handler`, and `server.server`'s private `_instructions` — undocumented internals, not the public `.d.ts` surface. This is deliberate (see that file's module docstring — retroactive tool wrapping and post-construction instructions injection both require it; the TS SDK, unlike Python's FastMCP, has no settable `instructions` at all) and isolated to one file/one `eslint-disable` block, mirroring Python's `_registry.py` "single swap point for upstream rename" pattern. If `@modelcontextprotocol/sdk` restructures `McpServer`/`Server` internals, this is the one place to fix.
 
 ## What lives where
 
 - `src/events.ts` — Zod schemas + types for the event envelope and its five payload types.
 - `src/sinks.ts` — `Sink` interface, `StdoutSink`, `HttpSink`.
 - `src/version.ts` — `SDK_VERSION` (`"ts-0.1.0"` — TS-prefixed so the Console can tell TS- from Python-sourced events apart in `sdk_version`).
-- `src/integrations/mcp/` — `withBaton`, `BatonConfig`, `BatonHandle`, `SessionCounter`, runtime-detection heuristics. Re-exported flat from `src/index.ts` (design note's `import { withBaton } from '@baton/sdk'` shape — no Python-style `baton.integrations.mcp` subpackage, since there's only one MCP SDK to target in TS).
+- `src/integrations/mcp/` — `withBaton`, `BatonConfig`, `BatonHandle`, `SessionCounter`, runtime-detection heuristics, `annotation.ts` (the `<vendor>_annotate` tool), `llmText.ts` (instructions + tool-description templates, ported from Python's `_llm_text.py`). Re-exported flat from `src/index.ts` (design note's `import { withBaton } from '@baton/sdk'` shape — no Python-style `baton.integrations.mcp` subpackage, since there's only one MCP SDK to target in TS).
 - `test/conformance.test.ts` — the wire-compatibility gate described above.
 - `test/integrations/mcp/withBaton.test.ts` — in-process interceptor tests.
 - `baton-spec/` — git submodule, schema of record. Never hand-edit; it's regenerated from `baton`'s Pydantic models.

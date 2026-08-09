@@ -1,20 +1,15 @@
 /**
- * `BatonConfig` — vendor-side configuration for `withBaton`. A trimmed,
- * capture-only mirror of `baton` (Python)'s `integrations/_config.py::VendorConfig`
- * — see that module's docstrings for the fields this Phase 2 scaffold
- * deliberately omits (`vendorDisplayName`, `annotationToolName`,
- * `intentParamMode`): they only make sense once the `<vendor>_annotate`
- * tool + server `instructions` injection exist, which per CHARTER §5.1.2 is
- * a matched pair this package doesn't ship yet (tracked in CHANGELOG.md).
+ * `BatonConfig` — vendor-side configuration for `withBaton`. A trimmed
+ * mirror of `baton` (Python)'s `integrations/_config.py::VendorConfig` —
+ * still missing `intentParamMode` (intent-param injection is out of scope;
+ * see README "What's deferred").
  */
 
 import type { Sink } from "../../sinks.js";
 
 // Vendor IDs double as tenant_id in vendor-mode tenancy (mirrors Python's
-// `install_baton` setting `tenant_id=config.vendor_id`) — same pattern
-// Python validates against, kept even though this scaffold has no
-// annotation-tool name to derive from yet, so a vendor_id chosen now stays
-// valid once Phase 2.5 adds it.
+// `install_baton` setting `tenant_id=config.vendor_id`) and as the default
+// annotation-tool-name prefix — same pattern Python validates against.
 const VENDOR_ID_PATTERN = /^[a-zA-Z0-9_-]{1,48}$/;
 
 /** Normalized input to `BatonConfig.resolveSessionId`. Deliberately doesn't
@@ -32,8 +27,13 @@ export type ResolveSessionIdHook = (
 
 export interface BatonConfig {
   /** Short stable identifier for the vendor (e.g. `"acme"`). Also used as
-   * `tenant_id` on every emitted event (vendor-mode tenancy). */
+   * `tenant_id` on every emitted event (vendor-mode tenancy) and as the
+   * default annotation tool name prefix (`{vendorId}_annotate`). */
   vendorId: string;
+  /** Human-readable vendor name used in server instructions and the
+   * annotation tool description — whitelabel obligation (SPEC §5.4): no
+   * Baton-branded strings reach the calling agent. */
+  vendorDisplayName: string;
   /** End-user consent token attached to every emitted event per SPEC §2.3 —
    * required, the Console MUST reject events missing it. */
   consentToken: string;
@@ -49,13 +49,22 @@ export interface BatonConfig {
   /** Optional vendor-supplied session-id resolver, checked BEFORE
    * `extra.sessionId` — mirrors Python's `resolve_session_id` rung 0. */
   resolveSessionId?: ResolveSessionIdHook;
+  /** Optional override for the annotation tool name. Default is
+   * `{vendorId}_annotate`. */
+  annotationToolName?: string;
 }
 
 export function validateBatonConfig(config: BatonConfig): void {
   if (!VENDOR_ID_PATTERN.test(config.vendorId)) {
     throw new Error(
       `vendorId ${JSON.stringify(config.vendorId)} must match ${VENDOR_ID_PATTERN.source} ` +
-        "— reserved for the annotation tool name prefix once Phase 2.5 adds it.",
+        "— used as the default annotation tool name prefix.",
+    );
+  }
+  if (!config.vendorDisplayName) {
+    throw new Error(
+      "BatonConfig.vendorDisplayName is required — used in server instructions " +
+        "and the annotation tool description (whitelabel obligation, SPEC §5.4).",
     );
   }
   if (!config.consentToken) {
