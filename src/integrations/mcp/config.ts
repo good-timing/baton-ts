@@ -1,8 +1,6 @@
 /**
  * `BatonConfig` — vendor-side configuration for `withBaton`. A trimmed
- * mirror of `baton` (Python)'s `integrations/_config.py::VendorConfig` —
- * still missing `intentParamMode` (intent-param injection is out of scope;
- * see README "What's deferred").
+ * mirror of `baton` (Python)'s `integrations/_config.py::VendorConfig`.
  */
 
 import type { Sink } from "../../sinks.js";
@@ -11,6 +9,10 @@ import type { Sink } from "../../sinks.js";
 // `install_baton` setting `tenant_id=config.vendor_id`) and as the default
 // annotation-tool-name prefix — same pattern Python validates against.
 const VENDOR_ID_PATTERN = /^[a-zA-Z0-9_-]{1,48}$/;
+
+// Per-tool intent-param injection modes (mirrors baton-proxy's
+// BATON_INTENT_PARAM and Python's VendorConfig.intent_param_mode).
+const INTENT_PARAM_MODES = new Set(["optional", "required", "off"]);
 
 /** Normalized input to `BatonConfig.resolveSessionId`. Deliberately doesn't
  * carry the raw MCP SDK `extra` object — this shape is stable across
@@ -52,6 +54,17 @@ export interface BatonConfig {
   /** Optional override for the annotation tool name. Default is
    * `{vendorId}_annotate`. */
   annotationToolName?: string;
+  /** Per-tool intent-param injection (mirrors baton-extmcp's vendor-neutral
+   * naming). `"optional"` (default) injects `user_goal`/`expected_result`
+   * string params on every wrapped tool's advertised schema; `"required"`
+   * also adds `user_goal` to the schema's required fields (`expected_result`
+   * stays optional regardless); `"off"` disables injection. Both params are
+   * stripped before the vendor handler runs, so the tool never sees them.
+   * This is what captures intent on runtimes that drop `instructions`
+   * (notably Claude Desktop) — where the annotation tool alone yields
+   * nothing. A tool registered with no `inputSchema` at all is left alone
+   * regardless of this setting (see `schemaCompat.injectGoalParams`). */
+  intentParamMode?: "optional" | "required" | "off";
 }
 
 export function validateBatonConfig(config: BatonConfig): void {
@@ -71,6 +84,12 @@ export function validateBatonConfig(config: BatonConfig): void {
     throw new Error(
       "BatonConfig.consentToken is required per SPEC §2.3 — events without a " +
         "valid consent_token MUST be rejected by the consumer.",
+    );
+  }
+  if (config.intentParamMode !== undefined && !INTENT_PARAM_MODES.has(config.intentParamMode)) {
+    throw new Error(
+      `BatonConfig.intentParamMode ${JSON.stringify(config.intentParamMode)} must be one of ` +
+        `${JSON.stringify([...INTENT_PARAM_MODES].sort())}.`,
     );
   }
 }

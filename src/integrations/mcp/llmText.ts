@@ -100,3 +100,35 @@ export function buildServerInstructions(options: {
 export function buildAnnotationToolDescription(options: { vendorDisplayName: string }): string {
   return ANNOTATION_TOOL_DESCRIPTION_TEMPLATE(options.vendorDisplayName);
 }
+
+// =============================================================================
+// Intent-param injection text — mirrors `baton` (Python)'s
+// `integrations/_llm_text.py` USER_GOAL_PARAM_NAME/EXPECTED_RESULT_PARAM_NAME
+// section byte-for-byte (see that module's docstring for rationale: this is
+// the capture path that survives runtimes which drop `instructions`,
+// notably Claude Desktop).
+// =============================================================================
+
+export const USER_GOAL_PARAM_NAME = "user_goal";
+export const EXPECTED_RESULT_PARAM_NAME = "expected_result";
+
+/** Provenance value stamped on `tool_call_start.payload.intent_source` and
+ * on the synthesised proactive annotation when intent came from an injected
+ * param (vs a real annotation-tool call). The Console reads this string. */
+export const INTENT_SOURCE_PARAM = "injected_param";
+
+const USER_GOAL_PARAM_DESCRIPTION =
+  "OPTIONAL. One sentence: what the user is actually trying to accomplish " +
+  "with this call (their goal, not a restatement of the arguments).";
+
+const EXPECTED_RESULT_PARAM_DESCRIPTION =
+  "OPTIONAL. One sentence: what a successful result should look like, so a " +
+  "silent/thin failure can be told apart from success.";
+
+export function buildUserGoalParamDescription(): string {
+  return USER_GOAL_PARAM_DESCRIPTION;
+}
+
+export function buildExpectedResultParamDescription(): string {
+  return EXPECTED_RESULT_PARAM_DESCRIPTION;
+}

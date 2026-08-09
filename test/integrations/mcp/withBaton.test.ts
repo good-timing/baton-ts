@@ -60,12 +60,18 @@ describe("withBaton", () => {
     const result = await client.callTool({ name: "echo", arguments: { text: "hi" } });
 
     expect(result.isError).toBeFalsy();
-    expect(sink.events.map((e) => e.event_type)).toEqual(["tool_call_start", "tool_call_end"]);
-    const [start, end] = sink.events;
+    // The first tool call on a fresh install also captures a
+    // surface_snapshot (lazy — see withBaton.ts's maybeEmitSurfaceSnapshot).
+    expect(sink.events.map((e) => e.event_type)).toEqual([
+      "surface_snapshot",
+      "tool_call_start",
+      "tool_call_end",
+    ]);
+    const [, start, end] = sink.events;
     expect(start!.payload).toMatchObject({ tool_name: "echo", params: { text: "hi" } });
     expect(end!.payload).toMatchObject({ tool_name: "echo" });
-    expect(start!.sequence_number).toBe(1);
-    expect(end!.sequence_number).toBe(2);
+    expect(start!.sequence_number).toBe(2);
+    expect(end!.sequence_number).toBe(3);
     expect(start!.session_id).toBe(end!.session_id);
     expect(start!.tenant_id).toBe("acme");
     expect(start!.vendor_id).toBe("acme");
@@ -84,7 +90,11 @@ describe("withBaton", () => {
     const result = await client.callTool({ name: "echo", arguments: { text: "hi" } });
 
     expect(result.isError).toBeFalsy();
-    expect(sink.events.map((e) => e.event_type)).toEqual(["tool_call_start", "tool_call_end"]);
+    expect(sink.events.map((e) => e.event_type)).toEqual([
+      "surface_snapshot",
+      "tool_call_start",
+      "tool_call_end",
+    ]);
   });
 
   it("captures tool_call_error and rethrows so the client still sees an error result", async () => {
@@ -100,8 +110,12 @@ describe("withBaton", () => {
     // error-reporting contract with its own caller is unchanged.
     expect(result.isError).toBe(true);
 
-    expect(sink.events.map((e) => e.event_type)).toEqual(["tool_call_start", "tool_call_error"]);
-    const errorEvent = sink.events[1]!;
+    expect(sink.events.map((e) => e.event_type)).toEqual([
+      "surface_snapshot",
+      "tool_call_start",
+      "tool_call_error",
+    ]);
+    const errorEvent = sink.events[2]!;
     expect(errorEvent.payload).toMatchObject({
       tool_name: "boom",
       error_type: "Error",
@@ -121,7 +135,16 @@ describe("withBaton", () => {
     await client.callTool({ name: "echo", arguments: { text: "one" } });
     await client.callTool({ name: "echo", arguments: { text: "two" } });
 
-    expect(sink.events.map((e) => e.sequence_number)).toEqual([1, 2, 3, 4]);
+    // surface_snapshot fires once (first call only — the surface hasn't
+    // changed by the second call), so the count is 5, not 4.
+    expect(sink.events.map((e) => e.event_type)).toEqual([
+      "surface_snapshot",
+      "tool_call_start",
+      "tool_call_end",
+      "tool_call_start",
+      "tool_call_end",
+    ]);
+    expect(sink.events.map((e) => e.sequence_number)).toEqual([1, 2, 3, 4, 5]);
   });
 
   it("scrubs params/result through the configured scrubber", async () => {
@@ -151,9 +174,10 @@ describe("withBaton", () => {
     const client = await connectClient(server);
     await client.callTool({ name: "echo", arguments: { text: "secret" } });
 
-    const [start, end] = sink.events;
-    expect(start!.payload).toMatchObject({ params: { text: "REDACTED" } });
-    expect(JSON.stringify(end!.payload)).not.toContain("secret");
+    const start = sink.events.find((e) => e.event_type === "tool_call_start")!;
+    const end = sink.events.find((e) => e.event_type === "tool_call_end")!;
+    expect(start.payload).toMatchObject({ params: { text: "REDACTED" } });
+    expect(JSON.stringify(end.payload)).not.toContain("secret");
   });
 
   it("drops an event whose scrubbed payload no longer matches the wire schema, fail-open", async () => {
@@ -172,7 +196,9 @@ describe("withBaton", () => {
     // string, it fails Zod validation and is dropped. tool_call_end's
     // `result` has no such shape constraint (`z.unknown()`), so it still
     // gets through — the fail-open behavior is per-event, not all-or-nothing.
-    expect(sink.events.map((e) => e.event_type)).toEqual(["tool_call_end"]);
+    // surface_snapshot is unaffected — its payload is never scrubbed (it's
+    // the vendor's own static tool surface, not caller-supplied data).
+    expect(sink.events.map((e) => e.event_type)).toEqual(["surface_snapshot", "tool_call_end"]);
   });
 
   it("throws at withBaton() time when consentToken is missing", () => {
@@ -287,9 +313,10 @@ describe("withBaton — instructions + annotation tool", () => {
     await client.callTool({ name: "acme_annotate", arguments: { intent: "x" } });
 
     expect(sink.events.map((e) => [e.event_type, e.sequence_number])).toEqual([
-      ["tool_call_start", 1],
-      ["tool_call_end", 2],
-      ["annotation", 3],
+      ["surface_snapshot", 1],
+      ["tool_call_start", 2],
+      ["tool_call_end", 3],
+      ["annotation", 4],
     ]);
     // Same session across both call sites.
     const sessionIds = new Set(sink.events.map((e) => e.session_id));
@@ -324,5 +351,413 @@ describe("withBaton — instructions + annotation tool", () => {
         annotationToolName: "not.valid",
       }),
     ).toThrow(/cross-runtime/);
+  });
+});
+
+describe("withBaton — intent-param injection", () => {
+  let sink: CapturingSink;
+
+  beforeEach(() => {
+    sink = new CapturingSink();
+  });
+
+  it("injects user_goal/expected_result as optional params on the advertised schema by default", async () => {
+    const server = new McpServer({ name: "vendor", version: "1.0.0" });
+    registerTools(server);
+    withBaton(server, { vendorId: "acme", vendorDisplayName: "Acme", consentToken: "ct", sink });
+
+    const client = await connectClient(server);
+    const { tools } = await client.listTools();
+    const echo = tools.find((t) => t.name === "echo")!;
+
+    expect(echo.inputSchema.properties).toHaveProperty("user_goal");
+    expect(echo.inputSchema.properties).toHaveProperty("expected_result");
+    expect(echo.inputSchema.required).toEqual(["text"]);
+  });
+
+  it("does not add a schema to a tool registered with none (zero-arg tools are left alone)", async () => {
+    const server = new McpServer({ name: "vendor", version: "1.0.0" });
+    registerTools(server);
+    withBaton(server, { vendorId: "acme", vendorDisplayName: "Acme", consentToken: "ct", sink });
+
+    const client = await connectClient(server);
+    const { tools } = await client.listTools();
+    const boom = tools.find((t) => t.name === "boom")!;
+    expect(boom.inputSchema.properties ?? {}).not.toHaveProperty("user_goal");
+
+    // A zero-arg tool's handler still gets called with no args at all —
+    // giving it a schema would have flipped the SDK's calling convention
+    // and broken this.
+    const result = await client.callTool({ name: "boom", arguments: {} });
+    expect(result.isError).toBe(true);
+  });
+
+  it("captures call_intent from an injected user_goal, strips it before the vendor handler, and synthesises one proactive annotation", async () => {
+    const server = new McpServer({ name: "vendor", version: "1.0.0" });
+    let receivedArgs: Record<string, unknown> | undefined;
+    server.registerTool(
+      "echo",
+      { inputSchema: { text: z.string() } },
+      async (args: Record<string, unknown>) => {
+        receivedArgs = args;
+        return { content: [{ type: "text" as const, text: String(args.text) }] };
+      },
+    );
+    withBaton(server, { vendorId: "acme", vendorDisplayName: "Acme", consentToken: "ct", sink });
+
+    const client = await connectClient(server);
+    await client.callTool({
+      name: "echo",
+      arguments: { text: "hi", user_goal: "find the invoice", expected_result: "a total" },
+    });
+
+    // Vendor handler never sees the injected params.
+    expect(receivedArgs).toEqual({ text: "hi" });
+
+    expect(sink.events.map((e) => e.event_type)).toEqual([
+      "surface_snapshot",
+      "annotation",
+      "tool_call_start",
+      "tool_call_end",
+    ]);
+    const annotation = sink.events[1]!;
+    expect(annotation.payload).toMatchObject({
+      intent: "find the invoice",
+      expected_outcome: "a total",
+      intent_source: "injected_param",
+      tool_name: "echo",
+    });
+    const start = sink.events[2]!;
+    expect(start.payload).toMatchObject({
+      call_intent: "find the invoice",
+      intent_source: "injected_param",
+      params: { text: "hi" },
+    });
+  });
+
+  it("emits at most one proactive annotation per session even across multiple calls carrying user_goal", async () => {
+    const server = new McpServer({ name: "vendor", version: "1.0.0" });
+    registerTools(server);
+    withBaton(server, { vendorId: "acme", vendorDisplayName: "Acme", consentToken: "ct", sink });
+
+    const client = await connectClient(server);
+    await client.callTool({ name: "echo", arguments: { text: "one", user_goal: "goal one" } });
+    await client.callTool({ name: "echo", arguments: { text: "two", user_goal: "goal two" } });
+
+    expect(sink.events.filter((e) => e.event_type === "annotation")).toHaveLength(1);
+    // The second call's start event still carries its own call_intent even
+    // though it didn't open a new proactive.
+    const starts = sink.events.filter((e) => e.event_type === "tool_call_start");
+    expect(starts.map((e) => e.payload.call_intent)).toEqual(["goal one", "goal two"]);
+  });
+
+  it("forwards a tool's own native user_goal param untouched instead of treating it as captured intent", async () => {
+    const server = new McpServer({ name: "vendor", version: "1.0.0" });
+    let receivedArgs: Record<string, unknown> | undefined;
+    server.registerTool(
+      "search",
+      { inputSchema: { user_goal: z.string() } },
+      async (args: Record<string, unknown>) => {
+        receivedArgs = args;
+        return { content: [{ type: "text" as const, text: "ok" }] };
+      },
+    );
+    withBaton(server, { vendorId: "acme", vendorDisplayName: "Acme", consentToken: "ct", sink });
+
+    const client = await connectClient(server);
+    await client.callTool({ name: "search", arguments: { user_goal: "the vendor's own field" } });
+
+    // Native disposition: forwarded to the vendor untouched, not stripped.
+    expect(receivedArgs).toEqual({ user_goal: "the vendor's own field" });
+    // Not treated as captured Baton intent — no proactive annotation, and
+    // tool_call_start's call_intent stays null.
+    expect(sink.events.map((e) => e.event_type)).toEqual([
+      "surface_snapshot",
+      "tool_call_start",
+      "tool_call_end",
+    ]);
+    const start = sink.events[1]!;
+    expect(start.payload).toMatchObject({ call_intent: null, intent_source: null });
+  });
+
+  it("intentParamMode 'required' adds user_goal to the schema's required fields; expected_result stays optional", async () => {
+    const server = new McpServer({ name: "vendor", version: "1.0.0" });
+    registerTools(server);
+    withBaton(server, {
+      vendorId: "acme",
+      vendorDisplayName: "Acme",
+      consentToken: "ct",
+      sink,
+      intentParamMode: "required",
+    });
+
+    const client = await connectClient(server);
+    const { tools } = await client.listTools();
+    const echo = tools.find((t) => t.name === "echo")!;
+    expect(echo.inputSchema.required).toEqual(expect.arrayContaining(["text", "user_goal"]));
+    expect(echo.inputSchema.required).not.toContain("expected_result");
+  });
+
+  it("intentParamMode 'required' adds a required array where the tool's own schema had none", async () => {
+    // A tool whose own fields are all optional never had a `required` array
+    // to begin with — objectFromShape's rebuilt schema must still end up
+    // requiring user_goal, not silently drop the constraint because there
+    // was nothing to append to.
+    const server = new McpServer({ name: "vendor", version: "1.0.0" });
+    server.registerTool(
+      "search",
+      { inputSchema: { query: z.string().optional() } },
+      async () => ({ content: [{ type: "text" as const, text: "ok" }] }),
+    );
+    withBaton(server, {
+      vendorId: "acme",
+      vendorDisplayName: "Acme",
+      consentToken: "ct",
+      sink,
+      intentParamMode: "required",
+    });
+
+    const client = await connectClient(server);
+    const { tools } = await client.listTools();
+    const search = tools.find((t) => t.name === "search")!;
+    expect(search.inputSchema.required).toEqual(["user_goal"]);
+  });
+
+  it("intentParamMode 'off' disables injection entirely", async () => {
+    const server = new McpServer({ name: "vendor", version: "1.0.0" });
+    registerTools(server);
+    withBaton(server, {
+      vendorId: "acme",
+      vendorDisplayName: "Acme",
+      consentToken: "ct",
+      sink,
+      intentParamMode: "off",
+    });
+
+    const client = await connectClient(server);
+    const { tools } = await client.listTools();
+    const echo = tools.find((t) => t.name === "echo")!;
+    expect(echo.inputSchema.properties).not.toHaveProperty("user_goal");
+    expect(echo.inputSchema.properties).not.toHaveProperty("expected_result");
+  });
+
+  it("throws at withBaton() time on an invalid intentParamMode", () => {
+    const server = new McpServer({ name: "vendor", version: "1.0.0" });
+    expect(() =>
+      withBaton(server, {
+        vendorId: "acme",
+        vendorDisplayName: "Acme",
+        consentToken: "ct",
+        sink,
+        // @ts-expect-error deliberately invalid for the test
+        intentParamMode: "sometimes",
+      }),
+    ).toThrow(/intentParamMode/);
+  });
+});
+
+describe("withBaton — surface_snapshot", () => {
+  let sink: CapturingSink;
+
+  beforeEach(() => {
+    sink = new CapturingSink();
+  });
+
+  it("captures the vendor-true surface (pre-injection schemas, real instructions) on the first tool call", async () => {
+    const server = new McpServer(
+      { name: "vendor", version: "1.0.0" },
+      { instructions: "Vendor's own instructions." },
+    );
+    registerTools(server); // retroactive: echo, boom
+    withBaton(server, { vendorId: "acme", vendorDisplayName: "Acme", consentToken: "ct", sink });
+    // prospective: registered after withBaton
+    server.registerTool("lookup", { inputSchema: { id: z.string() } }, async () => ({
+      content: [{ type: "text" as const, text: "ok" }],
+    }));
+
+    const client = await connectClient(server);
+    await client.callTool({ name: "echo", arguments: { text: "hi" } });
+
+    const snapshot = sink.events.find((e) => e.event_type === "surface_snapshot")!;
+    expect(snapshot.payload).toMatchObject({
+      server_info: { name: "vendor", version: "1.0.0" },
+      // The vendor's OWN instructions — captured before withBaton
+      // overwrote server.server's instructions with its own suffix.
+      instructions: "Vendor's own instructions.",
+    });
+
+    if (snapshot.event_type !== "surface_snapshot") throw new Error("unreachable");
+    const toolNames = snapshot.payload.tools.map((t) => (t as { name: string }).name).sort();
+    // Both retroactively- and prospectively-registered tools are captured;
+    // the annotate tool itself is not (it lives in seam_augmentations).
+    expect(toolNames).toEqual(["boom", "echo", "lookup"]);
+
+    const echoTool = snapshot.payload.tools.find(
+      (t) => (t as { name: string }).name === "echo",
+    ) as { inputSchema: { properties: Record<string, unknown> } };
+    // Vendor-true — no injected params in the captured snapshot.
+    expect(echoTool.inputSchema.properties).not.toHaveProperty("user_goal");
+    expect(echoTool.inputSchema.properties).toHaveProperty("text");
+
+    expect(snapshot.payload.seam_augmentations).toEqual({
+      injected_tools: ["acme_annotate"],
+      intent_param: { names: ["expected_result", "user_goal"], mode: "optional" },
+      instructions_suffix: true,
+    });
+  });
+
+  it("emits exactly once per observed hash, not once per call", async () => {
+    const server = new McpServer({ name: "vendor", version: "1.0.0" });
+    registerTools(server);
+    withBaton(server, { vendorId: "acme", vendorDisplayName: "Acme", consentToken: "ct", sink });
+
+    const client = await connectClient(server);
+    await client.callTool({ name: "echo", arguments: { text: "one" } });
+    await client.callTool({ name: "echo", arguments: { text: "two" } });
+    await client.callTool({ name: "boom", arguments: {} }).catch(() => {});
+
+    expect(sink.events.filter((e) => e.event_type === "surface_snapshot")).toHaveLength(1);
+  });
+
+  it("re-injects goal params after a schema-only .update() that doesn't replace the callback", async () => {
+    // A .update() call can change paramsSchema without touching callback —
+    // mcp.js still swaps registeredTool.inputSchema wholesale in that case,
+    // wiping any previously-injected user_goal/expected_result. Since the
+    // handler itself is untouched (still our wrapped closure), capture+
+    // inject must re-run on schema change alone, independent of whether
+    // the handler needs re-wrapping.
+    const server = new McpServer({ name: "vendor", version: "1.0.0" });
+    const echo = server.registerTool(
+      "echo",
+      { inputSchema: { text: z.string() } },
+      async (args: { text: string }) => ({ content: [{ type: "text" as const, text: args.text }] }),
+    );
+    withBaton(server, { vendorId: "acme", vendorDisplayName: "Acme", consentToken: "ct", sink });
+
+    echo.update({ paramsSchema: { text: z.string(), extra: z.string().optional() } });
+
+    const client = await connectClient(server);
+    const { tools } = await client.listTools();
+    const updated = tools.find((t) => t.name === "echo")!;
+    expect(updated.inputSchema.properties).toHaveProperty("extra");
+    expect(updated.inputSchema.properties).toHaveProperty("user_goal");
+    expect(updated.inputSchema.properties).toHaveProperty("expected_result");
+  });
+
+  it("re-captures to the SAME hash (no duplicate emit) when a re-captured tool's schema is unchanged", async () => {
+    // Distinguishes "dedup works" from "dedup happens to have been
+    // exercised only once": .update()-ing a DIFFERENT tool than the one
+    // whose call triggers capture forces a real second buildSnapshot() +
+    // surfaceHash() run. If toJsonSchemaCompat (or canonicalJson) were
+    // non-deterministic across calls, this would surface as a second,
+    // differently-hashed snapshot despite nothing actually changing.
+    const server = new McpServer({ name: "vendor", version: "1.0.0" });
+    const echo = server.registerTool(
+      "echo",
+      { inputSchema: { text: z.string() } },
+      async (args: { text: string }) => ({ content: [{ type: "text" as const, text: args.text }] }),
+    );
+    server.registerTool("boom", {}, async () => {
+      throw new Error("simulated failure");
+    });
+    withBaton(server, { vendorId: "acme", vendorDisplayName: "Acme", consentToken: "ct", sink });
+
+    const client = await connectClient(server);
+    await client.callTool({ name: "boom", arguments: {} }).catch(() => {});
+    // Re-register "echo" with the exact same shape it already had.
+    echo.update({ paramsSchema: { text: z.string() } });
+    await client.callTool({ name: "boom", arguments: {} }).catch(() => {});
+
+    const snapshots = sink.events.filter((e) => e.event_type === "surface_snapshot");
+    expect(snapshots).toHaveLength(1);
+  });
+
+  it("records intent_param: null in seam_augmentations when intentParamMode is 'off'", async () => {
+    const server = new McpServer({ name: "vendor", version: "1.0.0" });
+    registerTools(server);
+    withBaton(server, {
+      vendorId: "acme",
+      vendorDisplayName: "Acme",
+      consentToken: "ct",
+      sink,
+      intentParamMode: "off",
+    });
+
+    const client = await connectClient(server);
+    await client.callTool({ name: "echo", arguments: { text: "hi" } });
+
+    const snapshot = sink.events.find((e) => e.event_type === "surface_snapshot")!;
+    if (snapshot.event_type !== "surface_snapshot") throw new Error("unreachable");
+    expect(snapshot.payload.seam_augmentations).toMatchObject({ intent_param: null });
+  });
+
+  it("prunes a removed tool from the next surface snapshot", async () => {
+    const server = new McpServer({ name: "vendor", version: "1.0.0" });
+    const echo = server.registerTool(
+      "echo",
+      { inputSchema: { text: z.string() } },
+      async (args: { text: string }) => ({ content: [{ type: "text" as const, text: args.text }] }),
+    );
+    server.registerTool("boom", {}, async () => {
+      throw new Error("simulated failure");
+    });
+    withBaton(server, { vendorId: "acme", vendorDisplayName: "Acme", consentToken: "ct", sink });
+
+    const client = await connectClient(server);
+    await client.callTool({ name: "boom", arguments: {} }).catch(() => {});
+    echo.remove();
+    await client.callTool({ name: "boom", arguments: {} }).catch(() => {});
+
+    const snapshots = sink.events.filter((e) => e.event_type === "surface_snapshot");
+    expect(snapshots).toHaveLength(2);
+    if (snapshots[1]!.event_type !== "surface_snapshot") throw new Error("unreachable");
+    const names = snapshots[1]!.payload.tools.map((t) => (t as { name: string }).name);
+    expect(names).toEqual(["boom"]);
+  });
+
+  it("re-wraps and re-captures a tool whose callback/schema is replaced via .update()", async () => {
+    const server = new McpServer({ name: "vendor", version: "1.0.0" });
+    let calls = 0;
+    const echo = server.registerTool(
+      "echo",
+      { inputSchema: { text: z.string() } },
+      async (args: { text: string }) => {
+        calls += 1;
+        return { content: [{ type: "text" as const, text: args.text }] };
+      },
+    );
+    withBaton(server, { vendorId: "acme", vendorDisplayName: "Acme", consentToken: "ct", sink });
+
+    const client = await connectClient(server);
+    await client.callTool({ name: "echo", arguments: { text: "hi" } });
+    expect(calls).toBe(1);
+
+    let newCalls = 0;
+    echo.update({
+      paramsSchema: { text: z.string(), extra: z.string().optional() },
+      callback: async (args: { text: string; extra?: string | undefined }) => {
+        newCalls += 1;
+        return { content: [{ type: "text" as const, text: args.text }] };
+      },
+    });
+    sink.events.length = 0;
+
+    await client.callTool({ name: "echo", arguments: { text: "hi again" } });
+
+    // The NEW callback ran (not the stale wrapped closure over the old one),
+    // and it's still Baton-wrapped — still gets tool_call_start/end.
+    expect(newCalls).toBe(1);
+    expect(sink.events.map((e) => e.event_type)).toContain("tool_call_start");
+    expect(sink.events.map((e) => e.event_type)).toContain("tool_call_end");
+
+    // The updated schema is captured fresh too — a new (non-injected)
+    // "extra" field shows up in the next surface snapshot.
+    const snapshot = sink.events.find((e) => e.event_type === "surface_snapshot");
+    if (snapshot && snapshot.event_type === "surface_snapshot") {
+      const echoEntry = snapshot.payload.tools.find(
+        (t) => (t as { name: string }).name === "echo",
+      ) as { inputSchema: { properties: Record<string, unknown> } };
+      expect(echoEntry.inputSchema.properties).toHaveProperty("extra");
+    }
   });
 });

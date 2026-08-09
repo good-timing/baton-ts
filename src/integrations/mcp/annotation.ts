@@ -19,6 +19,7 @@ import type { ResolveSessionIdHook } from "./config.js";
 import { emit } from "./emit.js";
 import { buildAnnotationToolDescription, SIGNAL_TYPES } from "./llmText.js";
 import type { Extra } from "./mcpTypes.js";
+import type { ProactiveTracker } from "./proactiveTracker.js";
 import { detectAgentRuntime } from "./runtimeAdapter.js";
 import { resolveSessionId } from "./sessionResolution.js";
 import type { SessionCounter } from "./sessionCounter.js";
@@ -49,6 +50,9 @@ export interface RegisterAnnotationToolOptions {
   scrubber: (value: unknown) => unknown;
   resolveSessionId?: ResolveSessionIdHook | undefined;
   annotationToolName?: string | undefined;
+  /** Shared with the tool-call wrapper so a session opens at most one
+   * proactive annotation regardless of which path fires first. */
+  tracker?: ProactiveTracker | undefined;
 }
 
 /** Register the annotation tool on `server`. Returns the resolved tool name. */
@@ -86,6 +90,12 @@ export function registerAnnotationTool(
         name,
         args,
       );
+      // A proactive annotation (no signal_type) claims the session's
+      // proactive slot so the tool wrapper won't also synthesise one from
+      // an injected `user_goal` param.
+      if (args.signal_type === undefined) {
+        options.tracker?.mark(sessionId);
+      }
 
       await emit(options.sink, () =>
         AnnotationEventSchema.parse({
