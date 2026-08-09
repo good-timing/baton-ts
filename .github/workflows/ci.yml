@@ -1,0 +1,37 @@
+# baton-ts CI — lint + typecheck + test + build on every PR and push to main.
+#
+# submodules: true is load-bearing — baton-spec (events.schema.json +
+# vectors/*.json) is the wire-conformance test's fixture source; without it
+# checked out, test/conformance.test.ts fails to find its files rather than
+# skipping quietly.
+
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: ["20", "22"]
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: true
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+
+      - run: npm ci
+      - run: npm run ci
