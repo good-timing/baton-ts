@@ -29,8 +29,10 @@ import { z as zV4 } from "zod";
 import { z as zV3 } from "zod/v3";
 import {
   EXPECTED_RESULT_PARAM_NAME,
+  OVERALL_TASK_PARAM_NAME,
   USER_GOAL_PARAM_NAME,
   buildExpectedResultParamDescription,
+  buildOverallTaskParamDescription,
   buildUserGoalParamDescription,
 } from "./llmText.js";
 
@@ -42,7 +44,8 @@ export type IntentParamDispositions = Record<string, "injected" | "native">;
 const EMPTY_OBJECT_JSON_SCHEMA = { type: "object", properties: {} };
 
 /**
- * Splice `user_goal`/`expected_result` into `inputSchema`'s object shape.
+ * Splice `user_goal`/`expected_result`/`overall_task` into `inputSchema`'s
+ * object shape.
  * Returns the original schema unchanged (with empty dispositions) when
  * there's no object schema to extend into — a tool with no `inputSchema` at
  * all is left alone rather than given one, because adding a schema where
@@ -79,14 +82,19 @@ export function injectGoalParams(
     toInject[USER_GOAL_PARAM_NAME] = field.describe(buildUserGoalParamDescription());
   }
 
-  if (EXPECTED_RESULT_PARAM_NAME in existingShape) {
-    dispositions[EXPECTED_RESULT_PARAM_NAME] = "native";
-  } else {
-    dispositions[EXPECTED_RESULT_PARAM_NAME] = "injected";
-    toInject[EXPECTED_RESULT_PARAM_NAME] = zodImpl
-      .string()
-      .optional()
-      .describe(buildExpectedResultParamDescription());
+  // `expected_result` and `overall_task` stay optional regardless of mode —
+  // only `user_goal` is promoted to required, matching Python's
+  // `_inject_goal_params`.
+  for (const [name, buildDescription] of [
+    [EXPECTED_RESULT_PARAM_NAME, buildExpectedResultParamDescription],
+    [OVERALL_TASK_PARAM_NAME, buildOverallTaskParamDescription],
+  ] as const) {
+    if (name in existingShape) {
+      dispositions[name] = "native";
+    } else {
+      dispositions[name] = "injected";
+      toInject[name] = zodImpl.string().optional().describe(buildDescription());
+    }
   }
 
   if (Object.keys(toInject).length === 0) return { schema: inputSchema, dispositions };

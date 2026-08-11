@@ -22,14 +22,23 @@ import { SDK_VERSION } from "./version.js";
 // =============================================================================
 
 /** Emitted before the vendor handler runs. `params` is PII-scrubbed at
- * emit-time per SPEC §7. `callIntent`/`intentSource` mirror the SDK's
- * injected `user_goal` stripping (see the Python `_llm_text` module) —
- * both null when the param wasn't used. */
+ * emit-time per SPEC §7.
+ *
+ * `call_intent` / `call_expected` / `call_workflow` are the values the SDK
+ * stripped from the injected `user_goal` / `expected_result` /
+ * `overall_task` params (see `llmText.ts`); they ride as SIBLINGS of
+ * `params` — `params` stays exactly the vendor-visible arguments.
+ * `call_intent`/`call_expected` are call-scoped diagnostics;
+ * `call_workflow` is the task-label grouping key (console rung 3b, exact
+ * string continuity). `intent_source` records provenance
+ * (`"injected_param"`). All null when the params weren't used. */
 export const ToolCallStartPayloadSchema = z
   .object({
     tool_name: z.string(),
     params: z.record(z.string(), z.unknown()).default({}),
     call_intent: z.string().nullable().default(null),
+    call_expected: z.string().nullable().default(null),
+    call_workflow: z.string().nullable().default(null),
     intent_source: z.string().nullable().default(null),
   })
   .strict();

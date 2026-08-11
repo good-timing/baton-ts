@@ -112,8 +112,16 @@ export function registerAnnotationTool(
             expected_outcome: args.expected_outcome
               ? options.scrubber(args.expected_outcome)
               : null,
+            // `signal_type` is a closed enum — nothing to scrub. `workflow`
+            // is agent-authored free text ("processing invoice for
+            // bob@example.com" is a realistic value), so it IS scrubbed.
+            // Python's annotation.py does NOT scrub this field — a shared
+            // gap found 2026-08-11, fixed here and flagged for the sibling
+            // rather than mirrored. Not a wire divergence: scrubbing changes
+            // content, not shape, and it's deterministic, so the
+            // exact-string continuity rung 3b groups on survives.
             signal_type: args.signal_type ?? null,
-            workflow: args.workflow ?? null,
+            workflow: args.workflow ? options.scrubber(args.workflow) : null,
             suggested_improvement: args.suggested_improvement
               ? options.scrubber(args.suggested_improvement)
               : null,

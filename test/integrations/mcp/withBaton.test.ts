@@ -181,6 +181,104 @@ describe("withBaton", () => {
     expect(JSON.stringify(end.payload)).not.toContain("secret");
   });
 
+  it("captures call_workflow and call_expected from injected params, as siblings of params", async () => {
+    // `call_workflow` is the task-label grouping key the Console's rung 3b
+    // segments sessions on (exact string continuity). Without it a TS-sourced
+    // session can't be split into tasks at all — which is why this landed
+    // with the baton-spec bump to d5e25ea rather than after it.
+    const server = new McpServer({ name: "vendor", version: "1.0.0" });
+    registerTools(server);
+    withBaton(server, { vendorId: "acme", vendorDisplayName: "Acme", consentToken: "ct", sink });
+
+    const client = await connectClient(server);
+    await client.callTool({
+      name: "echo",
+      arguments: {
+        text: "hi",
+        user_goal: "find the thing",
+        expected_result: "the thing",
+        overall_task: "prepare campaign approval",
+      },
+    });
+
+    const start = sink.events.find((e) => e.event_type === "tool_call_start")!;
+    expect(start.payload).toMatchObject({
+      call_intent: "find the thing",
+      call_expected: "the thing",
+      call_workflow: "prepare campaign approval",
+      intent_source: "injected_param",
+      // All three are stripped before the vendor handler runs — `params`
+      // stays exactly the vendor-visible arguments.
+      params: { text: "hi" },
+    });
+  });
+
+  it("advertises overall_task on the wrapped tool's schema and never leaks it to the handler", async () => {
+    const server = new McpServer({ name: "vendor", version: "1.0.0" });
+    let seenArgs: Record<string, unknown> | undefined;
+    server.registerTool("probe", { inputSchema: { text: z.string() } }, (args: { text: string }) => {
+      seenArgs = { ...args };
+      return { content: [{ type: "text" as const, text: args.text }] };
+    });
+    withBaton(server, { vendorId: "acme", vendorDisplayName: "Acme", consentToken: "ct", sink });
+
+    const client = await connectClient(server);
+    const listed = await client.listTools();
+    const probe = listed.tools.find((t) => t.name === "probe")!;
+    expect(Object.keys(probe.inputSchema.properties as object).sort()).toEqual([
+      "expected_result",
+      "overall_task",
+      "text",
+      "user_goal",
+    ]);
+
+    await client.callTool({
+      name: "probe",
+      arguments: { text: "hi", overall_task: "some task" },
+    });
+    expect(seenArgs).toEqual({ text: "hi" });
+  });
+
+  it("scrubs call_workflow deterministically, preserving grouping continuity", async () => {
+    // Rung 3b groups on exact string equality, so a scrubbed label must
+    // scrub identically every call or one task fragments into many.
+    const server = new McpServer({ name: "vendor", version: "1.0.0" });
+    registerTools(server);
+    withBaton(server, { vendorId: "acme", vendorDisplayName: "Acme", consentToken: "ct", sink });
+
+    const client = await connectClient(server);
+    for (const text of ["one", "two"]) {
+      await client.callTool({
+        name: "echo",
+        arguments: { text, overall_task: "invoice for bob@example.com" },
+      });
+    }
+
+    const workflows = sink.events
+      .filter((e) => e.event_type === "tool_call_start")
+      .map((e) => (e.payload as { call_workflow: string }).call_workflow);
+    expect(workflows).toEqual([
+      "invoice for [REDACTED:email]",
+      "invoice for [REDACTED:email]",
+    ]);
+  });
+
+  it("scrubs the annotation tool's workflow field", async () => {
+    // Python's annotation.py does NOT scrub this field (shared gap, found
+    // 2026-08-11). Closed on this side; see the comment in annotation.ts.
+    const server = new McpServer({ name: "vendor", version: "1.0.0" });
+    withBaton(server, { vendorId: "acme", vendorDisplayName: "Acme", consentToken: "ct", sink });
+
+    const client = await connectClient(server);
+    await client.callTool({
+      name: "acme_annotate",
+      arguments: { intent: "do a thing", workflow: "invoice for bob@example.com" },
+    });
+
+    const annotation = sink.events.find((e) => e.event_type === "annotation")!;
+    expect(annotation.payload).toMatchObject({ workflow: "invoice for [REDACTED:email]" });
+  });
+
   it("scrubs with the default ruleset when no scrubber is configured", async () => {
     // The default is ON (`new Scrubber().scrub`), matching Python's
     // `install_baton`. This is the regression guard for that default: a
@@ -661,7 +759,10 @@ describe("withBaton — surface_snapshot", () => {
 
     expect(snapshot.payload.seam_augmentations).toEqual({
       injected_tools: ["acme_annotate"],
-      intent_param: { names: ["expected_result", "user_goal"], mode: "optional" },
+      intent_param: {
+        names: ["expected_result", "overall_task", "user_goal"],
+        mode: "optional",
+      },
       instructions_suffix: true,
     });
   });

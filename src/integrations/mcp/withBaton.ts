@@ -17,8 +17,9 @@
  * Wraps every tool call to emit `tool_call_start` → call → `tool_call_end` /
  * `tool_call_error`, injects server `instructions` (SPEC §5.1.2), registers
  * the `<vendor>_annotate` tool (SPEC §5.1.1), injects `user_goal`/
- * `expected_result` intent params on every wrapped tool's schema (SPEC
- * §11.4.1 `call_intent`/`intent_source`), and captures a `surface_snapshot`
+ * `expected_result`/`overall_task` intent params on every wrapped tool's
+ * schema (SPEC §11.4.1 `call_intent`/`call_expected`/`call_workflow`/
+ * `intent_source`), and captures a `surface_snapshot`
  * of the vendor-true surface. Every payload leaving here runs through the
  * configured scrubber, which defaults to the shipped ruleset (`src/scrub.ts`)
  * — see README "What's deferred" for what's still not here (the low-level
@@ -84,6 +85,7 @@ import { buildServerInstructions } from "./llmText.js";
 import {
   EXPECTED_RESULT_PARAM_NAME,
   INTENT_SOURCE_PARAM,
+  OVERALL_TASK_PARAM_NAME,
   USER_GOAL_PARAM_NAME,
 } from "./llmText.js";
 import type { Extra } from "./mcpTypes.js";
@@ -201,8 +203,13 @@ function batonWrap(toolName: string, original: AnyHandler, ctx: WrapContext): An
       toolName,
       dispositions,
     );
+    const rawWorkflow = extractGoalParam(params, OVERALL_TASK_PARAM_NAME, toolName, dispositions);
     const scrubbedIntent = rawIntent !== null ? (ctx.scrubber(rawIntent) as string) : null;
     const scrubbedExpected = rawExpected !== null ? (ctx.scrubber(rawExpected) as string) : null;
+    // Scrubbed like the other two. Deterministic redaction preserves the
+    // exact-string continuity rung 3b groups on: the same label scrubs to
+    // the same output on every call.
+    const scrubbedWorkflow = rawWorkflow !== null ? (ctx.scrubber(rawWorkflow) as string) : null;
 
     const common = {
       tenant_id: ctx.tenantId,
@@ -243,6 +250,8 @@ function batonWrap(toolName: string, original: AnyHandler, ctx: WrapContext): An
           tool_name: toolName,
           params: ctx.scrubber(params),
           call_intent: scrubbedIntent,
+          call_expected: scrubbedExpected,
+          call_workflow: scrubbedWorkflow,
           intent_source: scrubbedIntent !== null ? INTENT_SOURCE_PARAM : null,
         },
       }),
@@ -334,7 +343,7 @@ async function maybeEmitSurfaceSnapshot(ctx: WrapContext): Promise<void> {
   if (ctx.surfaceState.emittedHashes.has(digest)) return;
   const seam = buildSeamAugmentations({
     injectedToolNames: [ctx.annotationToolName],
-    intentParamNames: [USER_GOAL_PARAM_NAME, EXPECTED_RESULT_PARAM_NAME],
+    intentParamNames: [USER_GOAL_PARAM_NAME, EXPECTED_RESULT_PARAM_NAME, OVERALL_TASK_PARAM_NAME],
     intentParamMode: ctx.intentParamMode,
   });
   try {

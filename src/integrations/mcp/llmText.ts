@@ -111,6 +111,14 @@ export function buildAnnotationToolDescription(options: { vendorDisplayName: str
 
 export const USER_GOAL_PARAM_NAME = "user_goal";
 export const EXPECTED_RESULT_PARAM_NAME = "expected_result";
+/** The task-label grouping key (wire field `call_workflow`; console rung 3b).
+ * Deliberately NOT named `workflow`: injected params live inside vendor tool
+ * schemas, where `workflow` is a plausible real vendor param (Workfront
+ * approvals, CI pipelines, Notion automations) — a collision would make the
+ * strip swallow the vendor's own argument, and the name would invite the LLM
+ * to fill in the vendor object it is touching instead of the meta task
+ * label. */
+export const OVERALL_TASK_PARAM_NAME = "overall_task";
 
 /** Provenance value stamped on `tool_call_start.payload.intent_source` and
  * on the synthesised proactive annotation when intent came from an injected
@@ -125,8 +133,31 @@ const EXPECTED_RESULT_PARAM_DESCRIPTION =
   "OPTIONAL. One sentence: what a successful result should look like, so a " +
   "silent/thin failure can be told apart from success.";
 
+// The stability contract is the load-bearing design element: user_goal/
+// expected_result are call-scoped diagnostics that reword freely, so they
+// cannot key grouping; this param works ONLY if the model repeats the label
+// verbatim while the task is unchanged (measured 2026-08-10: without the
+// contract, 80% of adjacent same-task calls reword their goal text).
+// Granularity is the other half of the contract: the first wording ("broader
+// task ... change it only when the user starts a different task") produced
+// conversation-scoped umbrella labels — agents kept one label across clearly
+// distinct user requests (measured 2026-08-10 on multi-turn fixture sessions:
+// 2 of 3 distinct-task turn boundaries kept the old label). The label must be
+// scoped to the user's CURRENT request, and a new request must start a fresh
+// label.
+const OVERALL_TASK_PARAM_DESCRIPTION =
+  "OPTIONAL. Short label naming the specific task the user is working on " +
+  "right now (e.g. 'prepare campaign approval') — not the overall theme of " +
+  "the conversation. REPEAT the exact same string on every call serving " +
+  "this task; when the user switches to a different request, start a fresh " +
+  "label.";
+
 export function buildUserGoalParamDescription(): string {
   return USER_GOAL_PARAM_DESCRIPTION;
+}
+
+export function buildOverallTaskParamDescription(): string {
+  return OVERALL_TASK_PARAM_DESCRIPTION;
 }
 
 export function buildExpectedResultParamDescription(): string {
