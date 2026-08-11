@@ -5,10 +5,12 @@
  * `docs/CHARTER.md` (load-bearing decisions) and `docs/SPEC.md` (the wire
  * protocol) for the canonical spec; this repo has none of its own.
  *
- * Phase 1 scaffold (this release): event types + sinks only. The MCP
- * interceptor (`withBaton`) that actually captures tool calls is Phase 2 —
- * see design-notes/typescript_sdk.md in baton-internal — not yet
- * implemented, so this package cannot instrument a server yet.
+ * `withBaton(server, config)` is the entry point: it instruments an
+ * `@modelcontextprotocol/sdk` `McpServer` in one call — wrapping tool calls,
+ * injecting server instructions and intent params, registering the
+ * `<vendor>_annotate` tool, and capturing a `surface_snapshot`. Payloads are
+ * PII-scrubbed by the default ruleset before they reach any sink; pass
+ * `identityScrub` to opt out.
  *
  * Pre-1.0 — public API not yet stable.
  */
@@ -44,6 +46,8 @@ export {
   SurfaceSnapshotEventSchema,
   SurfaceSnapshotPayloadSchema,
 } from "./events.js";
+
+export { Scrubber, identityScrub, DEPTH_LIMIT } from "./scrub.js";
 
 export type { Sink, StdoutSinkOptions, HttpSinkOptions } from "./sinks.js";
 export { StdoutSink, HttpSink, safeWrite } from "./sinks.js";

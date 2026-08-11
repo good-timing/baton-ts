@@ -14,6 +14,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { z } from "zod";
 import { beforeEach, describe, expect, it } from "vitest";
 import { withBaton } from "../../../src/integrations/mcp/withBaton.js";
+import { identityScrub } from "../../../src/scrub.js";
 import type { Event } from "../../../src/events.js";
 import type { Sink } from "../../../src/sinks.js";
 
@@ -178,6 +179,65 @@ describe("withBaton", () => {
     const end = sink.events.find((e) => e.event_type === "tool_call_end")!;
     expect(start.payload).toMatchObject({ params: { text: "REDACTED" } });
     expect(JSON.stringify(end.payload)).not.toContain("secret");
+  });
+
+  it("scrubs with the default ruleset when no scrubber is configured", async () => {
+    // The default is ON (`new Scrubber().scrub`), matching Python's
+    // `install_baton`. This is the regression guard for that default: a
+    // vendor who configures nothing must still not ship PII to the sink.
+    const server = new McpServer({ name: "vendor", version: "1.0.0" });
+    registerTools(server);
+    withBaton(server, { vendorId: "acme", vendorDisplayName: "Acme", consentToken: "ct", sink });
+
+    const client = await connectClient(server);
+    await client.callTool({ name: "echo", arguments: { text: "reach me at leak@example.com" } });
+
+    const start = sink.events.find((e) => e.event_type === "tool_call_start")!;
+    const end = sink.events.find((e) => e.event_type === "tool_call_end")!;
+    expect(start.payload).toMatchObject({
+      params: { text: "reach me at [REDACTED:email]" },
+    });
+    // The result echoes the params back, so it must be scrubbed too — this
+    // catches a default wired into the start path but not the end path.
+    expect(JSON.stringify(end.payload)).not.toContain("leak@example.com");
+    expect(JSON.stringify(end.payload)).toContain("[REDACTED:email]");
+  });
+
+  it("scrubs the error body with the default ruleset", async () => {
+    const server = new McpServer({ name: "vendor", version: "1.0.0" });
+    server.registerTool(
+      "leaky",
+      { description: "throws with PII", inputSchema: {} },
+      () => {
+        throw new Error("auth failed for ops@example.com");
+      },
+    );
+    withBaton(server, { vendorId: "acme", vendorDisplayName: "Acme", consentToken: "ct", sink });
+
+    const client = await connectClient(server);
+    await client.callTool({ name: "leaky", arguments: {} });
+
+    const errorEvent = sink.events.find((e) => e.event_type === "tool_call_error")!;
+    expect(JSON.stringify(errorEvent.payload)).not.toContain("ops@example.com");
+    expect(JSON.stringify(errorEvent.payload)).toContain("[REDACTED:email]");
+  });
+
+  it("leaves payloads raw when identityScrub is passed as the explicit opt-out", async () => {
+    const server = new McpServer({ name: "vendor", version: "1.0.0" });
+    registerTools(server);
+    withBaton(server, {
+      vendorId: "acme",
+      vendorDisplayName: "Acme",
+      consentToken: "ct",
+      sink,
+      scrubber: identityScrub,
+    });
+
+    const client = await connectClient(server);
+    await client.callTool({ name: "echo", arguments: { text: "raw@example.com" } });
+
+    const start = sink.events.find((e) => e.event_type === "tool_call_start")!;
+    expect(start.payload).toMatchObject({ params: { text: "raw@example.com" } });
   });
 
   it("drops an event whose scrubbed payload no longer matches the wire schema, fail-open", async () => {

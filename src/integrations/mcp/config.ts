@@ -43,10 +43,13 @@ export interface BatonConfig {
   sink?: Sink;
   /** Default `agent_runtime` when `_meta` heuristics can't detect one. */
   defaultAgentRuntime?: string;
-  /** PII scrubber per SPEC §7. Default is identity (no-op) — unlike Python's
-   * `Scrubber()` default, this scaffold ships no scrub-rule implementation
-   * yet (see README "What's deferred"); vendors handling sensitive data
-   * MUST supply their own per CHARTER §3 rule 8. */
+  /** PII scrubber per SPEC §7, applied to tool params/results, `_meta`,
+   * intent strings and error bodies before they reach the sink. Defaults to
+   * the shipped default ruleset (`new Scrubber().scrub` — email, bearer,
+   * sk-keys, AWS keys, JWTs, phones, Luhn-checked cards, plus sensitive
+   * field names), matching `baton` (Python) and baton-proxy: on by default
+   * so untouched integrations get scrubbing without the operator opting in.
+   * Pass `identityScrub` to explicitly opt out, or supply your own. */
   scrubber?: (value: unknown) => unknown;
   /** Optional vendor-supplied session-id resolver, checked BEFORE
    * `extra.sessionId` — mirrors Python's `resolve_session_id` rung 0. */
@@ -92,8 +95,4 @@ export function validateBatonConfig(config: BatonConfig): void {
         `${JSON.stringify([...INTENT_PARAM_MODES].sort())}.`,
     );
   }
-}
-
-export function identityScrub(value: unknown): unknown {
-  return value;
 }

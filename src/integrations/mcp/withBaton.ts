@@ -19,8 +19,10 @@
  * the `<vendor>_annotate` tool (SPEC §5.1.1), injects `user_goal`/
  * `expected_result` intent params on every wrapped tool's schema (SPEC
  * §11.4.1 `call_intent`/`intent_source`), and captures a `surface_snapshot`
- * of the vendor-true surface. See README "What's deferred" for what's still
- * not here (the low-level `Server` adapter, real PII scrub rules).
+ * of the vendor-true surface. Every payload leaving here runs through the
+ * configured scrubber, which defaults to the shipped ruleset (`src/scrub.ts`)
+ * — see README "What's deferred" for what's still not here (the low-level
+ * `Server` adapter).
  *
  * Interception mechanism: `McpServer` has no middleware API (unlike the
  * standalone `fastmcp` library's `Middleware`/`CallNext`), so this patches
@@ -74,7 +76,8 @@ import {
 } from "../../events.js";
 import { StdoutSink, type Sink } from "../../sinks.js";
 import { registerAnnotationTool } from "./annotation.js";
-import { validateBatonConfig, identityScrub, type BatonConfig } from "./config.js";
+import { Scrubber } from "../../scrub.js";
+import { validateBatonConfig, type BatonConfig } from "./config.js";
 import { emit } from "./emit.js";
 import { BatonHandle } from "./handle.js";
 import { buildServerInstructions } from "./llmText.js";
@@ -448,7 +451,10 @@ export function withBaton(server: McpServer, config: BatonConfig): BatonHandle {
   const intentParamMode: IntentParamMode = config.intentParamMode ?? "optional";
   const counter = new SessionCounter();
   const fallbackSessionId = `sdk-${uuidv7()}`;
-  const scrubber = config.scrubber ?? identityScrub;
+  // Default ON, mirroring Python's `install_baton` (`config.scrubber or
+  // Scrubber()`). One instance per install, reused for every event, so its
+  // `counts` accumulate across the session the way Python's does.
+  const scrubber = config.scrubber ?? new Scrubber().scrub;
 
   // Vendor-true baseline, captured BEFORE any Baton mutation below —
   // MUST run before the instructions assignment, or the snapshot would
