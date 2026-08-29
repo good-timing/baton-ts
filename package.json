@@ -1,7 +1,7 @@
 {
   "name": "@goodtiming/baton-sdk",
   "version": "0.1.0",
-  "description": "Baton SDK for TypeScript — structured signal capture for agent-mediated tool use over MCP.",
+  "description": "Baton SDK for TypeScript \u2014 structured signal capture for agent-mediated tool use over MCP.",
   "license": "Apache-2.0",
   "type": "module",
   "main": "./dist/index.cjs",
@@ -29,14 +29,18 @@
   },
   "dependencies": {
     "uuid": "^14.0.1",
-    "zod": "^4.4.3"
+    "zod": "^4.4.3",
+    "zod-to-json-schema": "^3.25.2"
   },
   "peerDependencies": {
-    "@modelcontextprotocol/sdk": "^1.30.0"
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "@modelcontextprotocol/server": "^2.0.0"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
+    "@modelcontextprotocol/client": "^2.0.0",
     "@modelcontextprotocol/sdk": "^1.30.0",
+    "@modelcontextprotocol/server": "^2.0.0",
     "@types/node": "^26.2.0",
     "ajv": "^8.20.0",
     "ajv-formats": "^3.0.1",
@@ -50,5 +54,13 @@
     "type": "git",
     "url": "git+https://github.com/good-timing/baton-ts.git"
   },
-  "homepage": "https://github.com/good-timing/baton-ts"
+  "homepage": "https://github.com/good-timing/baton-ts",
+  "peerDependenciesMeta": {
+    "@modelcontextprotocol/sdk": {
+      "optional": true
+    },
+    "@modelcontextprotocol/server": {
+      "optional": true
+    }
+  }
 }

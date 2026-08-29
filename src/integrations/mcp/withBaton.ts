@@ -1,9 +1,17 @@
 /**
  * `withBaton` — the vendor's MCP integration entry point for the official
- * `@modelcontextprotocol/sdk`'s high-level `McpServer`.
+ * `@modelcontextprotocol/sdk`'s high-level `McpServer` — and the v2
+ * packages' (`@modelcontextprotocol/server`), which are a different class of
+ * the same name. `withBaton` takes the structural {@link SupportedMcpServer}
+ * both satisfy and branches on the internals where the two majors differ:
+ * where dispatch is intercepted (see {@link wrapIfNeeded}), how the intent
+ * params are built (`schemaCompat.injectGoalParamsV2`), and where the call's
+ * `_meta` lives (`mcpTypes.extraMeta`). Both are declared as OPTIONAL
+ * peerDependencies and neither is imported — at runtime or as a type — so a
+ * vendor installs whichever one they build on and nothing else.
  *
  * ```typescript
- * import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+ * import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"; // or "@modelcontextprotocol/server"
  * import { withBaton } from "@goodtiming/baton-sdk";
  *
  * const server = new McpServer({ name: "your-vendor-mcp", version: "1.0.0" });
@@ -51,9 +59,16 @@
  * wipe injected params and swap back to the vendor's raw, unwrapped
  * handler with no re-sweep able to detect it (the entry object identity
  * never changes); an unpatched `.remove()` would leave a phantom tool in
- * the surface snapshot forever. Known gap: a `.update()` that also renames
- * the tool isn't reconciled against the surface/param-registry keys, which
- * stay under the old name — an unusual vendor pattern, not handled here.
+ * the surface snapshot forever.
+ *
+ * v2 makes the `.update()` patch carry more: there `remove()` IS
+ * `update({name: null})` and `disable()`/`enable()` are `update({enabled})`,
+ * all three routed through the entry's `update` *property* — so the patch
+ * has to branch on which update it received rather than look only for
+ * `paramsSchema`. It also supports renaming via `update({name})`, which 1.x
+ * technically allowed and this module used to document as an unreconciled
+ * gap; the surface snapshot, the param registry and the wrapper's own
+ * `tool_name` now all follow a rename.
  *
  * Instructions injection reaches into `server.server`'s private
  * `_instructions` field — unlike Python's FastMCP (a read-only property
@@ -65,8 +80,6 @@
  * instead of the vendor's.
  */
 
-import type { RegisteredTool } from "@modelcontextprotocol/sdk/server/mcp.js";
-import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { v7 as uuidv7 } from "uuid";
 import {
   AnnotationEventSchema,
@@ -88,13 +101,14 @@ import {
   OVERALL_TASK_PARAM_NAME,
   USER_GOAL_PARAM_NAME,
 } from "./llmText.js";
-import type { Extra } from "./mcpTypes.js";
+import { extraMeta, type Extra } from "./mcpTypes.js";
 import { ProactiveTracker } from "./proactiveTracker.js";
 import { detectAgentRuntime } from "./runtimeAdapter.js";
 import { resolveSessionId } from "./sessionResolution.js";
 import { SessionCounter } from "./sessionCounter.js";
 import {
   injectGoalParams,
+  injectGoalParamsV2,
   toolInputJsonSchema,
   type IntentParamDispositions,
   type IntentParamMode,
@@ -118,6 +132,11 @@ interface WrapContext {
   annotationToolName: string;
   intentParamMode: IntentParamMode;
   paramRegistry: Map<string, IntentParamDispositions>;
+  /** Vendor-true JSON Schema for the surface snapshot, in whatever spelling
+   * THIS server actually puts on the wire. */
+  vendorToolJsonSchema: (name: string, inputSchema: unknown) => Record<string, unknown>;
+  /** Drop v2's per-tool JSON-Schema memo after we mutate `inputSchema`. */
+  bustSchemaMemo: (name: string) => void;
   tracker: ProactiveTracker;
   surfaceState: SurfaceState;
   emitSurface: (
@@ -127,13 +146,15 @@ interface WrapContext {
   ) => Promise<void>;
 }
 
-// `_registeredTools`, `RegisteredTool.handler`, `server.server._instructions`,
-// and `server.server._serverInfo` are internal to @modelcontextprotocol/sdk,
-// not part of its public .d.ts surface. Reaching into them is deliberate
-// (see module docstring) and requires stepping outside the type system the
-// same way Python's _registry.py does — isolated to this one module so a
-// future SDK internals change has exactly one place to update.
-/* eslint-disable @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-member-access */
+// `_registeredTools`, `RegisteredTool.handler`/`.executor`,
+// `server.server._instructions` and `server.server._serverInfo` are internal
+// to the official SDK — 1.x and v2 alike — and not part of either public
+// `.d.ts` surface. Reaching into them is deliberate (see module docstring),
+// the same way Python's `_registry.py` does, and isolated to this one module
+// so a future SDK internals change has exactly one place to update. Each
+// reach-in is declared on a named local shape (`internals` in `withBaton`,
+// the small casts in `wrapIfNeeded`/`captureAndInject`) rather than an
+// `any`, so a rename upstream lands as a compile error here.
 
 const BATON_WRAPPED = Symbol("batonWrapped");
 const wired = new WeakSet<object>();
@@ -145,17 +166,29 @@ const wired = new WeakSet<object>();
  * constraint and makes the same lazy-on-first-call choice for the same
  * reason (see `project_sdk_sensor_parity_gap` memory). */
 class SurfaceState {
-  readonly rawTools = new Map<string, Record<string, unknown>>();
+  /** Every tool this install has seen, keyed by its CURRENT name. `disabled`
+   * is tracked alongside rather than pruned, so re-enabling costs nothing and
+   * — crucially — never needs a re-capture, which would re-read Baton's own
+   * injected schema as if it were vendor-true. */
+  private readonly rawTools = new Map<
+    string,
+    { disabled: boolean; tool: Record<string, unknown> }
+  >();
   readonly emittedHashes = new Set<string>();
   dirty = false;
 
   constructor(private readonly serverMeta: ReturnType<typeof buildServerMeta>) {}
 
-  noteTool(name: string, inputSchema: unknown, description: string | undefined): void {
+  /** `inputSchemaJson` is already converted — by `ctx.vendorToolJsonSchema`,
+   * which picks the spelling THIS SDK major puts on the wire. */
+  noteTool(
+    name: string,
+    inputSchemaJson: Record<string, unknown>,
+    description: string | undefined,
+  ): void {
     this.rawTools.set(name, {
-      name,
-      description: description ?? null,
-      inputSchema: toolInputJsonSchema(inputSchema),
+      disabled: this.rawTools.get(name)?.disabled ?? false,
+      tool: { name, description: description ?? null, inputSchema: inputSchemaJson },
     });
     this.dirty = true;
   }
@@ -164,22 +197,57 @@ class SurfaceState {
     if (this.rawTools.delete(name)) this.dirty = true;
   }
 
+  /** Follow a `update({name})` rename, keeping the snapshot keyed the way
+   * `tools/list` now renders it. */
+  renameTool(from: string, to: string): void {
+    const entry = this.rawTools.get(from);
+    if (!entry) return;
+    this.rawTools.delete(from);
+    this.rawTools.set(to, { ...entry, tool: { ...entry.tool, name: to } });
+    this.dirty = true;
+  }
+
+  /** Both majors filter `tools/list` on `tool.enabled`, so a disabled tool is
+   * not part of the surface a client sees and must not be part of the one we
+   * hash. Leaving it in is the same phantom-tool defect the `.remove()` patch
+   * exists to prevent, reached through `disable()` instead. */
+  setToolEnabled(name: string, enabled: boolean): void {
+    const entry = this.rawTools.get(name);
+    if (!entry || entry.disabled === !enabled) return;
+    entry.disabled = !enabled;
+    this.dirty = true;
+  }
+
   buildSnapshot(): Record<string, unknown> {
-    const names = [...this.rawTools.keys()].sort();
+    const names = [...this.rawTools.keys()].sort().filter((n) => !this.rawTools.get(n)!.disabled);
     return assembleSurface(
       this.serverMeta,
-      names.map((n) => this.rawTools.get(n)!),
+      names.map((n) => this.rawTools.get(n)!.tool),
     );
   }
 }
 
-function batonWrap(toolName: string, original: AnyHandler, ctx: WrapContext): AnyHandler {
+/** `nameRef` is read on every call, not captured: v2's `update({name})`
+ * renames a tool in place, keeping the same entry object AND the same
+ * executor, so a wrapper that closed over the registration-time string would
+ * keep emitting events under the old `tool_name` and keep missing its own
+ * param-registry entry — which downgrades the strip to the cold-registry
+ * path and puts a warning on the vendor's stderr for every call. */
+function batonWrap(nameRef: { current: string }, original: AnyHandler, ctx: WrapContext): AnyHandler {
   return async (...callArgs: AnyArgs): Promise<unknown> => {
+    const toolName = nameRef.current;
     await maybeEmitSurfaceSnapshot(ctx);
 
     const extra = callArgs[callArgs.length - 1] as Extra;
-    const params = (callArgs.length > 1 ? callArgs[0] : {}) as Record<string, unknown>;
-    const meta = (extra._meta as Record<string, unknown> | undefined) ?? null;
+    // 1.x calls a schema-less tool as `(extra)`; v2 always calls its
+    // executor `(args, ctx)` and passes `args === undefined` for one. Both
+    // land on `{}` here — and the ORIGINAL `callArgs` is what gets
+    // delegated, so the arity fork stays inside the callee either way.
+    const params = ((callArgs.length > 1 ? callArgs[0] : undefined) ?? {}) as Record<
+      string,
+      unknown
+    >;
+    const meta = extraMeta(extra);
     const runtime = detectAgentRuntime(meta) ?? ctx.defaultAgentRuntime;
     const scrubbedMeta = meta ? (ctx.scrubber(meta) as Record<string, unknown>) : null;
     const sessionId = await resolveSessionId(
@@ -369,13 +437,23 @@ async function maybeEmitSurfaceSnapshot(ctx: WrapContext): Promise<void> {
  * unconditionally on every `.update()`. */
 function captureAndInject(name: string, entry: unknown, ctx: WrapContext): void {
   if (!entry || typeof entry !== "object") return;
-  const mutable = entry as { inputSchema?: unknown; description?: string };
-  ctx.surfaceState.noteTool(name, mutable.inputSchema, mutable.description);
+  const mutable = entry as { inputSchema?: unknown; description?: string; executor?: unknown };
+  ctx.surfaceState.noteTool(name, ctx.vendorToolJsonSchema(name, mutable.inputSchema), mutable.description);
   if (ctx.intentParamMode === "off") return;
+  const isV2 = typeof mutable.executor === "function";
   try {
-    const { schema, dispositions } = injectGoalParams(mutable.inputSchema, ctx.intentParamMode);
+    const { schema, dispositions } = isV2
+      ? injectGoalParamsV2(mutable.inputSchema, ctx.intentParamMode)
+      : injectGoalParams(mutable.inputSchema, ctx.intentParamMode);
     if (Object.keys(dispositions).length > 0) {
+      // Assigned directly rather than via `entry.update({paramsSchema})`,
+      // which would route back through our OWN patched update and re-read
+      // Baton's just-injected schema as if it were vendor-true — flipping
+      // every injected param's disposition to "native" and silently
+      // stopping the strip. The memo bust below is what `update` would have
+      // done for us.
       mutable.inputSchema = schema;
+      ctx.bustSchemaMemo(name);
       ctx.paramRegistry.set(name, dispositions);
     } else {
       ctx.paramRegistry.delete(name);
@@ -386,21 +464,51 @@ function captureAndInject(name: string, entry: unknown, ctx: WrapContext): void 
   }
 }
 
-/** Wrap the entry's CURRENT handler iff it isn't already Baton's wrapper.
- * The `BATON_WRAPPED` tag lives on the handler FUNCTION, not the entry
- * object, so a `.update()` that swaps in a fresh vendor callback (untagged)
- * is correctly reprocessed, while one that leaves the handler alone is a
- * cheap no-op. */
-function wrapIfNeeded(name: string, entry: unknown, ctx: WrapContext): void {
+/** Wrap the entry's CURRENT dispatch target iff it isn't already Baton's
+ * wrapper. The `BATON_WRAPPED` tag lives on the wrapped FUNCTION, not the
+ * entry object, so a `.update()` that swaps in a fresh vendor callback
+ * (untagged) is correctly reprocessed, while one that leaves it alone is a
+ * cheap no-op.
+ *
+ * WHICH function that is differs by SDK major, and getting it wrong fails
+ * silently. 1.x's `tools/call` handler invokes `entry.handler`, so patching
+ * that field intercepts the call. **v2 dispatches through `entry.executor`**
+ * — a closure built at registration over the handler
+ * (`createToolExecutor(inputSchema, handler)`; `executeToolHandler` is
+ * literally `return tool.executor(args, ctx)`). Patching `entry.handler` on
+ * v2 therefore does nothing at all: the vendor handler still runs, the
+ * wrapper never fires, and the server emits zero events while looking
+ * perfectly healthy — measured against `@modelcontextprotocol/server@2.0.0`
+ * and pinned by `test/integrations/mcp/withBatonV2.test.ts`, whose RED
+ * signature against a handler-only patch is an empty event list and no
+ * error at all. Worse, the schema half
+ * of `withBaton` keeps working, so a half-ported install would advertise
+ * intent params, collect a goal from the agent, and capture none of it.
+ *
+ * On v2 we wrap the executor by capture-and-delegate, and deliberately do
+ * NOT also wrap `entry.handler`: nothing dispatches through it there, and
+ * tagging both would double-wrap once `update({callback})` regenerates the
+ * executor over the untouched handler. */
+function wrapIfNeeded(nameRef: { current: string }, entry: unknown, ctx: WrapContext): void {
   if (!entry || typeof entry !== "object") return;
-  const mutable = entry as { handler: unknown };
+  const mutable = entry as { handler: unknown; executor?: unknown };
+
+  if (typeof mutable.executor === "function") {
+    if ((mutable.executor as TaggedHandler)[BATON_WRAPPED]) return;
+    const originalExecutor = mutable.executor as AnyHandler;
+    const wrapper = batonWrap(nameRef, originalExecutor, ctx) as TaggedHandler;
+    wrapper[BATON_WRAPPED] = true;
+    mutable.executor = wrapper;
+    return;
+  }
+
   // Task-based tools (experimental) carry an object, not a function, at
   // .handler — leave them untouched rather than guess at wrapping a shape
   // we don't capture events for yet.
   if (typeof mutable.handler !== "function") return;
   if ((mutable.handler as TaggedHandler)[BATON_WRAPPED]) return;
   const original = mutable.handler as AnyHandler;
-  const wrapper = batonWrap(name, original, ctx) as TaggedHandler;
+  const wrapper = batonWrap(nameRef, original, ctx) as TaggedHandler;
   wrapper[BATON_WRAPPED] = true;
   mutable.handler = wrapper;
 }
@@ -410,12 +518,17 @@ function wireEntry(name: string, entry: unknown, ctx: WrapContext): void {
   if (!entry || typeof entry !== "object") return;
 
   // First-time processing: inputSchema is guaranteed vendor-true (nothing
-  // has injected into it yet) and the handler is guaranteed untagged, so
-  // both steps always apply together here — unlike the .update() path
-  // below, which must reason about which one, if either, actually needs to
-  // re-run.
+  // has injected into it yet) and the dispatch target is guaranteed
+  // untagged, so both steps always apply together here — unlike the
+  // .update() path below, which must reason about which one, if either,
+  // actually needs to re-run.
+  // The tool's CURRENT name. v2's `update({name})` re-keys `_registeredTools`
+  // in place, keeping the same entry object AND its wrapper, so everything
+  // below reads through this box rather than capturing the string.
+  const nameRef = { current: name };
+
   captureAndInject(name, entry, ctx);
-  wrapIfNeeded(name, entry, ctx);
+  wrapIfNeeded(nameRef, entry, ctx);
 
   if (wired.has(entry)) return;
   wired.add(entry);
@@ -425,8 +538,8 @@ function wireEntry(name: string, entry: unknown, ctx: WrapContext): void {
     const originalRemove = (removable.remove as () => void).bind(entry);
     (removable as { remove: () => void }).remove = () => {
       originalRemove();
-      ctx.surfaceState.pruneTool(name);
-      ctx.paramRegistry.delete(name);
+      ctx.surfaceState.pruneTool(nameRef.current);
+      ctx.paramRegistry.delete(nameRef.current);
     };
   }
 
@@ -434,26 +547,68 @@ function wireEntry(name: string, entry: unknown, ctx: WrapContext): void {
   if (typeof updatable.update === "function") {
     const originalUpdate = (updatable.update as (updates: unknown) => void).bind(entry);
     (updatable as { update: (updates: unknown) => void }).update = (updates: unknown) => {
+      const u = (updates ?? {}) as {
+        paramsSchema?: unknown;
+        name?: string | null;
+        enabled?: boolean;
+      };
+      const renameTo = u.name;
       originalUpdate(updates);
-      const paramsSchema = (updates as { paramsSchema?: unknown } | undefined)?.paramsSchema;
+
+      // v2 routes BOTH removal and rename through `update({name})` —
+      // `remove()` is `update({name: null})`, and `disable()`/`enable()` are
+      // `update({enabled})`. Handling only `paramsSchema` here would let a
+      // v2 removal leave a phantom tool in the surface snapshot forever,
+      // which is the exact defect the `.remove()` patch above exists to
+      // prevent; a rename would strand the surface entry and the param
+      // registry under the old key, and a stranded registry stops the strip
+      // so Baton's own params would start reaching the vendor's handler.
+      if (renameTo === null) {
+        ctx.surfaceState.pruneTool(nameRef.current);
+        ctx.paramRegistry.delete(nameRef.current);
+        return;
+      }
+      if (typeof renameTo === "string" && renameTo !== nameRef.current) {
+        ctx.surfaceState.renameTool(nameRef.current, renameTo);
+        const dispositions = ctx.paramRegistry.get(nameRef.current);
+        ctx.paramRegistry.delete(nameRef.current);
+        if (dispositions) ctx.paramRegistry.set(renameTo, dispositions);
+        nameRef.current = renameTo;
+      }
+
       // Only re-capture+re-inject when THIS update actually replaced
       // inputSchema (mcp.js's own `typeof updates.paramsSchema !==
       // 'undefined'` gate) — otherwise inputSchema is still Baton's prior
       // injected version, not a fresh vendor-true one (see
       // captureAndInject's docstring for why re-running on that would
       // corrupt disposition tracking).
-      if (paramsSchema !== undefined) {
-        captureAndInject(name, entry, ctx);
+      if (u.paramsSchema !== undefined) {
+        captureAndInject(nameRef.current, entry, ctx);
       }
+      if (typeof u.enabled === "boolean") {
+        ctx.surfaceState.setToolEnabled(nameRef.current, u.enabled);
+      }
+
       // A callback swap always needs (re-)wrapping, independent of whether
-      // the schema also changed.
-      wrapIfNeeded(name, entry, ctx);
+      // the schema also changed — and on v2 a `paramsSchema` change needs it
+      // too, because either one regenerates the executor over the vendor's
+      // callback and discards our wrapper along with its tag.
+      wrapIfNeeded(nameRef, entry, ctx);
     };
   }
 }
 
+/** The surface of a high-level MCP server `withBaton` actually uses. Written
+ * structurally because the official SDK ships two nominally different
+ * `McpServer` classes — 1.x's (`@modelcontextprotocol/sdk/server/mcp.js`)
+ * and v2's (`@modelcontextprotocol/server`) — and both satisfy this. */
+export interface SupportedMcpServer {
+  readonly server: unknown;
+  registerTool(name: string, ...rest: unknown[]): unknown;
+}
+
 /** Install Baton into an `McpServer`. See module docstring for usage. */
-export function withBaton(server: McpServer, config: BatonConfig): BatonHandle {
+export function withBaton(server: SupportedMcpServer, config: BatonConfig): BatonHandle {
   validateBatonConfig(config);
   const sink = config.sink ?? new StdoutSink();
   const annotationToolName = config.annotationToolName || `${config.vendorId}_annotate`;
@@ -503,6 +658,68 @@ export function withBaton(server: McpServer, config: BatonConfig): BatonHandle {
     await sink.write(event);
   };
 
+  // v2 memoises each tool's converted JSON Schema at registration
+  // (`_toolInputSchemaJson`). `tools/list` re-converts and so never reads it,
+  // but the HTTP entry's SEP-2243 `Mcp-Param-*` PRE-DISPATCH validation does
+  // (`createMcpHandler`) — so leaving it stale after we mutate `inputSchema`
+  // would make injected params work over stdio and vanish over HTTP, per
+  // transport, silently. `update({paramsSchema})` deletes the key itself;
+  // a direct assignment is ours to clean up.
+  // The internals both majors keep off their public `.d.ts` — one named
+  // shape rather than an `any` per reach-in, so a future SDK rename is a
+  // compile error here instead of a runtime surprise in five places.
+  const internals = server as unknown as {
+    server: { _instructions?: string };
+    registerTool: (...args: AnyArgs) => unknown;
+    _registeredTools?: Record<string, unknown>;
+    _toolInputSchemaJson?: Record<string, unknown>;
+    toolInputSchemaJson?: (name: string) => Record<string, unknown> | undefined;
+  };
+  const bustSchemaMemo = (name: string): void => {
+    const memo = internals._toolInputSchemaJson;
+    if (memo && typeof memo === "object") delete memo[name];
+  };
+
+  // Vendor-true JSON Schema for the surface snapshot. v2 renders `tools/list`
+  // from its own converter (draft-2020-12, `$schema` included), so reading
+  // its memo — which at call time still holds the pre-injection conversion —
+  // keeps surface.ts's byte-for-byte promise true there. 1.x has no such
+  // reader, and its own `toJsonSchemaCompat` is the matching conversion.
+  const isV2Server = typeof internals.toolInputSchemaJson === "function";
+  const vendorToolJsonSchema = (name: string, inputSchema: unknown): Record<string, unknown> => {
+    if (isV2Server) {
+      try {
+        const json = internals.toolInputSchemaJson!(name);
+        if (json) return json;
+      } catch {
+        // Fall through.
+      }
+      // The reader returns `undefined` for a tool that is currently DISABLED,
+      // so a tool captured while disabled would otherwise land on the 1.x
+      // converter and put a draft-07 `$schema` in a snapshot whose other
+      // tools are draft-2020-12 — two spellings in one hash, from one server.
+      // The schema's own Standard-Schema converter is the one v2 renders
+      // with; verified canonically equal to the wire output.
+      try {
+        const standard = (inputSchema as { "~standard"?: { jsonSchema?: { input?: (o: unknown) => Record<string, unknown> } } })?.["~standard"];
+        const json = standard?.jsonSchema?.input?.({ target: "draft-2020-12" });
+        if (json) return json;
+      } catch {
+        // Fall through.
+      }
+    }
+    try {
+      return toolInputJsonSchema(inputSchema);
+    } catch {
+      // noteTool sits outside captureAndInject's try, and it runs inside the
+      // vendor's own registerTool call — a throw here would surface as their
+      // registration failing. A schema we cannot convert costs the snapshot
+      // one tool's schema, nothing else — spelled the way both majors spell
+      // an empty one, not as a third `{}`.
+      return { type: "object", properties: {} };
+    }
+  };
+
   const tracker = new ProactiveTracker();
   const ctx: WrapContext = {
     sink,
@@ -517,6 +734,8 @@ export function withBaton(server: McpServer, config: BatonConfig): BatonHandle {
     annotationToolName,
     intentParamMode,
     paramRegistry: new Map(),
+    vendorToolJsonSchema,
+    bustSchemaMemo,
     tracker,
     surfaceState,
     emitSurface,
@@ -530,7 +749,7 @@ export function withBaton(server: McpServer, config: BatonConfig): BatonHandle {
     vendorDisplayName: config.vendorDisplayName,
     annotationToolName,
   });
-  (server.server as any)._instructions = instructions;
+  internals.server._instructions = instructions;
 
   const resolvedAnnotationToolName = registerAnnotationTool(server, {
     sink,
@@ -548,7 +767,7 @@ export function withBaton(server: McpServer, config: BatonConfig): BatonHandle {
   });
 
   // Retroactive: sweep whatever's already registered, regardless of call order.
-  const existing = (server as any)._registeredTools as Record<string, unknown> | undefined;
+  const existing = internals._registeredTools;
   if (existing) {
     for (const [name, entry] of Object.entries(existing)) {
       wireEntry(name, entry, ctx);
@@ -563,14 +782,12 @@ export function withBaton(server: McpServer, config: BatonConfig): BatonHandle {
   // annotate tool would work too (wireEntry's name check guards either
   // order), but this ordering means the annotate tool only ever needs to
   // be excluded in the one place, not reasoned about twice.
-  const originalRegisterTool = server.registerTool.bind(server) as (
-    ...args: AnyArgs
-  ) => RegisteredTool;
-  server.registerTool = ((name: string, ...rest: AnyArgs) => {
-    const registered = originalRegisterTool(name, ...rest);
-    wireEntry(name, registered, ctx);
+  const originalRegisterTool = internals.registerTool.bind(server);
+  internals.registerTool = (...args: AnyArgs) => {
+    const registered = originalRegisterTool(...args);
+    wireEntry(String(args[0]), registered, ctx);
     return registered;
-  }) as typeof server.registerTool;
+  };
 
   return new BatonHandle({
     sink,

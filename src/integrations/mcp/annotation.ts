@@ -12,19 +12,34 @@
  */
 
 import { z } from "zod";
-import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { AnnotationEventSchema } from "../../events.js";
 import type { Sink } from "../../sinks.js";
 import type { ResolveSessionIdHook } from "./config.js";
 import { emit } from "./emit.js";
 import { buildAnnotationToolDescription, SIGNAL_TYPES } from "./llmText.js";
-import type { Extra } from "./mcpTypes.js";
+import { extraMeta, type Extra } from "./mcpTypes.js";
+import type { SupportedMcpServer } from "./withBaton.js";
 import type { ProactiveTracker } from "./proactiveTracker.js";
 import { detectAgentRuntime } from "./runtimeAdapter.js";
 import { resolveSessionId } from "./sessionResolution.js";
 import type { SessionCounter } from "./sessionCounter.js";
 
 const TOOL_NAME_PATTERN = /^[a-zA-Z0-9_-]{1,64}$/;
+
+/** The annotate tool's arguments. Spelled out because `SupportedMcpServer`
+ * types `registerTool`'s config as `unknown` — the price of accepting both
+ * SDK majors' nominally distinct servers — so nothing infers this from the
+ * Zod shape below. The two must be kept in step; the round-trip tests call
+ * the tool through a real client, so a drift shows up as a runtime failure
+ * rather than passing silently. */
+interface AnnotationArgs extends Record<string, unknown> {
+  intent: string;
+  expected_outcome?: string | undefined;
+  signal_type?: (typeof SIGNAL_TYPES)[number] | undefined;
+  workflow?: string | undefined;
+  suggested_improvement?: string | undefined;
+  context?: Record<string, unknown> | undefined;
+}
 
 export function deriveAnnotationToolName(vendorId: string, override?: string): string {
   const name = override || `${vendorId}_annotate`;
@@ -57,7 +72,7 @@ export interface RegisterAnnotationToolOptions {
 
 /** Register the annotation tool on `server`. Returns the resolved tool name. */
 export function registerAnnotationTool(
-  server: McpServer,
+  server: SupportedMcpServer,
   options: RegisterAnnotationToolOptions,
 ): string {
   const name = deriveAnnotationToolName(options.vendorId, options.annotationToolName);
@@ -78,8 +93,8 @@ export function registerAnnotationTool(
         context: z.record(z.string(), z.unknown()).optional(),
       },
     },
-    async (args, extra: Extra) => {
-      const meta = (extra._meta as Record<string, unknown> | undefined) ?? null;
+    async (args: AnnotationArgs, extra: Extra) => {
+      const meta = extraMeta(extra);
       const runtime = detectAgentRuntime(meta) ?? options.defaultAgentRuntime;
       const scrubbedMeta = meta ? (options.scrubber(meta) as Record<string, unknown>) : null;
       const sessionId = await resolveSessionId(
