@@ -1,4 +1,4 @@
-# @baton/sdk (TypeScript)
+# @goodtiming/baton-sdk (TypeScript)
 
 *The TypeScript counterpart to [`baton-sdk`](https://github.com/good-timing/baton) (Python) — structured signal capture for agent-mediated tool use over MCP.*
 
@@ -30,7 +30,7 @@ The low-level `Server` adapter (only the high-level `McpServer` is supported) is
 
 ```typescript
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { withBaton, StdoutSink } from "@baton/sdk";
+import { withBaton, StdoutSink } from "@goodtiming/baton-sdk";
 
 const server = new McpServer({ name: "your-vendor-mcp", version: "1.0.0" });
 const handle = withBaton(server, {

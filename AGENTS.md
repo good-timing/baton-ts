@@ -35,7 +35,7 @@ Use `npm run ci` as the canonical gate (matches GitHub Actions).
 - `src/events.ts` — Zod schemas + types for the event envelope and its five payload types.
 - `src/sinks.ts` — `Sink` interface, `StdoutSink`, `HttpSink`.
 - `src/version.ts` — `SDK_VERSION` (`"ts-0.1.0"` — TS-prefixed so the Console can tell TS- from Python-sourced events apart in `sdk_version`).
-- `src/integrations/mcp/` — `withBaton`, `BatonConfig`, `BatonHandle`, `SessionCounter`, runtime-detection heuristics, `annotation.ts` (the `<vendor>_annotate` tool), `llmText.ts` (instructions + tool-description templates, ported from Python's `_llm_text.py`). Re-exported flat from `src/index.ts` (design note's `import { withBaton } from '@baton/sdk'` shape — no Python-style `baton.integrations.mcp` subpackage, since there's only one MCP SDK to target in TS).
+- `src/integrations/mcp/` — `withBaton`, `BatonConfig`, `BatonHandle`, `SessionCounter`, runtime-detection heuristics, `annotation.ts` (the `<vendor>_annotate` tool), `llmText.ts` (instructions + tool-description templates, ported from Python's `_llm_text.py`). Re-exported flat from `src/index.ts` (design note's `import { withBaton } from '@goodtiming/baton-sdk'` shape — no Python-style `baton.integrations.mcp` subpackage, since there's only one MCP SDK to target in TS).
 - `test/conformance.test.ts` — the wire-compatibility gate described above.
 - `test/integrations/mcp/withBaton.test.ts` — in-process interceptor tests.
 - `baton-spec/` — git submodule, schema of record. Never hand-edit; it's regenerated from `baton`'s Pydantic models.

@@ -4,7 +4,7 @@
  *
  * ```typescript
  * import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
- * import { withBaton } from "@baton/sdk";
+ * import { withBaton } from "@goodtiming/baton-sdk";
  *
  * const server = new McpServer({ name: "your-vendor-mcp", version: "1.0.0" });
  * const handle = withBaton(server, {
