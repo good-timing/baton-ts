@@ -1,10 +1,10 @@
 /**
  * Annotation tool registration — SPEC §5.1.1. Registers a vendor-namespaced
  * tool (default `{vendorId}_annotate`) that accepts the annotation
- * signature (intent / expected_outcome / signal_type / overall_task /
+ * signature (user_goal / expected_result / signal_type / overall_task /
  * suggested_improvement / context) and emits an `annotation` event.
  * Faithful port of `baton` (Python)'s `integrations/fastmcp/annotation.py`
- * (`intent` required, everything else optional — same as the Python tool's
+ * (`user_goal` required, everything else optional — same as the Python tool's
  * signature, not a TS-specific choice).
  *
  * Tool-name pattern (`^[a-zA-Z0-9_-]{1,64}$`) is the strictest known client
@@ -33,8 +33,8 @@ const TOOL_NAME_PATTERN = /^[a-zA-Z0-9_-]{1,64}$/;
  * the tool through a real client, so a drift shows up as a runtime failure
  * rather than passing silently. */
 interface AnnotationArgs extends Record<string, unknown> {
-  intent: string;
-  expected_outcome?: string | undefined;
+  user_goal: string;
+  expected_result?: string | undefined;
   signal_type?: (typeof SIGNAL_TYPES)[number] | undefined;
   overall_task?: string | undefined;
   suggested_improvement?: string | undefined;
@@ -85,8 +85,8 @@ export function registerAnnotationTool(
     {
       description,
       inputSchema: {
-        intent: z.string(),
-        expected_outcome: z.string().optional(),
+        user_goal: z.string(),
+        expected_result: z.string().optional(),
         signal_type: z.enum(SIGNAL_TYPES).optional(),
         overall_task: z.string().optional(),
         suggested_improvement: z.string().optional(),
@@ -123,9 +123,12 @@ export function registerAnnotationTool(
           agent_runtime: runtime,
           runtime_meta: scrubbedMeta,
           payload: {
-            intent: options.scrubber(args.intent),
-            expected_outcome: args.expected_outcome
-              ? options.scrubber(args.expected_outcome)
+            // Agent-facing names -> wire keys, as with `overall_task`
+            // below: `user_goal` is stored as `intent`, `expected_result` as
+            // `expected_outcome`.
+            intent: options.scrubber(args.user_goal),
+            expected_outcome: args.expected_result
+              ? options.scrubber(args.expected_result)
               : null,
             // `signal_type` is a closed enum — nothing to scrub. The task label
             // is agent-authored free text ("processing invoice for

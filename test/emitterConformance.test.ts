@@ -149,7 +149,7 @@ async function runSpecScenario(): Promise<Event[]> {
 
   await client.callTool({
     name: "spec-vectors_annotate",
-    arguments: { intent: "look something up", expected_outcome: "a match" },
+    arguments: { user_goal: "look something up", expected_result: "a match" },
   });
   await client.callTool({ name: "lookup", arguments: { name: "alice" } });
   await client.callTool({ name: "boom", arguments: {} });

@@ -20,7 +20,9 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  buildAnnotationToolDescription,
   buildOverallTaskParamDescription,
+  buildServerInstructions,
   OVERALL_TASK_PARAM_NAME,
 } from "../../../src/integrations/mcp/llmText.js";
 
@@ -56,5 +58,40 @@ describe("overall_task param description", () => {
       "REPEAT the exact same string",
     );
     expect(OVERALL_TASK_PARAM_NAME).toBe("overall_task");
+  });
+});
+
+// The retired agent-facing names. All three are still WIRE keys, so they
+// legitimately appear across the codebase — but never in text an agent reads,
+// where they would name a param the schema no longer accepts.
+const RETIRED_AGENT_FACING_NAMES = ["intent", "expected_outcome", "workflow"];
+
+describe("agent-facing text", () => {
+  it("never asks for a param name that was retired", () => {
+    // Matched only where a param is REFERENCED — `name:`, `name (REQUIRED`, or
+    // inside the `a + b + c` populate list. A bare word-boundary search
+    // over-detects: "you satisfied the user's intent via a workaround" is prose
+    // and correct, and `intent_source` is a real field.
+    //
+    // The Python sibling shipped exactly this bug — its lead line still said
+    // "intent + expected_outcome + workflow" after the params were renamed,
+    // with every presence-checking test green, because none of them asked
+    // whether a retired name was still there. An agent following that line
+    // sends params that are dropped on arrival.
+    const surfaces: Record<string, string> = {
+      instructions: buildServerInstructions({
+        vendorDisplayName: "Acme",
+        annotationToolName: "acme_annotate",
+      }),
+      toolDescription: buildAnnotationToolDescription({ vendorDisplayName: "Acme" }),
+    };
+    for (const [where, text] of Object.entries(surfaces)) {
+      for (const retired of RETIRED_AGENT_FACING_NAMES) {
+        const referenced = new RegExp(
+          `\\b${retired}(?=:)|\\b${retired} \\(REQUIRED|(?<=\\+ )${retired}\\b|\\b${retired}(?= \\+)`,
+        );
+        expect(referenced.test(text), `${where} still names ${retired}`).toBe(false);
+      }
+    }
   });
 });

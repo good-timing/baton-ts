@@ -272,7 +272,7 @@ describe("withBaton", () => {
     const client = await connectClient(server);
     await client.callTool({
       name: "acme_annotate",
-      arguments: { intent: "do a thing", overall_task: "invoice for bob@example.com" },
+      arguments: { user_goal: "do a thing", overall_task: "invoice for bob@example.com" },
     });
 
     const annotation = sink.events.find((e) => e.event_type === "annotation")!;
@@ -413,7 +413,7 @@ describe("withBaton — instructions + annotation tool", () => {
 
     const result = await client.callTool({
       name: "acme_annotate",
-      arguments: { intent: "look something up", expected_outcome: "a match" },
+      arguments: { user_goal: "look something up", expected_result: "a match" },
     });
     expect(result.isError).toBeFalsy();
   });
@@ -426,8 +426,8 @@ describe("withBaton — instructions + annotation tool", () => {
     await client.callTool({
       name: "acme_annotate",
       arguments: {
-        intent: "look something up",
-        expected_outcome: "a match",
+        user_goal: "look something up",
+        expected_result: "a match",
         overall_task: "lookup",
       },
     });
@@ -453,7 +453,7 @@ describe("withBaton — instructions + annotation tool", () => {
     await client.callTool({
       name: "acme_annotate",
       arguments: {
-        intent: "look something up",
+        user_goal: "look something up",
         signal_type: "feature_gap",
         suggested_improvement: "add a bulk lookup tool",
       },
@@ -473,7 +473,7 @@ describe("withBaton — instructions + annotation tool", () => {
 
     const client = await connectClient(server);
     await client.callTool({ name: "echo", arguments: { text: "hi" } });
-    await client.callTool({ name: "acme_annotate", arguments: { intent: "x" } });
+    await client.callTool({ name: "acme_annotate", arguments: { user_goal: "x" } });
 
     expect(sink.events.map((e) => [e.event_type, e.sequence_number])).toEqual([
       ["surface_snapshot", 1],

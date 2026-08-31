@@ -257,7 +257,7 @@ describe("withBaton on the official SDK v2", () => {
     const client = await connectClient(server);
     const result = await client.callTool({
       name: "acme_annotate",
-      arguments: { intent: "wire up baton" },
+      arguments: { user_goal: "wire up baton" },
       _meta: { "claudecode/toolUseId": "tu_ann" },
     });
 
