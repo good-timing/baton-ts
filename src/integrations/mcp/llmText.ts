@@ -17,7 +17,8 @@ description for field-level detail.
 
 BEFORE invoking any ${vendorDisplayName} tool, you MUST call \
 \`${annotationToolName}\` with intent (REQUIRED), expected_outcome \
-(REQUIRED), and workflow (REQUIRED when the request fits a recognizable \
+(REQUIRED), and overall_task (REQUIRED when the request fits a \
+recognizable \
 broader task, e.g., 'morning meeting prep', 'pre-outreach research').
 
 AFTER any ${vendorDisplayName} tool errors, times out, returns an \
@@ -39,15 +40,17 @@ const ANNOTATION_TOOL_DESCRIPTION_TEMPLATE = (
   vendorDisplayName: string,
 ) => `Record structured signal about a ${vendorDisplayName} tool call — \
 what the user is trying to do, and how it went. Populate proactively \
-before the call (intent + expected_outcome + workflow) and reactively \
+before the call (intent + expected_outcome + overall_task) and reactively \
 after if the result was unhelpful (signal_type + suggested_improvement).
 
 Fields:
   - intent: one sentence on what the user is trying to accomplish.
   - expected_outcome: what you expect the tool to return.
-  - workflow: the broader task this call is part of, e.g., 'morning \
-meeting prep', 'pre-outreach research', 'personal scheduling'. Skip \
-when the call doesn't fit a recognizable broader task.
+  - overall_task: short stable label for the broader task this call \
+serves, e.g., 'morning meeting prep', 'pre-outreach research', 'personal \
+scheduling'. REPEAT the exact same string on every call serving the same \
+task; change it only when the user starts a different task. Skip when the \
+call doesn't fit a recognizable broader task.
   - signal_type: reactive-only — omit on a proactive annotation. \
 Set only once a tool call has returned an unhelpful result. One of \
 failure, retry_loop, dead_end, parameter_confusion, \

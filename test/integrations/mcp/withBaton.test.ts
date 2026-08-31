@@ -263,7 +263,7 @@ describe("withBaton", () => {
     ]);
   });
 
-  it("scrubs the annotation tool's workflow field", async () => {
+  it("scrubs the annotation tool's task-label field", async () => {
     // Python's annotation.py does NOT scrub this field (shared gap, found
     // 2026-08-11). Closed on this side; see the comment in annotation.ts.
     const server = new McpServer({ name: "vendor", version: "1.0.0" });
@@ -272,10 +272,11 @@ describe("withBaton", () => {
     const client = await connectClient(server);
     await client.callTool({
       name: "acme_annotate",
-      arguments: { intent: "do a thing", workflow: "invoice for bob@example.com" },
+      arguments: { intent: "do a thing", overall_task: "invoice for bob@example.com" },
     });
 
     const annotation = sink.events.find((e) => e.event_type === "annotation")!;
+    // Agent sends `overall_task`; the wire carries `workflow`.
     expect(annotation.payload).toMatchObject({ workflow: "invoice for [REDACTED:email]" });
   });
 
@@ -424,7 +425,11 @@ describe("withBaton — instructions + annotation tool", () => {
     const client = await connectClient(server);
     await client.callTool({
       name: "acme_annotate",
-      arguments: { intent: "look something up", expected_outcome: "a match", workflow: "lookup" },
+      arguments: {
+        intent: "look something up",
+        expected_outcome: "a match",
+        overall_task: "lookup",
+      },
     });
 
     expect(sink.events.map((e) => e.event_type)).toEqual(["annotation"]);

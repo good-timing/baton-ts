@@ -1,7 +1,7 @@
 /**
  * Annotation tool registration — SPEC §5.1.1. Registers a vendor-namespaced
  * tool (default `{vendorId}_annotate`) that accepts the annotation
- * signature (intent / expected_outcome / signal_type / workflow /
+ * signature (intent / expected_outcome / signal_type / overall_task /
  * suggested_improvement / context) and emits an `annotation` event.
  * Faithful port of `baton` (Python)'s `integrations/fastmcp/annotation.py`
  * (`intent` required, everything else optional — same as the Python tool's
@@ -36,7 +36,7 @@ interface AnnotationArgs extends Record<string, unknown> {
   intent: string;
   expected_outcome?: string | undefined;
   signal_type?: (typeof SIGNAL_TYPES)[number] | undefined;
-  workflow?: string | undefined;
+  overall_task?: string | undefined;
   suggested_improvement?: string | undefined;
   context?: Record<string, unknown> | undefined;
 }
@@ -88,7 +88,7 @@ export function registerAnnotationTool(
         intent: z.string(),
         expected_outcome: z.string().optional(),
         signal_type: z.enum(SIGNAL_TYPES).optional(),
-        workflow: z.string().optional(),
+        overall_task: z.string().optional(),
         suggested_improvement: z.string().optional(),
         context: z.record(z.string(), z.unknown()).optional(),
       },
@@ -127,7 +127,7 @@ export function registerAnnotationTool(
             expected_outcome: args.expected_outcome
               ? options.scrubber(args.expected_outcome)
               : null,
-            // `signal_type` is a closed enum — nothing to scrub. `workflow`
+            // `signal_type` is a closed enum — nothing to scrub. The task label
             // is agent-authored free text ("processing invoice for
             // bob@example.com" is a realistic value), so it IS scrubbed.
             // Python's annotation.py does NOT scrub this field — a shared
@@ -136,7 +136,10 @@ export function registerAnnotationTool(
             // content, not shape, and it's deterministic, so the
             // exact-string continuity rung 3b groups on survives.
             signal_type: args.signal_type ?? null,
-            workflow: args.workflow ? options.scrubber(args.workflow) : null,
+            // Agent-facing param `overall_task` -> wire key `workflow`, the same
+            // split the injected params use (`overall_task` -> `call_workflow`):
+            // renaming the param must not move the key the console groups on.
+            workflow: args.overall_task ? options.scrubber(args.overall_task) : null,
             suggested_improvement: args.suggested_improvement
               ? options.scrubber(args.suggested_improvement)
               : null,
