@@ -443,8 +443,8 @@ function captureAndInject(name: string, entry: unknown, ctx: WrapContext): void 
   const isV2 = typeof mutable.executor === "function";
   try {
     const { schema, dispositions } = isV2
-      ? injectGoalParamsV2(mutable.inputSchema, ctx.intentParamMode)
-      : injectGoalParams(mutable.inputSchema, ctx.intentParamMode);
+      ? injectGoalParamsV2(mutable.inputSchema)
+      : injectGoalParams(mutable.inputSchema);
     if (Object.keys(dispositions).length > 0) {
       // Assigned directly rather than via `entry.update({paramsSchema})`,
       // which would route back through our OWN patched update and re-read

@@ -59,10 +59,9 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const vectorsDir = path.join(here, "..", "baton-spec", "vectors");
 
 function vector(eventType: string): Record<string, unknown> {
-  return JSON.parse(readFileSync(path.join(vectorsDir, `${eventType}.json`), "utf-8")) as Record<
-    string,
-    unknown
-  >;
+  return JSON.parse(
+    readFileSync(path.join(vectorsDir, `${eventType}.json`), "utf-8"),
+  ) as Record<string, unknown>;
 }
 
 /**
@@ -125,13 +124,23 @@ class CapturingSink implements Sink {
 /** Mirrors `baton-spec/scripts/generate.py::_capture_events`. */
 async function runSpecScenario(): Promise<Event[]> {
   const sink = new CapturingSink();
-  const server = new McpServer({ name: "spec-vector-generator", version: "1.0.0" });
+  const server = new McpServer({
+    name: "spec-vector-generator",
+    version: "1.0.0",
+  });
 
-  server.registerTool("lookup", { inputSchema: { name: z.string() } }, (args: { name: string }) => ({
-    content: [
-      { type: "text" as const, text: JSON.stringify({ found: true, name: args.name }, null, 2) },
-    ],
-  }));
+  server.registerTool(
+    "lookup",
+    { inputSchema: { name: z.string() } },
+    (args: { name: string }) => ({
+      content: [
+        {
+          type: "text" as const,
+          text: JSON.stringify({ found: true, name: args.name }, null, 2),
+        },
+      ],
+    }),
+  );
   server.registerTool("boom", {}, () => {
     throw new Error("simulated failure");
   });
@@ -143,9 +152,13 @@ async function runSpecScenario(): Promise<Event[]> {
     sink,
   });
 
-  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  const [clientTransport, serverTransport] =
+    InMemoryTransport.createLinkedPair();
   const client = new Client({ name: "spec-scenario", version: "1.0.0" });
-  await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+  await Promise.all([
+    server.connect(serverTransport),
+    client.connect(clientTransport),
+  ]);
 
   await client.callTool({
     name: "spec-vectors_annotate",
@@ -185,7 +198,12 @@ describe("cross-SDK emitter conformance (Phase 3)", () => {
     // vectors carry 1,2,3,4,(5),6. An off-by-one start would let the
     // Console mis-order a TS-sourced session against a Python-sourced one.
     expect(events.map((e) => e.sequence_number)).toEqual([1, 2, 3, 4, 5, 6]);
-    for (const eventType of ["annotation", "surface_snapshot", "tool_call_start", "tool_call_end"]) {
+    for (const eventType of [
+      "annotation",
+      "surface_snapshot",
+      "tool_call_start",
+      "tool_call_end",
+    ]) {
       const emitted = events.find((e) => e.event_type === eventType)!;
       expect(emitted.sequence_number).toBe(vector(eventType).sequence_number);
     }
@@ -225,14 +243,21 @@ describe("cross-SDK emitter conformance (Phase 3)", () => {
       JSON.stringify(events.find((e) => e.event_type === eventType)!),
     ) as Record<string, unknown>;
     const emittedPayload = emitted.payload as Record<string, unknown>;
-    const referencePayload = vector(eventType).payload as Record<string, unknown>;
+    const referencePayload = vector(eventType).payload as Record<
+      string,
+      unknown
+    >;
     const exempt = PAYLOAD_ALLOWED_TO_DIFFER[eventType]!;
 
-    expect(Object.keys(emittedPayload).sort()).toEqual(Object.keys(referencePayload).sort());
+    expect(Object.keys(emittedPayload).sort()).toEqual(
+      Object.keys(referencePayload).sort(),
+    );
 
     for (const key of Object.keys(referencePayload)) {
       if (exempt.has(key)) continue;
-      expect(emittedPayload[key], `${eventType}.payload.${key}`).toEqual(referencePayload[key]);
+      expect(emittedPayload[key], `${eventType}.payload.${key}`).toEqual(
+        referencePayload[key],
+      );
     }
   });
 
@@ -255,12 +280,114 @@ describe("cross-SDK emitter conformance (Phase 3)", () => {
     }
     if (snapshot.event_type === "surface_snapshot") {
       expect(snapshot.payload.surface_hash).toMatch(/^sha256:[0-9a-f]{64}$/);
-      expect(snapshot.payload.server_info).toMatchObject({ name: "spec-vector-generator" });
+      expect(snapshot.payload.server_info).toMatchObject({
+        name: "spec-vector-generator",
+      });
       // The vendor-true surface excludes Baton's own injected annotate tool
       // and carries the vendor's two tools — same as the Python vector's.
       const tools = snapshot.payload.tools as Array<{ name: string }>;
       expect(tools.map((t) => t.name)).toEqual(["boom", "lookup"]);
     }
+  });
+
+  // -------------------------------------------------------------------------
+  // X-2 — the producer-parity pin. `intent_param_mode` is ONE SPELLING with
+  // TWO MEANINGS across producers, and until 2026-09-01 no conformance test
+  // could see the difference: Python advertised `user_goal` as required and
+  // served the omitting call, TypeScript built a non-optional zod field on
+  // the VENDOR'S schema and refused it. Same config value, opposite effect on
+  // a customer's traffic, and the vectors cannot catch it because they carry
+  // no intent-bearing call (see the coverage gap in this file's header).
+  //
+  // So the assertion is behavioural and local, and it is deliberately stated
+  // as the SEMANTIC rather than as the implementation: fail-open. Whatever
+  // this package does about advertising, it must never be the reason a
+  // vendor's own call is refused.
+  // -------------------------------------------------------------------------
+  it("X-2: `required` never refuses a vendor call that omits user_goal", async () => {
+    const sink = new CapturingSink();
+    const server = new McpServer({ name: "parity", version: "1.0.0" });
+    server.registerTool(
+      "lookup",
+      { inputSchema: { name: z.string() } },
+      (args: { name: string }) => ({
+        content: [{ type: "text" as const, text: `found ${args.name}` }],
+      }),
+    );
+    withBaton(server, {
+      vendorId: "parity",
+      vendorDisplayName: "Parity",
+      consentToken: "ct",
+      sink,
+      intentParamMode: "required",
+    });
+
+    const [clientTransport, serverTransport] =
+      InMemoryTransport.createLinkedPair();
+    const client = new Client({ name: "parity-scenario", version: "1.0.0" });
+    await Promise.all([
+      server.connect(serverTransport),
+      client.connect(clientTransport),
+    ]);
+
+    const res = (await client.callTool({
+      name: "lookup",
+      arguments: { name: "alice" },
+    })) as {
+      isError?: boolean;
+      content: { text: string }[];
+    };
+    expect(res.isError).toBeFalsy();
+    expect(res.content[0]!.text).toBe("found alice");
+
+    // The call was captured, with no intent on it. Refusing would have
+    // produced no start event at all, which is the outcome this pin exists
+    // to make impossible.
+    const starts = sink.events.filter(
+      (e) => e.event_type === "tool_call_start",
+    );
+    expect(starts).toHaveLength(1);
+    expect(
+      (starts[0]!.payload as { call_intent?: unknown }).call_intent ?? null,
+    ).toBeNull();
+  });
+
+  it("X-2: the advertised schema is identical under `optional` and `required`", async () => {
+    // The half TypeScript CANNOT match Python on, pinned so it stays a known
+    // divergence rather than becoming a surprise. Python advertises
+    // `user_goal` as required by editing the rendered JSON Schema of a
+    // `tools/list` response; this package has no `tools/list` hook, and
+    // measured on both zod majors there is no expression that advertises
+    // required without also enforcing it (v4) or that advertises at all (v3).
+    const advertised = async (mode: "optional" | "required") => {
+      const server = new McpServer({ name: "parity", version: "1.0.0" });
+      server.registerTool(
+        "lookup",
+        { inputSchema: { name: z.string() } },
+        () => ({
+          content: [{ type: "text" as const, text: "ok" }],
+        }),
+      );
+      withBaton(server, {
+        vendorId: "parity",
+        vendorDisplayName: "Parity",
+        consentToken: "ct",
+        sink: new CapturingSink(),
+        intentParamMode: mode,
+      });
+      const [ct, st] = InMemoryTransport.createLinkedPair();
+      const client = new Client({ name: "parity-advert", version: "1.0.0" });
+      await Promise.all([server.connect(st), client.connect(ct)]);
+      const { tools } = await client.listTools();
+      return tools.find((x) => x.name === "lookup")!.inputSchema;
+    };
+
+    const asOptional = await advertised("optional");
+    const asRequired = await advertised("required");
+    expect(asRequired).toEqual(asOptional);
+    // The vendor's own requirement survives both; only ours is absent.
+    expect(asRequired.required).toEqual(["name"]);
+    expect(asRequired.properties).toHaveProperty("user_goal");
   });
 
   it("stamps a TS-prefixed sdk_version on every event", () => {

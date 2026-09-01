@@ -13,8 +13,6 @@
  * The v2 packages need none of this — `injectGoalParamsV2`, below.
  */
 
- 
-
 import {
   getObjectShape,
   isZ4Schema,
@@ -64,11 +62,19 @@ const EMPTY_OBJECT_JSON_SCHEMA = { type: "object", properties: {} };
  * schema may have carried (`.strict()`/`.passthrough()`/`.refine()`).
  * Python's JSON-schema-dict injection has no equivalent loss (JSON Schema
  * has no refinement concept to lose); this is a TS-specific, accepted gap.
+ *
+ * NO `mode` PARAMETER since 2026-09-01 (D7). It used to select an enforcing
+ * field for `required`; it cannot select an advertisement instead, because
+ * this package has no `tools/list` hook — see `buildIntentFields` for the
+ * measurement. A parameter that selects nothing is worse than no parameter:
+ * it reads as a knob. The mode is still a real config value, still gates
+ * `off` in `withBaton`, and is still reported in
+ * `seam_augmentations.intent_param.mode`.
  */
-export function injectGoalParams(
-  inputSchema: unknown,
-  mode: "optional" | "required",
-): { schema: unknown; dispositions: IntentParamDispositions } {
+export function injectGoalParams(inputSchema: unknown): {
+  schema: unknown;
+  dispositions: IntentParamDispositions;
+} {
   const objSchema = normalizeObjectSchema(inputSchema);
   if (!objSchema) return { schema: inputSchema, dispositions: {} };
   const existingShape = getObjectShape(objSchema) ?? {};
@@ -77,9 +83,10 @@ export function injectGoalParams(
   const useV4 = values.length === 0 || isZ4Schema(values[0]);
   const zodImpl = useV4 ? zV4 : zV3;
 
-  const { dispositions, toInject } = buildIntentFields(existingShape, mode, zodImpl);
+  const { dispositions, toInject } = buildIntentFields(existingShape, zodImpl);
 
-  if (Object.keys(toInject).length === 0) return { schema: inputSchema, dispositions };
+  if (Object.keys(toInject).length === 0)
+    return { schema: inputSchema, dispositions };
   const mergedShape = { ...existingShape, ...toInject };
   const newSchema = objectFromShape(mergedShape);
   return { schema: newSchema, dispositions };
@@ -91,24 +98,57 @@ export function injectGoalParams(
  * of the same name wins. */
 function buildIntentFields(
   existingShape: Record<string, unknown>,
-  mode: "optional" | "required",
   zodImpl: StringFieldFactory,
-): { dispositions: IntentParamDispositions; toInject: Record<string, unknown> } {
+): {
+  dispositions: IntentParamDispositions;
+  toInject: Record<string, unknown>;
+} {
   const dispositions: IntentParamDispositions = {};
   const toInject: Record<string, unknown> = {};
 
+  // EVERY injected field is optional, in EVERY mode. `mode` no longer reaches
+  // this builder, and that is the change of 2026-09-01 (D7 in baton-internal
+  // `intent_param_injection.md`), not an oversight.
+  //
+  // `required` used to build a non-optional zod field here — on the VENDOR'S
+  // OWN schema — so an agent that omitted `user_goal` had its call refused by
+  // the vendor's server. Baton would have been breaking a customer's product
+  // to collect a telemetry string. For a wrapper whose whole claim is that it
+  // does not change how the wrapped server behaves, that is the wrong trade at
+  // any capture rate, so `required` now means what it means in the proxy:
+  // ADVERTISED as required, never enforced.
+  //
+  // ...except that the advertisement half is not reachable here, and the
+  // reason is structural rather than a decision. Measured 2026-09-01 against
+  // both zod majors this package supports:
+  //
+  //   zod v4  .optional()            -> required: ["a"]              parses: true
+  //   zod v4  union([string,undef])  -> required: ["a","user_goal"]  parses: FALSE
+  //   zod v3  .optional()            -> required: ["a"]              parses: true
+  //   zod v3  union([string,undef])  -> required: ["a"]              parses: true
+  //
+  // In v4 advertised-required and enforced are the same bit; in v3 the
+  // advertisement is unreachable at all. Python can hold the two apart only
+  // because it edits the rendered JSON Schema of a `tools/list` RESPONSE — and
+  // this package has no `tools/list` hook (see withBaton.ts), so there is no
+  // seam at which to advertise something the validator does not enforce.
+  //
+  // Consequence, recorded rather than hidden: in TypeScript `required` and
+  // `optional` now produce identical behaviour AND identical advertisement.
+  // The mode is kept on the config surface for parity with Python and because
+  // `seam_augmentations.intent_param.mode` reports it, but it selects nothing
+  // here. A future implementation that wants the advertisement needs a
+  // response-rendering seam, not a different zod expression.
   if (USER_GOAL_PARAM_NAME in existingShape) {
     dispositions[USER_GOAL_PARAM_NAME] = "native";
   } else {
     dispositions[USER_GOAL_PARAM_NAME] = "injected";
-    const field =
-      mode === "required" ? zodImpl.string() : zodImpl.string().optional();
-    toInject[USER_GOAL_PARAM_NAME] = field.describe(buildUserGoalParamDescription());
+    toInject[USER_GOAL_PARAM_NAME] = zodImpl
+      .string()
+      .optional()
+      .describe(buildUserGoalParamDescription());
   }
 
-  // `expected_result` and `overall_task` stay optional regardless of mode —
-  // only `user_goal` is promoted to required, matching Python's
-  // `_inject_goal_params`.
   for (const [name, buildDescription] of [
     [EXPECTED_RESULT_PARAM_NAME, buildExpectedResultParamDescription],
     [OVERALL_TASK_PARAM_NAME, buildOverallTaskParamDescription],
@@ -162,21 +202,31 @@ function buildIntentFields(
  * The 1.x path above has the same rebuild-loses-modifiers gap, documented in
  * `injectGoalParams`; it is not changed here because it goes through
  * `objectFromShape` and the zod-mini objects 1.x itself renders.
+ *
+ * No `mode` parameter, for the same reason as in `injectGoalParams` above.
  */
-export function injectGoalParamsV2(
-  inputSchema: unknown,
-  mode: "optional" | "required",
-): { schema: unknown; dispositions: IntentParamDispositions } {
+export function injectGoalParamsV2(inputSchema: unknown): {
+  schema: unknown;
+  dispositions: IntentParamDispositions;
+} {
   const candidate = inputSchema as
-    | { shape?: Record<string, unknown>; extend?: (fields: Record<string, unknown>) => unknown }
+    | {
+        shape?: Record<string, unknown>;
+        extend?: (fields: Record<string, unknown>) => unknown;
+      }
     | undefined;
   const shape = candidate?.shape;
-  if (!shape || typeof shape !== "object" || typeof candidate?.extend !== "function") {
+  if (
+    !shape ||
+    typeof shape !== "object" ||
+    typeof candidate?.extend !== "function"
+  ) {
     return { schema: inputSchema, dispositions: {} };
   }
 
-  const { dispositions, toInject } = buildIntentFields(shape, mode, zV4);
-  if (Object.keys(toInject).length === 0) return { schema: inputSchema, dispositions };
+  const { dispositions, toInject } = buildIntentFields(shape, zV4);
+  if (Object.keys(toInject).length === 0)
+    return { schema: inputSchema, dispositions };
   return { schema: candidate.extend(toInject), dispositions };
 }
 
@@ -189,8 +239,13 @@ export function injectGoalParamsV2(
  *
  * 1.x only: on v2, `withBaton` reads the server's own converted schema
  * instead, because v2 renders `tools/list` with a different one. */
-export function toolInputJsonSchema(inputSchema: unknown): Record<string, unknown> {
+export function toolInputJsonSchema(
+  inputSchema: unknown,
+): Record<string, unknown> {
   const objSchema = normalizeObjectSchema(inputSchema);
   if (!objSchema) return EMPTY_OBJECT_JSON_SCHEMA;
-  return toJsonSchemaCompat(objSchema, { strictUnions: true, pipeStrategy: "input" });
+  return toJsonSchemaCompat(objSchema, {
+    strictUnions: true,
+    pipeStrategy: "input",
+  });
 }
