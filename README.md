@@ -2,7 +2,7 @@
 
 *The TypeScript counterpart to [`baton-sdk`](https://github.com/good-timing/baton) (Python) — structured signal capture for agent-mediated tool use over MCP.*
 
-**Status: pre-publish.** `withBaton` instruments a high-level `McpServer` — **either** official SDK major, 1.x (`@modelcontextprotocol/sdk`) or v2 (`@modelcontextprotocol/server`): wraps every tool call, injects server `instructions`, registers the `<vendor>_annotate` tool (SPEC §5.1.1–§5.1.2), injects `user_goal`/`expected_result` intent params on every wrapped tool's schema, captures a `surface_snapshot` of the vendor-true surface, and PII-scrubs every payload with the same default ruleset the Python SDK ships. What's still not here: intent-param injection for **non-zod** schemas on v2, MRTR (Python's `_is_mrtr_pause`/`_is_mrtr_continuation`), and the low-level `Server` adapter — see [What's deferred](#whats-deferred). Not yet published to npm.
+**Status: published — [`@goodtiming/baton-sdk@0.1.0`](https://www.npmjs.com/package/@goodtiming/baton-sdk) on npm.** `withBaton` instruments a high-level `McpServer` — **either** official SDK major, 1.x (`@modelcontextprotocol/sdk`) or v2 (`@modelcontextprotocol/server`): wraps every tool call, injects server `instructions`, registers the `<vendor>_annotate` tool (SPEC §5.1.1–§5.1.2), injects `user_goal`/`expected_result`/`overall_task` intent params on every wrapped tool's schema, captures a `surface_snapshot` of the vendor-true surface, and PII-scrubs every payload with the same default ruleset the Python SDK ships. What's still not here: intent-param injection for **non-zod** schemas on v2, MRTR (Python's `_is_mrtr_pause`/`_is_mrtr_continuation`), and the low-level `Server` adapter — see [What's deferred](#whats-deferred).
 
 ## Why this exists
 
@@ -31,6 +31,10 @@ Most production MCP servers are TypeScript, not Python — see the [design note]
 The low-level `Server` adapter (only the high-level `McpServer` is supported) is also not here. Neither blocks `npm publish` the way the instructions+annotate-tool pair did — see CHANGELOG.md for what's shipped.
 
 ## Usage
+
+```bash
+npm install @goodtiming/baton-sdk
+```
 
 ```typescript
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
