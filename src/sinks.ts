@@ -1,11 +1,10 @@
 /**
  * Sinks — where Baton events go after the SDK captures them.
  *
- * A `Sink` is the egress side of the SDK; `withBaton` (Phase 2, not yet
- * implemented — see design-notes/typescript_sdk.md) hands fully-formed
+ * A `Sink` is the egress side of the SDK; `withBaton` hands fully-formed
  * `Event` envelopes to a sink and the sink decides what to do with them.
  *
- * Two sinks ship in this scaffold, mirroring `sinks.py`'s core pair:
+ * Two sinks ship, mirroring `sinks.py`'s core pair:
  *
  * - `StdoutSink` — JSONL to a writable stream (default `process.stderr`,
  *   for the same reason as Python: MCP stdio transport reserves stdout for
