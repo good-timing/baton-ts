@@ -42,12 +42,26 @@ import { withBaton, StdoutSink } from "@goodtiming/baton-sdk";
 
 const server = new McpServer({ name: "your-vendor-mcp", version: "1.0.0" });
 const handle = withBaton(server, {
-  vendorId: "your-vendor",
+  vendorId: "your-vendor", // the SERVER
+  tenantId: "ten_7cd4c8cf", // the ACCOUNT — not the same thing
   vendorDisplayName: "Your Vendor",
   consentToken: process.env.BATON_CONSENT_TOKEN!,
   sink: new StdoutSink(), // swap in HttpSink(...) to ship to a collector
 });
 // handle.annotationToolName === "your-vendor_annotate"
+
+// `tenantId` names the ACCOUNT the collector authenticates; `vendorId` names
+// the server whose surface is captured. One account wraps many servers, so
+// sending the account id in both slots collapses them into one. Resolved
+// explicit → `BATON_TENANT_ID` → `vendorId`; that last fallback is a
+// migration shim, not a supported configuration.
+//
+// Stated on its own line on purpose — it is the diff your reviewer reads. If
+// you would rather keep it out of source, leave `tenantId` off entirely and
+// set `BATON_TENANT_ID` in the environment; the SDK reads it. Do NOT write
+// `process.env.BATON_TENANT_ID!` — `tenantId` is optional, so the `!` buys no
+// check and an unset variable silently falls back to `vendorId`, which is the
+// collapse described above wearing the look of a configured account.
 
 // register tools before or after withBaton — both are captured
 server.registerTool("lookup", { inputSchema: { name: z.string() } }, async ({ name }) => {

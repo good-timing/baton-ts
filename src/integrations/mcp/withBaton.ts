@@ -91,7 +91,7 @@ import {
 import { StdoutSink, type Sink } from "../../sinks.js";
 import { registerAnnotationTool } from "./annotation.js";
 import { Scrubber } from "../../scrub.js";
-import { validateBatonConfig, type BatonConfig } from "./config.js";
+import { resolveTenantId, validateBatonConfig, type BatonConfig } from "./config.js";
 import { emit } from "./emit.js";
 import { BatonHandle } from "./handle.js";
 import { buildServerInstructions } from "./llmText.js";
@@ -615,6 +615,12 @@ export function withBaton(server: SupportedMcpServer, config: BatonConfig): Bato
   const intentParamMode: IntentParamMode = config.intentParamMode ?? "optional";
   const counter = new SessionCounter();
   const fallbackSessionId = `sdk-${uuidv7()}`;
+  // Resolved ONCE, here, and read by every emit path below — the tool-call
+  // wrapper (via `ctx`), the annotation tool (via `registerAnnotationTool`)
+  // and `emitSurface`, which builds its envelope from `config` directly.
+  // Two resolutions could disagree, and an annotation landing under a
+  // different tenant than the call it annotates is unjoinable.
+  const tenantId = resolveTenantId(config.tenantId, config.vendorId);
   // Default ON, mirroring Python's `install_baton` (`config.scrubber or
   // Scrubber()`). One instance per install, reused for every event, so its
   // `counts` accumulate across the session the way Python's does.
@@ -639,7 +645,7 @@ export function withBaton(server: SupportedMcpServer, config: BatonConfig): Bato
     // Deliberately NOT scrubbed — this is the vendor's own static tool
     // surface, not caller-supplied data (mirrors Python's emit_surface).
     const event = SurfaceSnapshotEventSchema.parse({
-      tenant_id: config.vendorId,
+      tenant_id: tenantId,
       vendor_id: config.vendorId,
       session_id: sessionId,
       consent_token: config.consentToken,
@@ -724,7 +730,7 @@ export function withBaton(server: SupportedMcpServer, config: BatonConfig): Bato
   const ctx: WrapContext = {
     sink,
     counter,
-    tenantId: config.vendorId,
+    tenantId,
     vendorId: config.vendorId,
     consentToken: config.consentToken,
     fallbackSessionId,

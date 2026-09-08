@@ -5,9 +5,9 @@
 
 import type { Sink } from "../../sinks.js";
 
-// Vendor IDs double as tenant_id in vendor-mode tenancy (mirrors Python's
-// `install_baton` setting `tenant_id=config.vendor_id`) and as the default
-// annotation-tool-name prefix — same pattern Python validates against.
+// Vendor IDs are the annotation-tool-name prefix — same pattern Python
+// validates against. They are NOT the tenant id: see `BatonConfig.tenantId`,
+// which used to be a second copy of this value.
 const VENDOR_ID_PATTERN = /^[a-zA-Z0-9_-]{1,48}$/;
 
 // Per-tool intent-param injection modes (mirrors baton-proxy's
@@ -28,10 +28,26 @@ export type ResolveSessionIdHook = (
 ) => string | null | undefined | Promise<string | null | undefined>;
 
 export interface BatonConfig {
-  /** Short stable identifier for the vendor (e.g. `"acme"`). Also used as
-   * `tenant_id` on every emitted event (vendor-mode tenancy) and as the
-   * default annotation tool name prefix (`{vendorId}_annotate`). */
+  /** Short stable identifier for the SERVER whose surface is captured
+   * (e.g. `"acme"`). Also the default annotation tool name prefix
+   * (`{vendorId}_annotate`). This is not the account — see `tenantId`. */
   vendorId: string;
+  /** Account identifier for the envelope's `tenant_id` (SPEC §11.4).
+   *
+   * **This is not `vendorId`, and conflating them is the bug this field
+   * exists to fix.** `tenantId` names the ACCOUNT the collector
+   * authenticates; `vendorId` names the SERVER whose surface is being
+   * captured. One account wraps many servers, so sending the account id in
+   * both slots collapses them: two servers in one workspace render as one,
+   * whose label flips to whichever deployed last, and a server ends up
+   * naming itself with its workspace's opaque id.
+   *
+   * Resolved explicit → `BATON_TENANT_ID` → `vendorId`. That last fallback
+   * exists for our own fixtures during the change, not for anyone's install
+   * — a wrap block states this value on its own line, because it is the diff
+   * a customer reviews in their pull request. The environment read is
+   * guarded, so this package still loads on runtimes with no `process`. */
+  tenantId?: string;
   /** Human-readable vendor name used in server instructions and the
    * annotation tool description — whitelabel obligation (SPEC §5.4): no
    * Baton-branded strings reach the calling agent. */
@@ -68,6 +84,30 @@ export interface BatonConfig {
    * nothing. A tool registered with no `inputSchema` at all is left alone
    * regardless of this setting (see `schemaCompat.injectGoalParams`). */
   intentParamMode?: "optional" | "required" | "off";
+}
+
+/**
+ * `tenant_id` per SPEC §11.4: explicit → `BATON_TENANT_ID` → `vendorId`.
+ * Mirrors Python's `integrations/_config.py::_resolve_tenant_id`, including
+ * its falsy-means-unset behaviour (`if explicit:`), so an empty string falls
+ * through rather than emitting a blank tenant.
+ *
+ * The `vendorId` tail is a migration shim for this repo's own fixtures, not a
+ * supported configuration: it reproduces exactly the collapse the split exists
+ * to end, so it is the branch to delete once the recipe emits the var.
+ *
+ * Resolved ONCE per `withBaton` install and shared by the tool-call and
+ * annotation paths — two resolutions could disagree, and an annotation under a
+ * different tenant than its call is unjoinable.
+ */
+export function resolveTenantId(explicit: string | undefined, vendorId: string): string {
+  if (explicit) return explicit;
+  // Guarded: `process` is absent on edge/worker runtimes, and this package
+  // reads no other environment variable. A missing `process` is a miss, not a
+  // crash inside the vendor's server startup.
+  const fromEnv = typeof process !== "undefined" ? process.env?.BATON_TENANT_ID : undefined;
+  if (fromEnv) return fromEnv;
+  return vendorId;
 }
 
 export function validateBatonConfig(config: BatonConfig): void {

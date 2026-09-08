@@ -14,6 +14,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { z } from "zod";
 import { beforeEach, describe, expect, it } from "vitest";
 import { withBaton } from "../../../src/integrations/mcp/withBaton.js";
+import type { BatonConfig } from "../../../src/integrations/mcp/config.js";
 import { identityScrub } from "../../../src/scrub.js";
 import type { Event } from "../../../src/events.js";
 import type { Sink } from "../../../src/sinks.js";
@@ -1201,5 +1202,122 @@ describe("withBaton — surface_snapshot", () => {
       ) as { inputSchema: { properties: Record<string, unknown> } };
       expect(echoEntry.inputSchema.properties).toHaveProperty("extra");
     }
+  });
+});
+
+describe("withBaton — tenant_id is the ACCOUNT, not a second copy of vendor_id", () => {
+  // The bug this closes: every envelope shipped `tenant_id: config.vendorId`,
+  // so one account's several servers collapsed into one. Mirrors the Python
+  // half (`aea84a8`) — resolution order, the falsy-means-unset rule, and the
+  // once-per-install rule that keeps an annotation joinable to its call.
+  // `BATON_TENANT_ID` is cleared before every test globally (`test/setup.ts`),
+  // so each case here sets exactly the environment it means to assert about.
+  let sink: CapturingSink;
+
+  beforeEach(() => {
+    sink = new CapturingSink();
+  });
+
+  async function eventsFor(config: Partial<BatonConfig>): Promise<Event[]> {
+    const server = new McpServer({ name: "vendor", version: "1.0.0" });
+    withBaton(server, {
+      vendorId: "echo-server",
+      vendorDisplayName: "Echo",
+      consentToken: "ct",
+      sink,
+      ...config,
+    });
+    registerTools(server);
+    const client = await connectClient(server);
+    // One of each emitting path: surface_snapshot (built from `config`
+    // directly, so it is the site that drifts), tool_call_start/end (via
+    // `ctx`), and annotation (via registerAnnotationTool's own options).
+    await client.callTool({ name: "echo", arguments: { text: "hi" } });
+    await client.callTool({
+      name: "echo-server_annotate",
+      arguments: { user_goal: "g", expected_result: "r", overall_task: "t" },
+    });
+    return sink.events;
+  }
+
+  it("puts an explicit tenantId on EVERY event type, and never in vendor_id", async () => {
+    const events = await eventsFor({ tenantId: "ten_7cd4c8cf" });
+
+    expect(events.map((e) => e.event_type)).toEqual([
+      "surface_snapshot",
+      "tool_call_start",
+      "tool_call_end",
+      "annotation",
+    ]);
+    // Asserted per event, not on a sample: `emitSurface` builds its envelope
+    // from `config` rather than from `ctx`, so a fix applied only to the
+    // wrapper leaves the snapshot behind — under the OLD tenant, in the same
+    // session as calls under the new one.
+    for (const event of events) {
+      expect(event.tenant_id).toBe("ten_7cd4c8cf");
+      expect(event.vendor_id).toBe("echo-server");
+    }
+  });
+
+  it("reads BATON_TENANT_ID when no tenantId is configured", async () => {
+    process.env.BATON_TENANT_ID = "ten_fromenv";
+    const events = await eventsFor({});
+    for (const event of events) expect(event.tenant_id).toBe("ten_fromenv");
+  });
+
+  it("prefers an explicit tenantId over BATON_TENANT_ID", async () => {
+    process.env.BATON_TENANT_ID = "ten_fromenv";
+    const events = await eventsFor({ tenantId: "ten_explicit" });
+    for (const event of events) expect(event.tenant_id).toBe("ten_explicit");
+  });
+
+  it("treats an empty tenantId as unset, matching Python's `if explicit:`", async () => {
+    // `??` would ship a blank tenant here and `||` does not. The wire schema
+    // accepts any string, so nothing downstream of this test catches it.
+    process.env.BATON_TENANT_ID = "ten_fromenv";
+    const events = await eventsFor({ tenantId: "" });
+    for (const event of events) expect(event.tenant_id).toBe("ten_fromenv");
+  });
+
+  it("falls back to vendorId — the migration shim, pinned so deleting it is deliberate", async () => {
+    // Not a supported configuration: it reproduces exactly the collapse this
+    // split exists to end. It is here for our own fixtures mid-change, and
+    // this test is what makes its removal a decision rather than an accident.
+    const events = await eventsFor({});
+    for (const event of events) expect(event.tenant_id).toBe("echo-server");
+  });
+
+  it("resolves at INSTALL time, not per event — the env changing mid-session moves nothing", async () => {
+    // The discriminating case. Asserting one tenant across a session with a
+    // constant environment proves nothing: resolution moved into the emit
+    // path would re-read the same value and stay green. Two independent
+    // resolutions CAN disagree, and the failure is silent — it lands
+    // downstream as an annotation the Console cannot attach to any call.
+    process.env.BATON_TENANT_ID = "ten_a";
+    const server = new McpServer({ name: "vendor", version: "1.0.0" });
+    withBaton(server, {
+      vendorId: "echo-server",
+      vendorDisplayName: "Echo",
+      consentToken: "ct",
+      sink,
+    });
+    registerTools(server);
+    const client = await connectClient(server);
+    await client.callTool({ name: "echo", arguments: { text: "hi" } });
+
+    // Same install, same session, different environment.
+    process.env.BATON_TENANT_ID = "ten_b";
+    await client.callTool({
+      name: "echo-server_annotate",
+      arguments: { user_goal: "g", expected_result: "r", overall_task: "t" },
+    });
+
+    expect(sink.events.map((e) => e.event_type)).toEqual([
+      "surface_snapshot",
+      "tool_call_start",
+      "tool_call_end",
+      "annotation",
+    ]);
+    expect(new Set(sink.events.map((e) => e.tenant_id))).toEqual(new Set(["ten_a"]));
   });
 });
