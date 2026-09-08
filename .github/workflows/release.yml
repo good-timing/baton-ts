@@ -8,14 +8,23 @@
 # lose a tag the same way: over there the tag IS the release trigger. This
 # makes that true here too.
 #
-# One-time setup, and the workflow does nothing useful until it is done
-# (npmjs.com → @goodtiming/baton-sdk → Settings → Trusted Publisher):
-#   - Publisher: GitHub Actions, owner=good-timing, repo=baton-ts,
-#     workflow=release.yml, environment=npm
-#   - Create an `npm` environment in repo Settings → Environments (optional
-#     approval gate; recommended)
+# ✅ One-time setup DONE 2026-09-08, both halves. Recorded here because the
+# npm side has no public API to read it back from, so this comment is the only
+# durable statement that it exists:
+#   - npmjs.com → @goodtiming/baton-sdk → Settings → Trusted Publisher:
+#     GitHub Actions, owner=good-timing, repo=baton-ts, workflow=release.yml,
+#     environment=npm, `npm publish` allowed
+#   - GitHub environment `npm`: ujwal-goodtiming as required reviewer, 15 min
+#     wait timer, `v*` tags only — matched field for field against baton's
+#     `pypi` environment
 #   The environment name must match on BOTH sides or the OIDC exchange is
-#   refused.
+#   refused. npm does not allow editing a trusted publisher: changing any of
+#   those four fields means deleting it and creating a new one.
+#
+# ⚠ STILL UNEXERCISED. `v0.2.0` was already pushed before this file existed,
+# so nothing has ever run these jobs — the next `v*` tag is their first
+# execution. If it fails, read WHERE: a failure at `publish` after `verify`
+# and `ci` pass is the npm config, not this workflow.
 
 name: Release
 
