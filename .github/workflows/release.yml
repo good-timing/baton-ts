@@ -1,0 +1,89 @@
+# Publish @goodtiming/baton-sdk to npm on version-tag push
+# (e.g. `git tag v0.2.0 && git push origin v0.2.0`).
+# Uses npm Trusted Publishing (OIDC) — no NPM_TOKEN in repo secrets.
+#
+# This exists because the tag was decorative before it. 0.2.0 shipped to npm
+# and `v0.2.0` was never written, because nothing in this repo needed it —
+# the publish was a manual `npm publish` from a laptop. The Python SDK cannot
+# lose a tag the same way: over there the tag IS the release trigger. This
+# makes that true here too.
+#
+# One-time setup, and the workflow does nothing useful until it is done
+# (npmjs.com → @goodtiming/baton-sdk → Settings → Trusted Publisher):
+#   - Publisher: GitHub Actions, owner=good-timing, repo=baton-ts,
+#     workflow=release.yml, environment=npm
+#   - Create an `npm` environment in repo Settings → Environments (optional
+#     approval gate; recommended)
+#   The environment name must match on BOTH sides or the OIDC exchange is
+#   refused.
+
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  # Verify the tag matches package.json `version` before doing anything else.
+  # Catches `git tag v0.3.0` against a repo that still says "0.2.0" — the
+  # mismatch npm itself would accept, publishing 0.2.0 under a 0.3.0 tag.
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Tag matches package.json version
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          if [ "$TAG" != "$PKG_VERSION" ]; then
+            echo "Tag $GITHUB_REF_NAME does not match package.json version $PKG_VERSION" >&2
+            exit 1
+          fi
+
+  # Run the same gate CI uses, against the tagged commit, before publishing.
+  # One Node version rather than the matrix, matching the Python release gate:
+  # the matrix is CI's job, and this is the newest leg of it.
+  ci:
+    needs: [verify]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # Without the submodule, test/conformance.test.ts fails to find
+          # baton-spec's schema and vectors rather than skipping quietly —
+          # the release gate must actually pin the SDK against the spec.
+          submodules: true
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+      - run: npm run ci
+
+  publish:
+    needs: [ci]
+    runs-on: ubuntu-latest
+    environment:
+      name: npm
+      url: https://www.npmjs.com/package/@goodtiming/baton-sdk
+    permissions:
+      id-token: write   # required for OIDC; no NPM_TOKEN secret needed
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: true
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          cache: npm
+      # Trusted publishing needs a newer npm than the one bundled with the
+      # Node 22 runner image. Upgrading is cheaper than pinning a floor that
+      # moves.
+      - run: npm install -g npm@latest
+      - run: npm ci
+      # No --ignore-scripts: `prepublishOnly` runs `npm run ci`, which is what
+      # builds the `dist/` that `files` ships. Skipping it publishes an empty
+      # package. The gate therefore runs twice, and that is the cost of npm
+      # packing at publish time rather than from a built artifact.
+      - run: npm publish
