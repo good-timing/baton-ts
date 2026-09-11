@@ -510,6 +510,71 @@ describe("the leaks review found", () => {
     expect(Object.keys(parsed)).toEqual(["origin", "tenantId", "vendorId", "key"]);
   });
 
+  it.each([
+    ["glued to the server segment", `https://${KEY}@h.example.com/${WORKSPACE}/srv-${KEY}`],
+    ["glued to the workspace segment", `https://${KEY}@h.example.com/x${KEY}/srv`],
+    ["glued to a secret key", `https://${KEY}@h.example.com/${WORKSPACE}/srv-baton_sk_${"s".repeat(43)}`],
+  ])("does not echo a key GLUED to a path segment: %s", (_name, raw) => {
+    // The blind spot in the elision was `startsWith`: a segment carrying a key
+    // rather than being one slipped past it and was interpolated into the
+    // pattern-mismatch message raw — in the same sentence as its own
+    // redaction. Deterministic, not a near miss: a segment with a key glued on
+    // is over 48 characters, so it always fails the pattern and always reaches
+    // that interpolation.
+    expect(redact(raw)).not.toMatch(/baton_(?:pk|sk)_[A-Za-z0-9_%-]{8,}/);
+    try {
+      parseDsn(raw);
+      expect.unreachable("a key in a path segment must be refused");
+    } catch (error) {
+      expect(String(error)).not.toMatch(/baton_(?:pk|sk)_[A-Za-z0-9_%-]{8,}/);
+    }
+  });
+
+  it("names the SLOT for a glued key, rather than falling through to the pattern", () => {
+    // Two guards cover this input and neither is load-bearing alone: the
+    // key-in-slot refusal fires first, and if it did not, the sweep at the
+    // throw would clean the pattern-mismatch message instead. Measured —
+    // removing either one alone reds nothing, removing both reds the three
+    // cases above.
+    //
+    // So this test exists to pin the half the leak test cannot see: WHICH
+    // sentence a vendor gets. "has a KEY in the workspace slot" tells them
+    // what they did; "expected ten_ followed by 32 hex characters" describes
+    // a string they cannot see, because it has just been redacted.
+    expect(() => parseDsn(`https://${KEY}@h.example.com/x${KEY}/srv`)).toThrow(
+      /KEY in the workspace slot/,
+    );
+    expect(() => parseDsn(`https://${KEY}@h.example.com/${WORKSPACE}/srv-${KEY}`)).toThrow(
+      /KEY in the server slot/,
+    );
+  });
+
+  it("still shows the module's own examples and prefix names", () => {
+    // The sweep now runs over finished sentences, so the floor on its tail is
+    // load-bearing: without one it would eat `baton_pk_...` out of the very
+    // example that tells a vendor what a DSN looks like, and `baton_sk_` out
+    // of the warning whose entire job is to name that prefix.
+    expect(() => parseDsn(`https://h.example.com/${WORKSPACE}/srv`)).toThrow(
+      /baton_pk_\.\.\.@host/,
+    );
+    const warnings = captureWarnings();
+    parseDsn(`https://baton_sk_${"d".repeat(43)}@h.example.com/${WORKSPACE}/srv`);
+    expect(warnings.text()).toContain("baton_sk_");
+    expect(warnings.text()).toContain("baton_pk_");
+  });
+
+  it("refuses a backslash-smuggled path in the authority", () => {
+    // WHATWG folds `\` to `/` for special schemes, so `new URL` accepted
+    // `host\evil` as a host with a path — while the split kept the whole
+    // thing as the authority. `HttpSink` would then append `/v0/events` to
+    // `https://host\evil`, which `fetch` resolves to
+    // `https://host/evil/v0/events`: a 404 at the first tool call, from an
+    // install that raised nothing.
+    expect(() =>
+      parseDsn(`https://${KEY}@ingest.example.com\\evil/${WORKSPACE}/srv`),
+    ).toThrow(/something other than a host/);
+  });
+
   it("attaches no cause carrying the original", () => {
     // `cause` is the TypeScript twin of Python's `__context__`: suppressing
     // the printed traceback is not enough, because anything walking the chain

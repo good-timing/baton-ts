@@ -74,19 +74,38 @@ const WORKSPACE_PATTERN = /^ten_[0-9a-fA-F]{32}$/;
 const PUBLISHABLE_PREFIX = "baton_pk_";
 const SECRET_PREFIX = "baton_sk_";
 
+/**
+ * A credential-shaped run: a prefix followed by enough tail to BE one.
+ *
+ * ⚠ **The floor on the tail is what lets this same pattern run over finished
+ * sentences.** This module's own help text says "as in
+ * `https://baton_pk_...@host/ten_.../server`" and its secret-key warning names
+ * `baton_sk_` out loud; a pattern matching a bare prefix would eat both and
+ * leave the reader with `<key>` where the example belongs. A real key's tail
+ * is 43 URL-safe base64 characters — `%` is admitted too, since the tail is
+ * deliberately unvalidated and one may contain it — so eight is far below any
+ * credential and far above an ellipsis.
+ */
+const KEY_RUN = /baton_(?:pk|sk)_[A-Za-z0-9_%-]{8,}/g;
+
 function looksLikeAKey(value: string): boolean {
   return value.startsWith(PUBLISHABLE_PREFIX) || value.startsWith(SECRET_PREFIX);
 }
 
 /**
- * A path segment replaced wholesale if it looks like a credential.
+ * Whether a credential is anywhere INSIDE this value, not merely at its start.
  *
- * Elided ENTIRELY rather than truncated: a truncated secret is still a
- * secret's prefix, and the reader does not need any of it to see what went
- * wrong — the slot it landed in is the whole message.
+ * ⚠ **`startsWith` was the blind spot, and it was load-bearing in two
+ * places.** A segment with a key glued to it — `srv-baton_pk_…`, the shape a
+ * paste into a half-filled field makes — starts with neither prefix, so it
+ * slipped past the key-in-slot refusal that names the slot and past the "the
+ * key is in the PATH" hint, landing on a pattern-mismatch message that
+ * interpolates the segment instead. Expressed through the scan rather than a
+ * second regex, so there is ONE notion of "looks like a credential" and it
+ * cannot drift from the one that redacts.
  */
-function elideKey(segment: string): string {
-  return looksLikeAKey(segment) ? "<key>" : segment;
+function containsKey(value: string): boolean {
+  return sweep(value) !== value;
 }
 
 // What a bare key gets told. It is the single most likely paste error — the
@@ -216,14 +235,14 @@ function splitKeyFromAuthority(netloc: string): { key: string; at: boolean; auth
 export function redact(raw: string): string {
   const parts = splitDsn(raw);
   if (parts === null) return "<dsn>";
-  const safePath = parts.path
-    .split("/")
-    .map((segment) => elideKey(segment))
-    .join("/");
   const { at, authority } = splitKeyFromAuthority(parts.netloc);
+  // The path is assembled RAW and swept whole below, rather than elided
+  // segment by segment. A per-segment pass is what this function used to do,
+  // and it is the shape the leaks kept coming through: it can only cover the
+  // slots someone remembered to route through it.
   const assembled = at
-    ? `${parts.scheme}://***@${authority}${parts.slash}${safePath}`
-    : `${parts.scheme}://<no key>@${parts.netloc}${parts.slash}${safePath}`;
+    ? `${parts.scheme}://***@${authority}${parts.slash}${parts.path}`
+    : `${parts.scheme}://<no key>@${parts.netloc}${parts.slash}${parts.path}`;
   return sweep(assembled);
 }
 
@@ -231,8 +250,8 @@ export function redact(raw: string): string {
  * The last line: anything still shaped like a credential is elided, wherever
  * it sits.
  *
- * ⚠ **The fourth leak of this kind, and the one the per-slot handling above
- * could not see.** `elideKey` runs on PATH segments; a key pasted into the
+ * ⚠ **The fourth leak of this kind, and the one per-slot handling could not
+ * see.** The elision ran on PATH segments; a key pasted into the
  * AUTHORITY slot — `https://baton_pk_…` with nothing after it — was
  * interpolated verbatim, so the refusal printed the whole bearer. That case is
  * not exotic, it is the one this parser STEERS people into: a vendor who
@@ -243,12 +262,38 @@ export function redact(raw: string): string {
  *
  * So the guarantee stops being a list of slots that each remember to elide,
  * and becomes one scan of the finished string: a slot added later cannot
- * forget. Prefix-anchored and stopping at a delimiter, so the host, workspace
- * and server around it stay readable — the whole point of redacting rather
- * than refusing to say anything.
+ * forget. Prefix-anchored, so the host, workspace and server around it stay
+ * readable — the whole point of redacting rather than refusing to say
+ * anything.
  */
 function sweep(message: string): string {
-  return message.replace(/baton_(?:pk|sk)_[^\s/@:?#]*/g, "<key>");
+  return message.replace(KEY_RUN, "<key>");
+}
+
+/**
+ * The only way this module throws, so the scan cannot be skipped.
+ *
+ * ⚠ **Review found two throws that skipped it, under a docstring already
+ * claiming they could not.** The two pattern-mismatch refusals interpolate the
+ * offending segment, which was elided by a prefix-anchored check that a
+ * glued-on key — `srv-baton_pk_…`, what a paste into a half-filled field makes
+ * — walks straight past. The bearer printed in plaintext, in the same sentence
+ * as its own redaction.
+ *
+ * ⚠ **This sweep and `containsKey`'s key-in-slot refusal cover that input
+ * jointly, and NEITHER is load-bearing alone** — measured by mutation:
+ * removing either one reds no leak test, removing both reds three. That is
+ * worth stating rather than leaving to be rediscovered, because it means a
+ * reader who deletes one of them sees a green suite and concludes it was dead.
+ * They are kept as a pair on purpose, and they answer different questions: the
+ * refusal decides which SENTENCE a vendor reads, and is pinned by its own
+ * test; this decides what no sentence may contain.
+ *
+ * The exit is the right home for the second job. A guarantee that lives at the
+ * call sites is one the next message added does not know about.
+ */
+function fail(message: string): never {
+  throw new Error(sweep(message));
 }
 
 /** `BATON_DSN`, or undefined — guarded, since `process` is absent on edge and
@@ -313,7 +358,7 @@ export function selectDsn(
 
   if (explicit !== undefined) {
     if (conflicts.length > 0) {
-      throw new Error(
+      fail(
         `${door} got both a dsn and an explicit ${conflicts[0]} — the dsn ` +
           `already supplies it. Drop one: the dsn is the single value from ` +
           `/account, and ${conflicts[0]} is what it unpacks to.`,
@@ -346,7 +391,7 @@ export function selectDsn(
  */
 export function parseDsn(raw: string): Dsn {
   if (typeof raw !== "string" || raw.trim() === "") {
-    throw new Error("dsn must be a non-empty string");
+    fail("dsn must be a non-empty string");
   }
 
   const dsn = raw.trim();
@@ -354,14 +399,14 @@ export function parseDsn(raw: string): Dsn {
   if (looksLikeAKey(dsn)) {
     // No redact() — a bare key has no structure to show, and echoing it is the
     // thing redact() exists to prevent.
-    throw new Error(`dsn is not a URL: ${BARE_KEY_HINT}`);
+    fail(`dsn is not a URL: ${BARE_KEY_HINT}`);
   }
 
   const safe = redact(dsn);
   const parts = splitDsn(dsn);
 
   if (parts === null || (parts.scheme !== "https" && parts.scheme !== "http")) {
-    throw new Error(
+    fail(
       `dsn ${safe} must start with https:// (or http:// for local ` +
         `development) — ${BARE_KEY_HINT}`,
     );
@@ -379,27 +424,27 @@ export function parseDsn(raw: string): Dsn {
     // scheme in front of it. Landing them on the generic sentence would leave
     // them exactly as stuck as before, having done what they were told.
     if (looksLikeAKey(parts.netloc)) {
-      throw new Error(
+      fail(
         `dsn ${safe} is a bare key with a scheme in front of it: ${BARE_KEY_HINT}. ` +
           `The full value also carries a host, your workspace and your server — ` +
           `https://baton_pk_...@host/ten_.../server`,
       );
     }
-    const misplaced = parts.path.split("/").some((segment) => looksLikeAKey(segment));
+    const misplaced = parts.path.split("/").some((segment) => containsKey(segment));
     const detail = misplaced
       ? "the key is in the PATH — it goes before an @"
       : "the value from /account has the key before an @";
-    throw new Error(
+    fail(
       `dsn ${safe} carries no key: ${detail}, as in https://baton_pk_...@host/ten_.../server`,
     );
   }
   if (key.includes(":")) {
-    throw new Error(
+    fail(
       `dsn ${safe} has a ':' in its key — a DSN carries one credential and no password field`,
     );
   }
   if (!authority) {
-    throw new Error(`dsn ${safe} has no host`);
+    fail(`dsn ${safe} has no host`);
   }
 
   // ⚠ **`new URL` is the host validator, and it runs only AFTER the credential
@@ -420,13 +465,41 @@ export function parseDsn(raw: string): Dsn {
   // "carries no key" sentence here and "not a parseable URL" there. Both
   // refuse, neither leaks; the order is what the leak-safe placement costs.
   let hostReason: string | null = null;
+  let parsedAuthority: URL | null = null;
   try {
-    new URL(`${parts.scheme}://${authority}`);
+    parsedAuthority = new URL(`${parts.scheme}://${authority}`);
   } catch (error) {
     hostReason = error instanceof Error ? error.constructor.name : "Error";
   }
-  if (hostReason !== null) {
-    throw new Error(`dsn ${safe} is not a parseable URL (${hostReason})`);
+  if (parsedAuthority === null) {
+    fail(`dsn ${safe} is not a parseable URL (${hostReason ?? "Error"})`);
+  }
+
+  // ⚠ **A BACKSLASH smuggles a path into the authority, and the validator said
+  // yes.** WHATWG folds `\` to `/` for special schemes, so
+  // `new URL("https://ingest.example.com\evil")` parses happily with host
+  // `ingest.example.com` and path `/evil` — while the split above, which ends
+  // the authority at `/`, `?` or `#`, keeps the whole thing as the authority.
+  // The origin became `https://ingest.example.com\evil`, `HttpSink` appended
+  // `/v0/events`, and `fetch` resolved that to
+  // `https://ingest.example.com/evil/v0/events`: a 404 at the first tool call,
+  // in production, from an install that raised nothing — the exact failure the
+  // "loud at install" promise exists to prevent.
+  //
+  // Asserted on what the URL parser MADE of the authority rather than by
+  // adding `\` to the terminator set, because the question is not which
+  // characters WHATWG folds — it is whether anything but a host survived.
+  if (
+    parsedAuthority.pathname !== "/" ||
+    parsedAuthority.search !== "" ||
+    parsedAuthority.hash !== ""
+  ) {
+    fail(
+      `dsn ${safe} has something other than a host between its key and its ` +
+        `path — the ingest origin is the scheme and the authority and nothing ` +
+        `else, and the workspace and server are the two path segments after ` +
+        `it: https://baton_pk_...@host/ten_.../server`,
+    );
   }
 
   const segments = parts.path.split("/").filter((segment) => segment !== "");
@@ -437,7 +510,7 @@ export function parseDsn(raw: string): Dsn {
   // the day someone edits the check, and an unreachable branch no test covers.
   const [workspace, server, ...extra] = segments;
   if (workspace === undefined || server === undefined || extra.length > 0) {
-    throw new Error(
+    fail(
       `dsn ${safe} must carry exactly two path segments — the workspace and ` +
         `the server, as in /ten_<32 hex>/<server>. A missing server is never ` +
         `defaulted: it is what the key is bound to.`,
@@ -448,11 +521,11 @@ export function parseDsn(raw: string): Dsn {
     ["workspace", workspace],
     ["server", server],
   ] as const) {
-    if (looksLikeAKey(segment)) {
+    if (containsKey(segment)) {
       // Checked BEFORE the pattern tests below, which would otherwise
       // interpolate the segment — and a key is far more useful to name by its
       // slot than to print back.
-      throw new Error(
+      fail(
         `dsn ${safe} has a KEY in the ${slot} slot. The key goes before the @, ` +
           `and the path carries the workspace and the server: ` +
           `https://baton_pk_...@host/ten_<32 hex>/<server>`,
@@ -461,15 +534,15 @@ export function parseDsn(raw: string): Dsn {
   }
 
   if (!WORKSPACE_PATTERN.test(workspace)) {
-    throw new Error(
-      `dsn ${safe} has ${JSON.stringify(elideKey(workspace))} where the workspace ` +
+    fail(
+      `dsn ${safe} has ${JSON.stringify(workspace)} where the workspace ` +
         `belongs — expected ten_ followed by 32 hex characters. If the two path ` +
         `segments are the right way round, this is not a Baton DSN.`,
     );
   }
   if (!VENDOR_ID_PATTERN.test(server)) {
-    throw new Error(
-      `dsn ${safe} has ${JSON.stringify(elideKey(server))} where the server belongs ` +
+    fail(
+      `dsn ${safe} has ${JSON.stringify(server)} where the server belongs ` +
         `— it must match ${VENDOR_ID_PATTERN.source}, because this value becomes ` +
         `the annotation tool name prefix as well as the envelope's vendor_id.`,
     );
