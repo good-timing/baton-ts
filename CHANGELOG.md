@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.0 — 2026-09-11
 
 - **A caller can no longer assert its own runtime.** `detectAgentRuntime` honoured an `_meta.baton.agent_runtime` override, and the Python SDK it mirrors removed that override in both its spellings — the nested form at B5, the reverse-DNS `io.baton/*` form on 2026-09-09, leaving SPEC §5.2 reading "Recognized keys: none". This package kept reading the nested one, so **two sensors watching the same client could disagree about what it is**, which is the one thing a detector shared across sensors must not do. `agent_runtime` is self-reported and never attested; an override lets the thing being measured choose its own label.
 
