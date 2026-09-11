@@ -2,7 +2,7 @@
 
 *The TypeScript counterpart to [`baton-sdk`](https://github.com/good-timing/baton) (Python) — structured signal capture for agent-mediated tool use over MCP.*
 
-**Status: published — [`@goodtiming/baton-sdk@0.1.0`](https://www.npmjs.com/package/@goodtiming/baton-sdk) on npm.** `withBaton` instruments a high-level `McpServer` — **either** official SDK major, 1.x (`@modelcontextprotocol/sdk`) or v2 (`@modelcontextprotocol/server`): wraps every tool call, injects server `instructions`, registers the `<vendor>_annotate` tool (SPEC §5.1.1–§5.1.2), injects `user_goal`/`expected_result`/`overall_task` intent params on every wrapped tool's schema, captures a `surface_snapshot` of the vendor-true surface, and PII-scrubs every payload with the same default ruleset the Python SDK ships. What's still not here: intent-param injection for **non-zod** schemas on v2, MRTR (Python's `_is_mrtr_pause`/`_is_mrtr_continuation`), and the low-level `Server` adapter — see [What's deferred](#whats-deferred).
+**Status: published — [`@goodtiming/baton-sdk@0.3.0`](https://www.npmjs.com/package/@goodtiming/baton-sdk) on npm.** `withBaton` instruments a high-level `McpServer` — **either** official SDK major, 1.x (`@modelcontextprotocol/sdk`) or v2 (`@modelcontextprotocol/server`): wraps every tool call, injects server `instructions`, registers the `<vendor>_annotate` tool (SPEC §5.1.1–§5.1.2), injects `user_goal`/`expected_result`/`overall_task` intent params on every wrapped tool's schema, captures a `surface_snapshot` of the vendor-true surface, and PII-scrubs every payload with the same default ruleset the Python SDK ships. What's still not here: intent-param injection for **non-zod** schemas on v2, MRTR (Python's `_is_mrtr_pause`/`_is_mrtr_continuation`), and the low-level `Server` adapter — see [What's deferred](#whats-deferred).
 
 ## Why this exists
 
@@ -13,7 +13,7 @@ Most production MCP servers are TypeScript, not Python — see the [design note]
 - `Event` — a Zod-validated discriminated union over the five event types (`tool_call_start`, `tool_call_end`, `tool_call_error`, `annotation`, `surface_snapshot`), field-for-field with the Python SDK's Pydantic models.
 - `StdoutSink` — JSONL to a writable stream (default `process.stderr` — MCP stdio transport reserves stdout for JSON-RPC framing).
 - `HttpSink` — `POST {url}/v0/events` with bearer auth, bounded buffer, retry with backoff, circuit breaker. The contract any Baton-compatible collector consumes.
-- `withBaton(server, config)` — wraps every tool call on a high-level `McpServer` from either SDK major (both optional peer dependencies) and emits `tool_call_start` / `tool_call_end` / `tool_call_error`. Works regardless of whether tools are registered before or after `withBaton` runs, and survives a tool's `.update()`/`.remove()` after the fact too (see the module docstring in `src/integrations/mcp/withBaton.ts` for why that ordering/mutation independence is load-bearing, not incidental). Also injects server `instructions` and registers the `<vendor>_annotate` tool so the calling agent can supply structured intent/outcome/friction signal — same behavioral contract as Python's adapters, ported byte-for-byte (verified against the Python SDK's actual rendered output, not just eyeballed).
+- `withBaton(server, config)` — takes a packed `dsn` (the one string from /account) or the parts named individually, and wraps every tool call on a high-level `McpServer` from either SDK major (both optional peer dependencies) and emits `tool_call_start` / `tool_call_end` / `tool_call_error`. Works regardless of whether tools are registered before or after `withBaton` runs, and survives a tool's `.update()`/`.remove()` after the fact too (see the module docstring in `src/integrations/mcp/withBaton.ts` for why that ordering/mutation independence is load-bearing, not incidental). Also injects server `instructions` and registers the `<vendor>_annotate` tool so the calling agent can supply structured intent/outcome/friction signal — same behavioral contract as Python's adapters, ported byte-for-byte (verified against the Python SDK's actual rendered output, not just eyeballed).
 - Intent-param injection — `user_goal`/`expected_result`/`overall_task` string params are spliced onto every wrapped tool's advertised schema (`intentParamMode: "optional"` by default, `"required"` — which promotes only `user_goal` — or `"off"`), stripped before the vendor handler runs, and surfaced as `tool_call_start.payload.call_intent`/`call_expected`/`call_workflow`/`intent_source` plus a synthesised proactive `annotation` (at most one per session). `call_intent`/`call_expected` are call-scoped diagnostics that reword freely; `call_workflow` is the task-label grouping key the Console segments sessions on, which is why its injected param description carries an explicit repeat-the-exact-string contract. This is the capture path that survives runtimes which drop `instructions` entirely (notably Claude Desktop). A tool that already declares one of these names itself is left alone for that field (`"native"` disposition) — its value is forwarded to the vendor untouched, not captured as intent. A tool registered with no `inputSchema` at all is left alone regardless of mode, so a zero-arg handler's calling convention never changes underneath it.
 - `surface_snapshot` capture — the vendor-true (pre-injection) `server_info`/`capabilities`/`instructions`/tool list, hashed and emitted at most once per observed hash (lazily, on the first tool call — the high-level `McpServer` exposes no `tools/list` hook to capture on eagerly). Baton's own additions (the annotate tool, the injected params) are reported separately under `seam_augmentations`, never folded into the vendor-true snapshot.
 - PII scrubbing — every payload (tool params/results, `_meta`, intent strings, error bodies) runs through `Scrubber` before it reaches any sink, **on by default**. The ruleset is a rule-for-rule port of Python's `baton.scrub` (email, `Bearer` values, `sk-*` keys, `AKIA*` keys, JWTs, phone numbers, Luhn-checked card numbers, plus force-redaction on sensitive field names) — parity verified by mirroring Python's test matrix case-for-case *and* by diffing both implementations' output over a shared corpus. Pass `identityScrub` to opt out explicitly, or supply your own `(value: unknown) => unknown`.
@@ -38,36 +38,130 @@ npm install @goodtiming/baton-sdk
 
 ```typescript
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { withBaton, StdoutSink } from "@goodtiming/baton-sdk";
+import { withBaton } from "@goodtiming/baton-sdk";
 
 const server = new McpServer({ name: "your-vendor-mcp", version: "1.0.0" });
 const handle = withBaton(server, {
-  vendorId: "your-vendor", // the SERVER
-  tenantId: "ten_7cd4c8cf", // the ACCOUNT — not the same thing
-  vendorDisplayName: "Your Vendor",
-  consentToken: process.env.BATON_CONSENT_TOKEN!,
-  sink: new StdoutSink(), // swap in HttpSink(...) to ship to a collector
+  dsn: "https://baton_pk_...@ingest.goodtiming.ai/ten_7cd4c8cf.../your-vendor",
 });
 // handle.annotationToolName === "your-vendor_annotate"
-
-// `tenantId` names the ACCOUNT the collector authenticates; `vendorId` names
-// the server whose surface is captured. One account wraps many servers, so
-// sending the account id in both slots collapses them into one. Resolved
-// explicit → `BATON_TENANT_ID` → `vendorId`; that last fallback is a
-// migration shim, not a supported configuration.
-//
-// Stated on its own line on purpose — it is the diff your reviewer reads. If
-// you would rather keep it out of source, leave `tenantId` off entirely and
-// set `BATON_TENANT_ID` in the environment; the SDK reads it. Do NOT write
-// `process.env.BATON_TENANT_ID!` — `tenantId` is optional, so the `!` buys no
-// check and an unset variable silently falls back to `vendorId`, which is the
-// collapse described above wearing the look of a configured account.
 
 // register tools before or after withBaton — both are captured
 server.registerTool("lookup", { inputSchema: { name: z.string() } }, async ({ name }) => {
   /* ... */
 });
 ```
+
+That one string is the whole configuration. Copy it from **/account**, where
+it is labelled DSN. It packs four values — the collector to send to, your
+workspace, this server, and the key that binds them — and the SDK unpacks them
+and builds the sink itself.
+
+**If you distribute your server, put the DSN in your source.** A stdio server
+runs on your user's machine, spawned by their MCP client — and the official
+client SDKs pass it a fixed six-variable allowlist (`HOME`, `LOGNAME`, `PATH`,
+`SHELL`, `TERM`, `USER`), plus whatever that user wrote in their own client
+config. Nothing from your `.env` is in either list, so a server configured that
+way captures nothing while appearing to work.
+
+If you would rather not put it in source — a hosted server, where the process
+starts from your own environment — set `BATON_DSN` instead and pass nothing:
+
+```typescript
+const handle = withBaton(server); // reads BATON_DSN
+```
+
+An explicit `dsn` wins over `BATON_DSN`, and both win over every other
+`BATON_*` variable. That last rule matters when you **re-onboard** a server:
+the new DSN beats the old install's leftover `.env`, rather than the stale file
+quietly filing your events under the previous server's name.
+
+### Without a DSN
+
+Two cases do not have one: you are sending to **your own collector** rather than
+a hosted one, or you are trying the package out before you have a key. Name the
+parts instead.
+
+```typescript
+import { withBaton, HttpSink } from "@goodtiming/baton-sdk";
+
+const handle = withBaton(server, {
+  vendorId: "your-vendor", // the SERVER whose surface is captured
+  tenantId: "ten_7cd4c8cf", // the ACCOUNT the collector authenticates
+  vendorDisplayName: "Your Vendor",
+  sink: new HttpSink("https://your-collector.example.com", { apiKey: "..." }),
+});
+```
+
+Leave `sink` off and events go to stderr as JSON Lines — the quickest way to
+see that capture works at all, and the fastest way to see exactly what is
+collected. One real line from that stream, pretty-printed:
+
+```json
+{
+  "event_id": "01a091a9-24d0-732e-9e92-8165c2018a93",
+  "tenant_id": "ten_7cd4c8cf9a0e4b1d8f2a6c3e5b7d9f10",
+  "vendor_id": "your-vendor",
+  "session_id": "sdk-01a091a9-24c8-72c8-a64e-e49164e1f568",
+  "sequence_number": 3,
+  "captured_at": "2026-09-11T18:09:36.463Z",
+  "consent_token": "customer-consented",
+  "sdk_version": "ts-0.3.0",
+  "agent_runtime": "unknown",
+  "user_id": null,
+  "runtime_meta": null,
+  "event_type": "tool_call_start",
+  "payload": {
+    "tool_name": "lookup",
+    "params": { "name": "ACME Corp" },
+    "call_intent": "check the ACME account",
+    "call_expected": null,
+    "call_workflow": null,
+    "intent_source": "injected_param"
+  }
+}
+```
+
+`params` is the tool's own arguments, scrubbed. `call_intent` is what the
+calling agent said it was trying to do, captured through the injected
+`user_goal` param. The matching `tool_call_end` carries the result and a
+duration; a `surface_snapshot` of your tool list goes out once per session.
+
+`vendorId` and `tenantId` are different things, and one account wraps many
+servers — put the account id in both and two servers render as one, whose label
+flips to whichever deployed last. A DSN carries both, so this form is the only
+one that can get it wrong. `tenantId` resolves explicit → `BATON_TENANT_ID` →
+`vendorId`, and that last fallback is a migration shim: an unset
+`BATON_TENANT_ID` produces the collapse rather than an error.
+
+Every other option — the intent-param mode, a session-id resolver, your own
+scrubber — is set the same way with or without a DSN. Passing a `dsn` **and** an
+explicit `vendorId`, `tenantId` or `sink` throws: two sources for one value
+cannot be reconciled without guessing, and a wrong guess routes a server's
+traffic under someone else's identity. `consentToken` defaults to a value the
+SDK supplies, so you never carry one.
+
+### Turning capture off
+
+`BATON_DISABLED=1` in the environment of the process running the server, and
+this package installs nothing at all: no tool wrapping, no annotation tool, no
+instructions rewrite, no sink. Your server starts and behaves exactly as it
+would with the `withBaton` line deleted. It is read once at startup, it never
+writes to stdout (which is the JSON-RPC stream), and it cannot make your server
+fail to boot — a config this package would otherwise refuse is accepted and
+ignored while the switch is on.
+
+The switch belongs to whoever RUNS the server. For a server you distribute,
+that is your user. For one you host, it is you — your users cannot set an
+environment variable on your machine.
+
+<!-- D1 (publishable_key_per_server.md, owner: Ujwal): the consent paragraph
+     goes here, and it is a product/legal decision rather than a docs task. It
+     has to say WHAT is collected — tool-call content — and pair that with the
+     switch above. The position that the builder consents and their end users
+     do not is where Sentry and PostHog already stand, so it is defensible, but
+     it should be stated on purpose rather than inherited. Paired with S4 as
+     C14's gate; S4 shipped here in 0.3.1. -->
 
 Both `@modelcontextprotocol/sdk` (1.x) and `@modelcontextprotocol/server` (v2) are declared as **optional** peer dependencies: install whichever your server is built on, and nothing here resolves the other. This package imports neither — not at runtime, and not as a type, so a v2-only tree typechecks as well as it runs. `withBaton` takes the exported structural `SupportedMcpServer` type that both majors' `McpServer` classes satisfy, which is also how you annotate the parameter in your own code.
 

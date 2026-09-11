@@ -128,6 +128,27 @@ describe("a DSN reaches the wire", () => {
     for (const event of captured.events) expect(event.tenant_id).toBe(WORKSPACE);
   });
 
+  it("installs from an ambient BATON_DSN with NO second argument at all", async () => {
+    // The shape the README documents as `withBaton(server)`, and it needs
+    // three things to have landed together: the parameter defaults to `{}`,
+    // the DSN supplies the identity, and `consentToken` defaults. It was
+    // broken until the last of those, so it is pinned rather than inferred
+    // from the parts.
+    process.env.BATON_DSN = DSN;
+    const captured = stubCollector();
+    const server = new McpServer({ name: "vendor", version: "1.0.0" });
+    const handle = withBaton(server);
+
+    await driveOneToolCall(server);
+    await handle.flush();
+    await handle.aclose();
+
+    expect(captured.url).toBe("https://ingest.example.com/v0/events");
+    expect(captured.posts).toBe(captured.events.length);
+    expect(captured.events[0]?.vendor_id).toBe(SERVER);
+    expect(captured.events[0]?.consent_token).toBe(DEFAULT_CONSENT_TOKEN);
+  });
+
   it("configures an install from an ambient BATON_DSN", async () => {
     // The hosted-vendor case the variable exists for: one value instead of
     // five, and the vendor's edit rather than a branch in our recipe.
