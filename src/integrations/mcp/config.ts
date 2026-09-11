@@ -3,12 +3,20 @@
  * mirror of `baton` (Python)'s `integrations/_config.py::VendorConfig`.
  */
 
+import { VENDOR_ID_PATTERN } from "../../dsn.js";
 import type { Sink } from "../../sinks.js";
 
 // Vendor IDs are the annotation-tool-name prefix — same pattern Python
 // validates against. They are NOT the tenant id: see `BatonConfig.tenantId`,
 // which used to be a second copy of this value.
-const VENDOR_ID_PATTERN = /^[a-zA-Z0-9_-]{1,48}$/;
+//
+// Imported from `dsn.ts` rather than defined here, and re-exported so this
+// stays the name the rest of the integration reads: a DSN's server segment IS
+// a vendorId, so the parser applies this very rule, and a second copy of the
+// regex is how the two drift apart. This recipe has already costed that 48
+// wrong twice by writing the number down somewhere else. Python makes the
+// same move, for the same reason.
+export { VENDOR_ID_PATTERN } from "../../dsn.js";
 
 // Per-tool intent-param injection modes (mirrors baton-proxy's
 // BATON_INTENT_PARAM and Python's VendorConfig.intent_param_mode).
