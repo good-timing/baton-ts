@@ -145,7 +145,9 @@ SDK supplies, so you never carry one.
 
 `BATON_DISABLED=1` in the environment of the process running the server, and
 this package installs nothing at all: no tool wrapping, no annotation tool, no
-instructions rewrite, no sink. Your server starts and behaves exactly as it
+instructions rewrite, no collector connection. (`handle.sink` is still an
+object — a `DisabledSink` that holds no key, opens no socket and discards what
+it is given — so finding one there is not a sign the switch failed.) Your server starts and behaves exactly as it
 would with the `withBaton` line deleted. It is read once at startup, it never
 writes to stdout (which is the JSON-RPC stream), and it cannot make your server
 fail to boot — a config this package would otherwise refuse is accepted and
@@ -153,15 +155,19 @@ ignored while the switch is on.
 
 The switch belongs to whoever RUNS the server. For a server you distribute,
 that is your user. For one you host, it is you — your users cannot set an
-environment variable on your machine.
+environment variable on your machine, and there is no per-user opt-out today.
 
-<!-- D1 (publishable_key_per_server.md, owner: Ujwal): the consent paragraph
-     goes here, and it is a product/legal decision rather than a docs task. It
-     has to say WHAT is collected — tool-call content — and pair that with the
-     switch above. The position that the builder consents and their end users
-     do not is where Sentry and PostHog already stand, so it is defensible, but
-     it should be stated on purpose rather than inherited. Paired with S4 as
-     C14's gate; S4 shipped here in 0.3.1. -->
+**If you pass this on to your users, say where the variable goes.** For a
+server started by an MCP client, it belongs in the `env` block for your server
+in that client's config file — **not in their shell**. MCP clients spawn
+servers with a fixed, short allowlist of environment variables — six names on
+macOS and Linux, a different dozen on Windows — and `BATON_DISABLED` is on
+neither, so an exported one never reaches your process.
+Someone who follows "set the environment variable" gets a server that is still
+capturing and believes it is not.
+
+What you tell your users about what is captured is yours to write, on your own
+surface. This package does not put words in your README beyond the switch.
 
 Both `@modelcontextprotocol/sdk` (1.x) and `@modelcontextprotocol/server` (v2) are declared as **optional** peer dependencies: install whichever your server is built on, and nothing here resolves the other. This package imports neither — not at runtime, and not as a type, so a v2-only tree typechecks as well as it runs. `withBaton` takes the exported structural `SupportedMcpServer` type that both majors' `McpServer` classes satisfy, which is also how you annotate the parameter in your own code.
 
