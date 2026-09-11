@@ -76,10 +76,50 @@
   those three are the whole strip set — every other control character makes
   `new URL` throw — so the check is closed rather than a sample.
 
-- `test/setup.ts` clears `BATON_DSN` alongside `BATON_TENANT_ID`. An ambient
-  DSN does not merely change a tenant id: it replaces the vendor id, the tenant
-  id and the SINK, so a developer with one exported for a real server would
-  have this suite POST its fixtures at a live collector.
+- **`BATON_DISABLED=1` turns capture off, and TypeScript honours it now** —
+  S4, which shipped in Python on 2026-09-10 and did not exist here at all.
+  **Off means INSTALL NOTHING and NEVER THROW**: no tool wrapping, no
+  annotation tool on the surface, no instructions rewrite, no intent params, no
+  sink, no DSN parsed. The vendor's server starts and behaves exactly as it
+  would with no `withBaton` call in the file. Both halves are load-bearing — a
+  switch that can still abort a boot is worse than no switch, so a config that
+  would otherwise be refused comes back with a handle instead, and the guard
+  sits ahead of config resolution rather than after it (mutation-verified:
+  moving it below reds the two tests written for that).
+
+  **Nothing on stdout, ever.** A stdio MCP server speaks JSON-RPC there, so a
+  courteous "Baton is disabled" line would corrupt the stream and break the
+  server in precisely the deployment this switch exists for. Asserted rather
+  than assumed from the choice of function: the test spies on
+  `process.stdout.write`. The notice goes through `process.emitWarning`, this
+  package's existing channel, because `no-console` is an eslint error here and
+  carving an exception into a repo-wide rule for one line is worse than using
+  the channel already in use. ⚠ **Louder than Python's copy**, which logs at
+  INFO and is therefore silent in a server that configures no logging; this
+  package has no levels to be quiet at, and the alternative was saying nothing.
+
+  **`DO_NOT_TRACK` is deliberately NOT honoured**, matching Python, where it
+  was built and reversed the same day on a measurement: an MCP client does not
+  hand its environment to the server it spawns — both SDKs pass a fixed
+  allowlist that does not include it — so a global export never reaches a
+  wrapped stdio server, while a user editing their client config's `env` block
+  could have typed `BATON_DISABLED=1` there instead. ⚠ **Whose switch this is:**
+  whoever RUNS the server. For a distributed stdio server that is the end user.
+  For a HOSTED server it is the vendor, and the end user has no switch at all —
+  a per-end-user opt-out is the consent token and remains unbuilt.
+
+  Read once at install, never per event: a boot-time switch, not a live one, so
+  a mid-flight environment change cannot split one session's events across two
+  answers. Pinned in both directions.
+
+- `test/setup.ts` clears `BATON_DSN` and `BATON_DISABLED` alongside
+  `BATON_TENANT_ID`. An ambient DSN does not merely change a tenant id: it
+  replaces the vendor id, the tenant id and the SINK, so a developer with one
+  exported for a real server would have this suite POST its fixtures at a live
+  collector. And every capture assertion in the suite passes VACUOUSLY while
+  the off switch is on — green, and testing nothing — which is the shape that
+  cost the Python repo 203 failing tests for one contributor's globally
+  exported variable.
 
 ## 0.3.0 — 2026-09-11
 

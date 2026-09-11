@@ -24,13 +24,22 @@
  * replaces the vendor id, the tenant id and the SINK — so a developer with one
  * exported for a real server would have this suite POST its fixtures at a live
  * collector. Cleared in exactly the same two places, for the reason above.
+ *
+ * **`BATON_DISABLED` is cleared for a measured reason, not a symmetric one.**
+ * In the Python repo a contributor with it exported globally — Homebrew and
+ * the .NET CLI both honour the sibling variable it was briefly paired with —
+ * got a silently disabled SDK and 203 failing tests. Every capture assertion
+ * in this suite passes vacuously when the switch is on, which is the worst
+ * shape a missing clear can have: green, and testing nothing.
  */
 import { beforeEach } from "vitest";
 
 delete process.env.BATON_TENANT_ID;
 delete process.env.BATON_DSN;
+delete process.env.BATON_DISABLED;
 
 beforeEach(() => {
   delete process.env.BATON_TENANT_ID;
   delete process.env.BATON_DSN;
+  delete process.env.BATON_DISABLED;
 });

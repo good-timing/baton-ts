@@ -92,6 +92,7 @@ import { StdoutSink, type Sink } from "../../sinks.js";
 import { registerAnnotationTool } from "./annotation.js";
 import { Scrubber } from "../../scrub.js";
 import { resolveBatonConfig, resolveTenantId, type BatonConfig } from "./config.js";
+import { captureDisabled, DisabledSink, logDisabled } from "../../optout.js";
 import { emit } from "./emit.js";
 import { BatonHandle } from "./handle.js";
 import { buildServerInstructions } from "./llmText.js";
@@ -609,6 +610,30 @@ export interface SupportedMcpServer {
 
 /** Install Baton into an `McpServer`. See module docstring for usage. */
 export function withBaton(server: SupportedMcpServer, supplied: BatonConfig = {}): BatonHandle {
+  // ⚠ **FIRST — ahead of config resolution, every validation, and every
+  // mutation of the vendor's server.** Off means install nothing and never
+  // throw, so this cannot sit after a check that raises: a switch that can
+  // still abort a vendor's boot is worse than no switch. It also has to
+  // precede `resolveBatonConfig`, which would otherwise parse a DSN and
+  // construct an `HttpSink` for capture that is not going to happen.
+  const disabledBy = captureDisabled();
+  if (disabledBy !== null) {
+    logDisabled(disabledBy, "withBaton");
+    return new BatonHandle({
+      // A sink the VENDOR constructed is held rather than dropped, so their
+      // `handle.aclose()` still releases it — we took ownership of that object
+      // the moment they passed it, and the switch does not undo that. Nothing
+      // writes to it: nothing is wrapped.
+      sink: supplied.sink ?? new DisabledSink(),
+      // Empty, and a constant, because when the switch is on nothing was
+      // resolved: inventing a session id would put a real identifier on a
+      // handle whose whole meaning is that no events exist under it.
+      vendorId: "",
+      sessionId: "baton-disabled",
+      annotationToolName: "",
+    });
+  }
+
   // Shadowed deliberately: every path below — the tool wrappers, the
   // annotation tool, the surface snapshot — closes over `config`, and one of
   // them reading the caller's raw object would emit its events under a
