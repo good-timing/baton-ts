@@ -21,6 +21,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { withBaton } from "../../../src/integrations/mcp/withBaton.js";
 import { resolveBatonConfig } from "../../../src/integrations/mcp/config.js";
 import { HttpSink, StdoutSink } from "../../../src/sinks.js";
+import { DEFAULT_CONSENT_TOKEN } from "../../../src/events.js";
 
 const WORKSPACE = "ten_655b084e118b43f88992ee6357fcc23c";
 const KEY = "baton_pk_" + "a".repeat(43);
@@ -244,6 +245,54 @@ describe("two sources for one value", () => {
   });
 });
 
+describe("the consent token", () => {
+  it("lets a DSN be the WHOLE configuration", async () => {
+    // The claim the lane exists for: one value in a distributable server's
+    // source, and nothing else. Asserted on the envelope, because a config
+    // that resolves and a sink that never carries it are the same outcome.
+    const captured = stubCollector();
+    const server = new McpServer({ name: "vendor", version: "1.0.0" });
+    const handle = withBaton(server, { dsn: DSN });
+
+    await driveOneToolCall(server);
+    await handle.flush();
+    await handle.aclose();
+
+    expect(captured.posts).toBe(captured.events.length);
+    expect(captured.events.length).toBeGreaterThan(0);
+    for (const event of captured.events) {
+      expect(event.consent_token).toBe(DEFAULT_CONSENT_TOKEN);
+    }
+  });
+
+  it("keeps an explicit token", () => {
+    expect(resolveBatonConfig({ dsn: DSN, consentToken: "ct" }).consentToken).toBe("ct");
+  });
+
+  it("refuses an explicitly emptied one", () => {
+    // A value the vendor deliberately emptied is a mistake, not a request for
+    // the default — and the message says which of the two it will accept.
+    expect(() => resolveBatonConfig({ dsn: DSN, consentToken: "" })).toThrow(
+      /Omit it to take the SDK's default/,
+    );
+  });
+
+  it("reads no environment variable for it, deliberately", () => {
+    // Pinned as an ABSENCE, because the obvious "fix" is to add the read.
+    // Python reads BATON_CONSENT_TOKEN on its `Client` door only; its
+    // `VendorConfig` — the door this package mirrors — takes a plain default,
+    // and the `os.environ[...]` in its install examples is the RECIPE passing
+    // a value, not the SDK reading one. Honouring it here would make this arm
+    // behave differently from the Python door it mirrors.
+    process.env.BATON_CONSENT_TOKEN = "from-the-environment";
+    try {
+      expect(resolveBatonConfig({ dsn: DSN }).consentToken).toBe(DEFAULT_CONSENT_TOKEN);
+    } finally {
+      delete process.env.BATON_CONSENT_TOKEN;
+    }
+  });
+});
+
 describe("an install with neither", () => {
   it("names the dsn as the other way to supply a vendorId", () => {
     // `withBaton(server, {})` used to fail a regex test against `undefined`,
@@ -253,9 +302,4 @@ describe("an install with neither", () => {
     );
   });
 
-  it("still refuses a DSN install that omits the consent token", () => {
-    // The one value a DSN does not carry. Defaulting it is S3's job; until
-    // then this is refused BY NAME rather than by a type error.
-    expect(() => resolveBatonConfig({ dsn: DSN })).toThrow(/consentToken/);
-  });
 });

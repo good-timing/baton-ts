@@ -4,6 +4,7 @@
  */
 
 import { parseDsn, selectDsn, VENDOR_ID_PATTERN } from "../../dsn.js";
+import { DEFAULT_CONSENT_TOKEN } from "../../events.js";
 import { HttpSink, type Sink } from "../../sinks.js";
 
 // Vendor IDs are the annotation-tool-name prefix — same pattern Python
@@ -89,13 +90,20 @@ export interface BatonConfig {
    * put a fabricated name in front of their users. */
   vendorDisplayName?: string;
   /** End-user consent token attached to every emitted event per SPEC §2.3 —
-   * required, the Console MUST reject events missing it.
+   * the Console MUST reject events missing it.
    *
-   * Optional on this interface and still REQUIRED at validation: it is the one
-   * value a DSN does not carry, and defaulting it is S3's job, not this
-   * field's. Until then an install that omits it is refused by name rather
-   * than by a type error, which is the same answer a `dsn`-only install gets
-   * everywhere else. */
+   * **Defaulted, so the customer never has to carry it** — see
+   * `DEFAULT_CONSENT_TOKEN` for why the field stays on the wire regardless.
+   * Passing `""` explicitly still throws: a value the vendor deliberately
+   * emptied is a mistake, not a request for the default.
+   *
+   * ⚠ **No environment variable is read for this, and that is parity rather
+   * than a gap.** Python reads `BATON_CONSENT_TOKEN` on its `Client` door
+   * only; its `VendorConfig` — the door this package mirrors — takes a plain
+   * default, and the `os.environ["BATON_CONSENT_TOKEN"]` in its install
+   * examples is the RECIPE passing a value explicitly, not the SDK reading
+   * one. Adding the read here would make this arm honour a variable the
+   * equivalent Python door ignores. */
   consentToken?: string;
   /** Where events go. Defaults to `new StdoutSink()` — zero-config dev mode. */
   sink?: Sink;
@@ -198,8 +206,12 @@ export function resolveBatonConfig(config: BatonConfig): ResolvedBatonConfig {
   );
 
   if (dsnString === undefined) {
-    validateBatonConfig(config);
-    return config;
+    const defaulted: BatonConfig = {
+      ...config,
+      consentToken: config.consentToken ?? DEFAULT_CONSENT_TOKEN,
+    };
+    validateBatonConfig(defaulted);
+    return defaulted;
   }
 
   const dsn = parseDsn(dsnString);
@@ -214,6 +226,10 @@ export function resolveBatonConfig(config: BatonConfig): ResolvedBatonConfig {
     vendorId: dsn.vendorId,
     tenantId: dsn.tenantId,
     vendorDisplayName: config.vendorDisplayName || dsn.vendorId,
+    // `??`, not `||`: an explicit empty string must survive to the validation
+    // below and be REFUSED there, rather than be quietly replaced by the
+    // default it was deliberately not left as.
+    consentToken: config.consentToken ?? DEFAULT_CONSENT_TOKEN,
   };
 
   // Validated BEFORE the sink is built. The ordering is parity with Python,
@@ -254,7 +270,18 @@ export function validateBatonConfig(config: BatonConfig): asserts config is Reso
         "and the annotation tool description (whitelabel obligation, SPEC §5.4).",
     );
   }
+  if (config.consentToken !== undefined && !config.consentToken) {
+    throw new Error(
+      "BatonConfig.consentToken was set to an empty string, and events " +
+        "without a valid consent_token MUST be rejected by the consumer per " +
+        "SPEC §2.3. Omit it to take the SDK's default.",
+    );
+  }
   if (!config.consentToken) {
+    // Reached only by a direct call: `resolveBatonConfig` fills the default in
+    // before validating. Kept because this function is exported and asserts
+    // the field is present — an assertion signature that can be true while the
+    // field is missing is worse than no signature.
     throw new Error(
       "BatonConfig.consentToken is required per SPEC §2.3 — events without a " +
         "valid consent_token MUST be rejected by the consumer.",

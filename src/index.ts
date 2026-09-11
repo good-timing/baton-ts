@@ -39,6 +39,8 @@ export type {
   SurfaceSnapshotPayload,
 } from "./events.js";
 
+export { DEFAULT_CONSENT_TOKEN } from "./events.js";
+
 export {
   EventSchema,
   EventTypeSchema,

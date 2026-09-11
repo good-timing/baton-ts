@@ -116,6 +116,20 @@ export type SurfaceSnapshotPayload = z.infer<typeof SurfaceSnapshotPayloadSchema
  * `runtimeMeta` is the runtime-supplied MCP request `_meta` envelope, used
  * by the Console to derive turn/cycle boundaries more precise than
  * `session_id` alone. */
+/**
+ * What the SDK puts in `consent_token` when the vendor names no other value.
+ * Byte-for-byte Python's `baton.events.DEFAULT_CONSENT_TOKEN`, and the two
+ * must not drift: a collector comparing the field across arms would see two
+ * populations where there is one.
+ *
+ * **The field stays on the wire and the customer stops carrying it.** SPEC
+ * §2.3 governs the envelope, not the config, so defaulting here changes
+ * nothing a consumer sees — this is the value the onboarding recipe has been
+ * minting into `BATON_CONSENT_TOKEN` all along, now stated once instead of
+ * threaded through an environment variable that reads to nobody.
+ */
+export const DEFAULT_CONSENT_TOKEN = "customer-consented";
+
 const envelopeShape = {
   event_id: z.uuid().default(() => uuidv7()),
   tenant_id: z.string(),
