@@ -166,6 +166,27 @@ export class HttpSink implements Sink {
     this.fetchImpl = options.fetchImpl ?? fetch;
   }
 
+  /**
+   * What this sink shows when something prints it — never the bearer.
+   *
+   * ⚠ **A sink built from a DSN holds a key the vendor never typed**, and it
+   * hangs off `BatonHandle.sink` and off the resolved config, so
+   * `console.log(handle.sink)` or a structured logger serialising either one
+   * wrote a publishable key into the vendor's logs. Found by the S2 test that
+   * asserts the DSN's own string does not survive resolution: it does not, and
+   * the key was one field further down. Same treatment as the parsed DSN —
+   * `toJSON` for serialisers, the inspect symbol for `console.log`, and
+   * `Symbol.for` rather than importing `node:util`, since this package runs on
+   * runtimes that have no such module.
+   */
+  toJSON(): Record<string, unknown> {
+    return { url: this.url, apiKey: "<key>" };
+  }
+
+  [Symbol.for("nodejs.util.inspect.custom")](): Record<string, unknown> {
+    return this.toJSON();
+  }
+
   async write(event: Event): Promise<void> {
     if (this.closed) throw new Error("HttpSink is closed");
     this.enqueue(event);

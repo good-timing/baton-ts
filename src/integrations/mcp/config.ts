@@ -3,8 +3,8 @@
  * mirror of `baton` (Python)'s `integrations/_config.py::VendorConfig`.
  */
 
-import { VENDOR_ID_PATTERN } from "../../dsn.js";
-import type { Sink } from "../../sinks.js";
+import { parseDsn, selectDsn, VENDOR_ID_PATTERN } from "../../dsn.js";
+import { HttpSink, type Sink } from "../../sinks.js";
 
 // Vendor IDs are the annotation-tool-name prefix — same pattern Python
 // validates against. They are NOT the tenant id: see `BatonConfig.tenantId`,
@@ -36,10 +36,33 @@ export type ResolveSessionIdHook = (
 ) => string | null | undefined | Promise<string | null | undefined>;
 
 export interface BatonConfig {
+  /** The packed connection string from /account — one value carrying the
+   * ingest host, the workspace, the server and the key that binds them.
+   *
+   * `withBaton(server, { dsn })` is the whole wrap block a DISTRIBUTABLE
+   * server ships with, and that is the case it exists for: a stdio server
+   * runs on every user's machine, so five `BATON_*` variables are five values
+   * that never arrive. Resolved explicit → `BATON_DSN` → unset.
+   *
+   * **Environment variables do not override it.** A server being re-onboarded
+   * has last install's `.env` beside the new inline DSN, and if these values
+   * fell through to `BATON_TENANT_ID` the way an unset field does, the stale
+   * file would win silently and the events would arrive under the previous
+   * server's name.
+   *
+   * Passing a dsn AND an explicit `vendorId`, `tenantId` or `sink` throws:
+   * two sources for one value cannot be reconciled without guessing, and a
+   * wrong guess routes a server's traffic under someone else's identity.
+   * Everything else — the display name, the scrubber, the injection modes,
+   * every identity option — is unaffected; set them alongside a dsn freely. */
+  dsn?: string;
   /** Short stable identifier for the SERVER whose surface is captured
    * (e.g. `"acme"`). Also the default annotation tool name prefix
-   * (`{vendorId}_annotate`). This is not the account — see `tenantId`. */
-  vendorId: string;
+   * (`{vendorId}_annotate`). This is not the account — see `tenantId`.
+   *
+   * Required unless a `dsn` supplies it — the DSN's last path segment IS this
+   * value, and it is what the key is BOUND to. */
+  vendorId?: string;
   /** Account identifier for the envelope's `tenant_id` (SPEC §11.4).
    *
    * **This is not `vendorId`, and conflating them is the bug this field
@@ -58,11 +81,22 @@ export interface BatonConfig {
   tenantId?: string;
   /** Human-readable vendor name used in server instructions and the
    * annotation tool description — whitelabel obligation (SPEC §5.4): no
-   * Baton-branded strings reach the calling agent. */
-  vendorDisplayName: string;
+   * Baton-branded strings reach the calling agent.
+   *
+   * Defaults to the DSN's server segment VERBATIM when a `dsn` is given and
+   * this is not. Verbatim rather than prettified: this string reaches the
+   * calling agent, so inventing a capitalisation the vendor never chose would
+   * put a fabricated name in front of their users. */
+  vendorDisplayName?: string;
   /** End-user consent token attached to every emitted event per SPEC §2.3 —
-   * required, the Console MUST reject events missing it. */
-  consentToken: string;
+   * required, the Console MUST reject events missing it.
+   *
+   * Optional on this interface and still REQUIRED at validation: it is the one
+   * value a DSN does not carry, and defaulting it is S3's job, not this
+   * field's. Until then an install that omits it is refused by name rather
+   * than by a type error, which is the same answer a `dsn`-only install gets
+   * everywhere else. */
+  consentToken?: string;
   /** Where events go. Defaults to `new StdoutSink()` — zero-config dev mode. */
   sink?: Sink;
   /** Default `agent_runtime` when `_meta` heuristics can't detect one. */
@@ -118,7 +152,96 @@ export function resolveTenantId(explicit: string | undefined, vendorId: string):
   return vendorId;
 }
 
-export function validateBatonConfig(config: BatonConfig): void {
+/**
+ * A config with everything the DSN can supply already filled in.
+ *
+ * The three fields are required HERE and optional on `BatonConfig`, so the
+ * compiler enforces that `withBaton` reads the resolved value: the wrap paths,
+ * the annotation tool and the surface snapshot all close over this object, and
+ * one of them reading the caller's raw config would emit events under a
+ * different identity than the rest.
+ */
+export interface ResolvedBatonConfig extends BatonConfig {
+  vendorId: string;
+  vendorDisplayName: string;
+  consentToken: string;
+}
+
+/**
+ * Fill in whatever the DSN carries, returning a config nothing downstream has
+ * to know about. Mirrors Python's `integrations/_config.py::resolve_config`.
+ *
+ * **Everything a DSN supplies lands at the EXPLICIT tier, above the
+ * environment** — see `BatonConfig.dsn` for why that matters more than it
+ * sounds. A NEW object is returned rather than the caller's mutated: a vendor
+ * may hold one config and hand it to two servers, and an install that rewrote
+ * its argument would make the second inherit the first's resolution.
+ *
+ * ⚠ **The parsed key is NOT kept on the returned config.** It reaches the sink
+ * and stops there. Python retains its `dsn` string on the config and pays for
+ * it — `repr(VendorConfig)` prints the bearer, which is one of the leaks
+ * parked for that repo — and nothing here reads the string after parsing, so
+ * this arm simply does not import the problem.
+ */
+export function resolveBatonConfig(config: BatonConfig): ResolvedBatonConfig {
+  const dsnString = selectDsn(
+    config.dsn,
+    {
+      // Truthiness per field, mirroring Python's `bool()` / `is not None`
+      // split: an empty `vendorId` is an unset one, while an explicitly
+      // supplied `tenantId` or `sink` is a conflict whatever it holds.
+      vendorId: Boolean(config.vendorId),
+      tenantId: config.tenantId !== undefined,
+      sink: config.sink !== undefined,
+    },
+    "BatonConfig",
+  );
+
+  if (dsnString === undefined) {
+    validateBatonConfig(config);
+    return config;
+  }
+
+  const dsn = parseDsn(dsnString);
+  // The packed string is DELETED rather than overwritten with `undefined`:
+  // `exactOptionalPropertyTypes` refuses the latter, and dropping the property
+  // is what is wanted anyway — see the note above about not keeping the
+  // bearer on an object that outlives this call.
+  const rest: BatonConfig = { ...config };
+  delete rest.dsn;
+  const identity: BatonConfig = {
+    ...rest,
+    vendorId: dsn.vendorId,
+    tenantId: dsn.tenantId,
+    vendorDisplayName: config.vendorDisplayName || dsn.vendorId,
+  };
+
+  // Validated BEFORE the sink is built. The ordering is parity with Python,
+  // where `HttpSink.__init__` eagerly constructs an httpx client that a later
+  // validation failure would leave unclosed; this `HttpSink` holds no resource
+  // until its first write, so here the order protects nothing and is kept so
+  // the two arms cannot answer "what happens on a bad config" differently.
+  validateBatonConfig(identity);
+
+  // `identity` is a ResolvedBatonConfig from here — `validateBatonConfig` is
+  // an assertion signature, so the three required fields are proven by the
+  // same call that refuses a config missing them, rather than re-asserted with
+  // a cast that would go on compiling if a check were ever deleted.
+  return {
+    ...identity,
+    // The origin is scheme + authority; `HttpSink` appends `/v0/events`
+    // itself, exactly as it does for an explicitly-constructed sink.
+    sink: new HttpSink(dsn.origin, { apiKey: dsn.key }),
+  };
+}
+
+export function validateBatonConfig(config: BatonConfig): asserts config is ResolvedBatonConfig {
+  if (!config.vendorId) {
+    throw new Error(
+      "BatonConfig needs a vendorId — either directly, or via a dsn whose " +
+        "last path segment names the server (see /account).",
+    );
+  }
   if (!VENDOR_ID_PATTERN.test(config.vendorId)) {
     throw new Error(
       `vendorId ${JSON.stringify(config.vendorId)} must match ${VENDOR_ID_PATTERN.source} ` +

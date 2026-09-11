@@ -91,7 +91,7 @@ import {
 import { StdoutSink, type Sink } from "../../sinks.js";
 import { registerAnnotationTool } from "./annotation.js";
 import { Scrubber } from "../../scrub.js";
-import { resolveTenantId, validateBatonConfig, type BatonConfig } from "./config.js";
+import { resolveBatonConfig, resolveTenantId, type BatonConfig } from "./config.js";
 import { emit } from "./emit.js";
 import { BatonHandle } from "./handle.js";
 import { buildServerInstructions } from "./llmText.js";
@@ -608,8 +608,17 @@ export interface SupportedMcpServer {
 }
 
 /** Install Baton into an `McpServer`. See module docstring for usage. */
-export function withBaton(server: SupportedMcpServer, config: BatonConfig): BatonHandle {
-  validateBatonConfig(config);
+export function withBaton(server: SupportedMcpServer, supplied: BatonConfig = {}): BatonHandle {
+  // Shadowed deliberately: every path below — the tool wrappers, the
+  // annotation tool, the surface snapshot — closes over `config`, and one of
+  // them reading the caller's raw object would emit its events under a
+  // different identity than the rest. `ResolvedBatonConfig`'s required fields
+  // are what make that a compile error rather than a review question.
+  //
+  // The parameter defaults to `{}` so `withBaton(server)` works when
+  // `BATON_DSN` is exported — the hosted-vendor shape, and Python's
+  // `install_baton(mcp)` with nothing but the environment.
+  const config = resolveBatonConfig(supplied);
   const sink = config.sink ?? new StdoutSink();
   const annotationToolName = config.annotationToolName || `${config.vendorId}_annotate`;
   const intentParamMode: IntentParamMode = config.intentParamMode ?? "optional";
