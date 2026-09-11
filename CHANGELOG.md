@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.3.1 — unreleased
+## 0.3.1 — 2026-09-11
 
 - **A server can be configured by ONE string.** `withBaton(server, { dsn })` is
   now the whole wrap block, replacing five `BATON_*` values with the packed
