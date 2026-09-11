@@ -23,7 +23,7 @@
  */
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { VENDOR_ID_PATTERN, parseDsn, redact, resolveDsn, selectDsn } from "../src/dsn.js";
+import { VENDOR_ID_PATTERN, parseDsn, redact, selectDsn } from "../src/dsn.js";
 
 const WORKSPACE = "ten_655b084e118b43f88992ee6357fcc23c";
 const KEY = "baton_pk_" + "a".repeat(43);
@@ -288,30 +288,6 @@ describe("redact", () => {
   });
 });
 
-describe("resolveDsn", () => {
-  it("prefers an explicit value over the environment", () => {
-    process.env.BATON_DSN = "https://env@h/ten_x/srv";
-    expect(resolveDsn(DSN)).toBe(DSN);
-  });
-
-  it("falls back to the environment", () => {
-    process.env.BATON_DSN = DSN;
-    expect(resolveDsn(undefined)).toBe(DSN);
-  });
-
-  it("is undefined when neither is set", () => {
-    expect(resolveDsn(undefined)).toBeUndefined();
-  });
-
-  it("does not treat an empty environment variable as a DSN", () => {
-    // Set-but-empty is how a shell exports a variable it failed to fill.
-    // Treating it as a value would raise a parse error naming a string the
-    // vendor never wrote.
-    process.env.BATON_DSN = "";
-    expect(resolveDsn(undefined)).toBeUndefined();
-  });
-});
-
 describe("selectDsn", () => {
   // An environment variable is not something the caller passed. Folding the
   // two together let an ambient `BATON_DSN` collide with an explicit config
@@ -361,6 +337,16 @@ describe("selectDsn", () => {
     const warnings = captureWarnings();
     selectDsn(undefined, { vendorId: true }, "BatonConfig");
     expect(warnings.text()).not.toContain(KEY);
+  });
+
+  it("treats an explicitly EMPTY dsn as unset, not as a conflict", () => {
+    // Same rule as the environment read beside it: set-but-empty is how a
+    // value that failed to fill arrives. `dsn: process.env.MY_DSN ?? ""` used
+    // to kill the install naming a dsn the vendor never wrote, and pointing
+    // them at the wrong value to remove.
+    expect(selectDsn("", { vendorId: true }, "BatonConfig")).toBeUndefined();
+    process.env.BATON_DSN = DSN;
+    expect(selectDsn("", { vendorId: false }, "BatonConfig")).toBe(DSN);
   });
 
   it("is undefined when nothing is set anywhere", () => {
@@ -561,6 +547,22 @@ describe("the leaks review found", () => {
     parseDsn(`https://baton_sk_${"d".repeat(43)}@h.example.com/${WORKSPACE}/srv`);
     expect(warnings.text()).toContain("baton_sk_");
     expect(warnings.text()).toContain("baton_pk_");
+  });
+
+  it.each([
+    ["a tab", "\t"],
+    ["a line feed", "\n"],
+    ["a carriage return", "\r"],
+  ])("refuses %s inside the host", (_name, ch) => {
+    // The backslash guard could not see these: WHATWG REMOVES them before
+    // parsing rather than folding them, so the host comes out as one joined
+    // name and `pathname` is still `/`. `fetch` strips identically, so the
+    // request would go to a host the vendor never wrote — silently, at the
+    // first tool call. Measured that these three are the whole strip set:
+    // every other control character makes `new URL` throw.
+    expect(() =>
+      parseDsn(`https://${KEY}@ingest.example.com${ch}evil.com/${WORKSPACE}/srv`),
+    ).toThrow(/tab or line break/);
   });
 
   it("refuses a backslash-smuggled path in the authority", () => {

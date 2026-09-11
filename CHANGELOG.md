@@ -1,5 +1,86 @@
 # Changelog
 
+## 0.3.1 — unreleased
+
+- **A server can be configured by ONE string.** `withBaton(server, { dsn })` is
+  now the whole wrap block, replacing five `BATON_*` values with the packed
+  connection string from `/account`. This is not ergonomics: a **stdio** server
+  runs on every user's machine, so values that live in an operator's `.env`
+  are values that never arrive, and the TypeScript arm writing five of them
+  left that defect live for every TypeScript server. Port of Python's
+  `baton/_dsn.py` and `integrations/_config.py::resolve_config` — S1-S3 of the
+  publishable-key lane. `BatonConfig` gains `dsn`; `vendorId`,
+  `vendorDisplayName` and `consentToken` become optional because the string
+  supplies the first two and `DEFAULT_CONSENT_TOKEN` the third. **Public type
+  change, no wire change**: the envelope is untouched, so no consumer deploy is
+  implied.
+
+  **Everything a DSN supplies lands at the EXPLICIT tier, above the
+  environment.** The shape it exists for is a RE-onboarded server whose old
+  `.env` sits beside the new inline value; if these fell through to
+  `BATON_TENANT_ID` the way an unset field does, the stale file would win
+  silently and the events would arrive under the previous server's name.
+  Asserted on the POSTed envelope, not the config object — a resolver that
+  computes the right values and a sink that never carries them are the same
+  outcome for the customer.
+
+  **Three deliberate divergences from Python, each measured rather than
+  argued.** (1) The DSN is split by hand rather than by `new URL`: WHATWG
+  percent-encodes userinfo, so `new URL("https://a@b@host/x/y").username` is
+  `"a%40b"` — an ALTERED key, which the collector hashes whole and matches to
+  no row — and `decodeURIComponent` cannot undo it, because the tail is
+  deliberately unvalidated and a literal `%` in one is legal. `new URL` is kept
+  as the HOST validator only, after the credential is split off, since Node's
+  `ERR_INVALID_URL` carries the string it was handed on `error.input`. (2) An
+  explicitly empty `dsn` is treated as unset rather than as supplied — the
+  rule this package already applies to `BATON_TENANT_ID` and to `BATON_DSN`
+  itself — because `dsn: process.env.MY_DSN ?? ""` otherwise kills the install
+  naming a value the vendor never filled. Python uses `is not None` and still
+  has that behaviour. (3) No `BATON_CONSENT_TOKEN` is read: Python resolves
+  that variable on its `Client` door, while `VendorConfig` — the door this
+  package mirrors — takes a plain default, so reading it here would honour a
+  variable the equivalent Python door ignores. Pinned by a test that exports it
+  and asserts it loses, because the obvious future "fix" is to add the read.
+
+- **The SDK no longer prints a credential it was handed.** Four leaks, three of
+  them ported in from the Python original and fixed here first, all reproduced
+  before being touched:
+  a key in the AUTHORITY slot (`https://baton_pk_…` — the RETRY the bare-key
+  refusal steers people into, since it says "copy the full value, which starts
+  with `https://`"); a key GLUED to a path segment (`srv-baton_pk_…`, which
+  always exceeds the 48-character ceiling and so always reached the raw
+  interpolation); the parsed DSN printing its own bearer under `console.log`,
+  `util.inspect` and any structured logger's `JSON.stringify`; and `HttpSink`
+  doing the same, which matters now in a way it did not before — the SDK builds
+  that sink from a key the vendor never handles and hangs it off
+  `BatonHandle.sink`.
+
+  The redaction is one scan of the finished string at the single throw site,
+  rather than a list of slots that each remember to elide, because "a slot
+  added later forgets" was the shape of all three. The scan has a floor on the
+  tail (8+ key-alphabet characters) so it can run over finished sentences
+  without eating this module's own `https://baton_pk_...@host/…` example.
+  ⚠ That sweep and the key-in-slot refusal cover the glued case JOINTLY and
+  neither is load-bearing alone — measured: removing either reds no test,
+  removing both reds three. Written into the source, because a reader who
+  deletes one of them sees green and concludes it was dead.
+
+- **Two ways a DSN could dial a host the vendor never wrote.** A backslash is
+  folded to `/` by WHATWG for special schemes, so `host\evil` passed the
+  validator as a host with a path while the split kept it whole as the
+  authority — `HttpSink` appended `/v0/events` and `fetch` resolved it to
+  `host/evil/v0/events`: events dropped at the first tool call, from an install
+  that raised nothing. Tab, line feed and carriage return are REMOVED rather
+  than folded, so `ingest.example.com\nevil.com` parsed as one joined host with
+  `pathname` still `/`, defeating the first fix's own criterion. Measured that
+  those three are the whole strip set — every other control character makes
+  `new URL` throw — so the check is closed rather than a sample.
+
+- `test/setup.ts` clears `BATON_DSN` alongside `BATON_TENANT_ID`. An ambient
+  DSN does not merely change a tenant id: it replaces the vendor id, the tenant
+  id and the SINK, so a developer with one exported for a real server would
+  have this suite POST its fixtures at a live collector.
+
 ## 0.3.0 — 2026-09-11
 
 - **A caller can no longer assert its own runtime.** `detectAgentRuntime` honoured an `_meta.baton.agent_runtime` override, and the Python SDK it mirrors removed that override in both its spellings — the nested form at B5, the reverse-DNS `io.baton/*` form on 2026-09-09, leaving SPEC §5.2 reading "Recognized keys: none". This package kept reading the nested one, so **two sensors watching the same client could disagree about what it is**, which is the one thing a detector shared across sensors must not do. `agent_runtime` is self-reported and never attested; an override lets the thing being measured choose its own label.

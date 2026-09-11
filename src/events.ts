@@ -106,16 +106,6 @@ export type SurfaceSnapshotPayload = z.infer<typeof SurfaceSnapshotPayloadSchema
 // Envelope shared by all event types
 // =============================================================================
 
-/** Fields every Baton event carries, per SPEC §11.4.
- *
- * `consentToken` is REQUIRED — the Console rejects any event missing it.
- * `vendorId` is REQUIRED — the wrapped vendor identifier; the Console groups
- * friction by `(tenant_id, vendor_id)`.
- * `userId` is the hashed end-user actor (HMAC-SHA256, hashed at the capture
- * edge — the raw principal is never transmitted); null when unresolved.
- * `runtimeMeta` is the runtime-supplied MCP request `_meta` envelope, used
- * by the Console to derive turn/cycle boundaries more precise than
- * `session_id` alone. */
 /**
  * What the SDK puts in `consent_token` when the vendor names no other value.
  * Byte-for-byte Python's `baton.events.DEFAULT_CONSENT_TOKEN`, and the two
@@ -130,6 +120,16 @@ export type SurfaceSnapshotPayload = z.infer<typeof SurfaceSnapshotPayloadSchema
  */
 export const DEFAULT_CONSENT_TOKEN = "customer-consented";
 
+/** Fields every Baton event carries, per SPEC §11.4.
+ *
+ * `consentToken` is REQUIRED — the Console rejects any event missing it.
+ * `vendorId` is REQUIRED — the wrapped vendor identifier; the Console groups
+ * friction by `(tenant_id, vendor_id)`.
+ * `userId` is the hashed end-user actor (HMAC-SHA256, hashed at the capture
+ * edge — the raw principal is never transmitted); null when unresolved.
+ * `runtimeMeta` is the runtime-supplied MCP request `_meta` envelope, used
+ * by the Console to derive turn/cycle boundaries more precise than
+ * `session_id` alone. */
 const envelopeShape = {
   event_id: z.uuid().default(() => uuidv7()),
   tenant_id: z.string(),

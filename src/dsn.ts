@@ -307,18 +307,6 @@ function dsnFromEnvironment(): string | undefined {
 }
 
 /**
- * `dsn`: explicit argument → `BATON_DSN` → undefined.
- *
- * The SDK's existing precedence rule, unchanged. `BATON_DSN` exists for the
- * hosted vendor who will not put the value in source: one environment variable
- * instead of five, and their edit rather than a branch in the install recipe.
- */
-export function resolveDsn(explicit: string | undefined): string | undefined {
-  if (explicit !== undefined) return explicit;
-  return dsnFromEnvironment();
-}
-
-/**
  * Which DSN applies, given what the caller ALSO configured by hand.
  *
  * ⚠ **An environment variable is not something the caller passed, and the
@@ -356,7 +344,16 @@ export function selectDsn(
     .filter((name) => supplied[name])
     .sort();
 
-  if (explicit !== undefined) {
+  // ⚠ **Falsy means unset, matching `dsnFromEnvironment` above and
+  // `resolveTenantId`** — `!== undefined` was the first cut and the two rules
+  // disagreed. A vendor writing `dsn: process.env.MY_DSN ?? ""`, or a config
+  // loader that fills unset keys with `""`, got an install that died naming a
+  // dsn they never filled and pointed them at the wrong value to delete.
+  //
+  // ⚠ Python uses `is not None` here and therefore still has that behaviour;
+  // this is a deliberate divergence, recorded for the back-port rather than
+  // left to be found twice.
+  if (explicit) {
     if (conflicts.length > 0) {
       fail(
         `${door} got both a dsn and an explicit ${conflicts[0]} — the dsn ` +
@@ -489,6 +486,24 @@ export function parseDsn(raw: string): Dsn {
   // Asserted on what the URL parser MADE of the authority rather than by
   // adding `\` to the terminator set, because the question is not which
   // characters WHATWG folds — it is whether anything but a host survived.
+  //
+  // ⚠ **The assertion below sees a FOLD and not a STRIP, and WHATWG does
+  // both.** `\t`, `\n` and `\r` are REMOVED before parsing rather than
+  // folded, so `ingest.example.com\nevil.com` parses as the single host
+  // `ingest.example.comevil.com` with `pathname` still `/` — the check passes,
+  // the origin keeps the raw string, and `fetch` strips identically and dials
+  // a host the vendor never wrote. Measured: those three are the WHOLE strip
+  // set, because every other control character and the space make `new URL`
+  // throw, so this list is closed rather than a sample.
+  if (/[\t\n\r]/.test(authority)) {
+    fail(
+      `dsn ${safe} has a tab or line break inside its host. Those characters ` +
+        `are REMOVED rather than rejected when a URL is parsed, so the ` +
+        `address dialled would be a host you did not write — check for a ` +
+        `line wrap where the value was copied.`,
+    );
+  }
+
   if (
     parsedAuthority.pathname !== "/" ||
     parsedAuthority.search !== "" ||
