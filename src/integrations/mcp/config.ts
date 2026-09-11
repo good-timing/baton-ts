@@ -225,7 +225,15 @@ export function resolveBatonConfig(config: BatonConfig): ResolvedBatonConfig {
     ...rest,
     vendorId: dsn.vendorId,
     tenantId: dsn.tenantId,
-    vendorDisplayName: config.vendorDisplayName || dsn.vendorId,
+    // `??`, for the same reason as `consentToken` directly below, and the
+    // inconsistency was worth fixing rather than mirroring: with no dsn,
+    // `vendorDisplayName: ""` is REFUSED by validation; with one, `||` quietly
+    // substituted the server slug. One input, two answers, decided by whether
+    // a dsn happens to be present — and this string reaches the calling agent
+    // in the server instructions and the annotation tool description, which is
+    // the whitelabel obligation the validator cites when it refuses the empty
+    // one. ⚠ Python uses `or` here and still has the inconsistency.
+    vendorDisplayName: config.vendorDisplayName ?? dsn.vendorId,
     // `??`, not `||`: an explicit empty string must survive to the validation
     // below and be REFUSED there, rather than be quietly replaced by the
     // default it was deliberately not left as.

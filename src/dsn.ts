@@ -71,6 +71,24 @@ export const VENDOR_ID_PATTERN = /^[a-zA-Z0-9_-]{1,48}$/;
 // this parser must never normalise it.
 const WORKSPACE_PATTERN = /^ten_[0-9a-fA-F]{32}$/;
 
+// A host contains none of these. Character for character `baton`'s
+// `_NOT_IN_A_HOST` (`_dsn.py:345`), because the two parsers answering one
+// question differently is how a DSN that works in Python fails in TypeScript.
+// The control characters ARE the subject here: this class exists to reject
+// them, which is the opposite of the accidental-escape case `no-control-regex`
+// guards against.
+// eslint-disable-next-line no-control-regex
+const NOT_IN_A_HOST = /[\\\s\x00-\x1f\x7f]/;
+
+// What a BEARER can never carry, measured rather than assumed: `new Headers`
+// rejects exactly NUL, LF and CR, and accepts every other control character
+// and the space. Narrow on purpose — the tail's alphabet belongs to the
+// console's mint, and a parser stricter than the mint refuses valid keys in
+// the field. These three cannot be sent at all, so they are catchable here
+// instead of surfacing as a fetch that throws on every write.
+// eslint-disable-next-line no-control-regex
+const NOT_IN_A_KEY = /[\x00\n\r]/;
+
 const PUBLISHABLE_PREFIX = "baton_pk_";
 const SECRET_PREFIX = "baton_sk_";
 
@@ -435,6 +453,18 @@ export function parseDsn(raw: string): Dsn {
       `dsn ${safe} carries no key: ${detail}, as in https://baton_pk_...@host/ten_.../server`,
     );
   }
+  if (NOT_IN_A_KEY.test(key)) {
+    // The key is the longest part of a DSN — a 9-character prefix and a
+    // 43-character tail out of about a hundred — so it is the likeliest place
+    // a line wrap lands, and the host message below would never have mentioned
+    // it. `HttpSink` builds `Authorization: Bearer <key>`, which throws inside
+    // the sink's bare catch and retries forever.
+    fail(
+      `dsn ${safe} has a line break or a null inside its key — those can ` +
+        `never be sent in an Authorization header, so this DSN could not ` +
+        `have worked. Check for a line wrap where the value was copied.`,
+    );
+  }
   if (key.includes(":")) {
     fail(
       `dsn ${safe} has a ':' in its key — a DSN carries one credential and no password field`,
@@ -442,6 +472,30 @@ export function parseDsn(raw: string): Dsn {
   }
   if (!authority) {
     fail(`dsn ${safe} has no host`);
+  }
+
+  // ⚠ **The first version of this guard listed `\t`, `\n`, `\r` and called
+  // the set CLOSED — "every other control character makes `new URL` throw".
+  // That was measured in ONE POSITION and generalised.** WHATWG strips those
+  // three anywhere, and additionally strips leading and trailing C0 controls
+  // AND the space, so `https://key@host.example.com<SP>/ten_…/srv` parsed
+  // clean with `pathname` still `/`. The origin then kept the character,
+  // `HttpSink` appended `/v0/events` to put it mid-string, and `fetch` threw
+  // on every send into `sendWithRetry`'s bare catch — retried, dropped,
+  // forever, from an install that raised nothing.
+  //
+  // So the rule is now a CHARACTER CLASS over the authority, and it is
+  // `baton`'s `_NOT_IN_A_HOST` (`_dsn.py:345`) character for character rather
+  // than a second guess at the same question. A host contains no whitespace,
+  // no control character and no backslash; what a URL parser then does with
+  // one does not have to be enumerated.
+  if (NOT_IN_A_HOST.test(authority)) {
+    fail(
+      `dsn ${safe} has whitespace, a control character or a backslash inside ` +
+        `its host. Those are silently REMOVED or reinterpreted when a URL is ` +
+        `parsed, so the address dialled would not be the one you wrote — ` +
+        `check for a line wrap or a stray space where the value was copied.`,
+    );
   }
 
   // ⚠ **`new URL` is the host validator, and it runs only AFTER the credential
@@ -472,6 +526,14 @@ export function parseDsn(raw: string): Dsn {
     fail(`dsn ${safe} is not a parseable URL (${hostReason ?? "Error"})`);
   }
 
+  // ⚠ **An assertion on `parsedAuthority.pathname`/`search`/`hash` stood here
+  // and has been DELETED.** It was the first answer to the backslash smuggle,
+  // and `NOT_IN_A_HOST` above is the second and better one — so it became a
+  // guard no input could reach, which mutation testing showed by reddening
+  // nothing when removed. Two rules answering for one input is what the
+  // character class exists to stop being; the parsed object is still used, as
+  // the validator that a host is a host at all.
+
   // ⚠ **A BACKSLASH smuggles a path into the authority, and the validator said
   // yes.** WHATWG folds `\` to `/` for special schemes, so
   // `new URL("https://ingest.example.com\evil")` parses happily with host
@@ -486,37 +548,6 @@ export function parseDsn(raw: string): Dsn {
   // Asserted on what the URL parser MADE of the authority rather than by
   // adding `\` to the terminator set, because the question is not which
   // characters WHATWG folds — it is whether anything but a host survived.
-  //
-  // ⚠ **The assertion below sees a FOLD and not a STRIP, and WHATWG does
-  // both.** `\t`, `\n` and `\r` are REMOVED before parsing rather than
-  // folded, so `ingest.example.com\nevil.com` parses as the single host
-  // `ingest.example.comevil.com` with `pathname` still `/` — the check passes,
-  // the origin keeps the raw string, and `fetch` strips identically and dials
-  // a host the vendor never wrote. Measured: those three are the WHOLE strip
-  // set, because every other control character and the space make `new URL`
-  // throw, so this list is closed rather than a sample.
-  if (/[\t\n\r]/.test(authority)) {
-    fail(
-      `dsn ${safe} has a tab or line break inside its host. Those characters ` +
-        `are REMOVED rather than rejected when a URL is parsed, so the ` +
-        `address dialled would be a host you did not write — check for a ` +
-        `line wrap where the value was copied.`,
-    );
-  }
-
-  if (
-    parsedAuthority.pathname !== "/" ||
-    parsedAuthority.search !== "" ||
-    parsedAuthority.hash !== ""
-  ) {
-    fail(
-      `dsn ${safe} has something other than a host between its key and its ` +
-        `path — the ingest origin is the scheme and the authority and nothing ` +
-        `else, and the workspace and server are the two path segments after ` +
-        `it: https://baton_pk_...@host/ten_.../server`,
-    );
-  }
-
   const segments = parts.path.split("/").filter((segment) => segment !== "");
   // Destructured with a rest element rather than length-checked, so the two
   // names narrow to `string` from the same test that refuses the wrong count.

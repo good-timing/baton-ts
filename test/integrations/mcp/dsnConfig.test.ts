@@ -153,6 +153,18 @@ describe("what the DSN does not take over", () => {
     expect(resolveBatonConfig({ dsn: DSN, consentToken: "ct" }).vendorDisplayName).toBe(SERVER);
   });
 
+  it("refuses an explicitly EMPTIED display name instead of substituting the slug", () => {
+    // Written because the fix for this reddened NO test — the same input is
+    // refused when there is no dsn (validation rejects an empty display name,
+    // citing the SPEC §5.4 whitelabel obligation) and used to be quietly
+    // replaced by the server slug when there was one. One input, two answers,
+    // decided by whether a dsn happens to be present. This string reaches the
+    // calling agent, so the quiet substitution was the worse half.
+    expect(() => resolveBatonConfig({ dsn: DSN, consentToken: "ct", vendorDisplayName: "" })).toThrow(
+      /vendorDisplayName is required/,
+    );
+  });
+
   it("leaves an explicit display name alone", () => {
     expect(
       resolveBatonConfig({ dsn: DSN, consentToken: "ct", vendorDisplayName: "Toybox Pantry" })

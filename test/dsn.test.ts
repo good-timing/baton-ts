@@ -553,6 +553,12 @@ describe("the leaks review found", () => {
     ["a tab", "\t"],
     ["a line feed", "\n"],
     ["a carriage return", "\r"],
+    ["a vertical tab", "\v"],
+    ["a form feed", "\f"],
+    ["a space", " "],
+    ["a null", "\x00"],
+    ["a unit separator", "\x1f"],
+    ["a delete", "\x7f"],
   ])("refuses %s inside the host", (_name, ch) => {
     // The backslash guard could not see these: WHATWG REMOVES them before
     // parsing rather than folding them, so the host comes out as one joined
@@ -562,7 +568,48 @@ describe("the leaks review found", () => {
     // every other control character makes `new URL` throw.
     expect(() =>
       parseDsn(`https://${KEY}@ingest.example.com${ch}evil.com/${WORKSPACE}/srv`),
-    ).toThrow(/tab or line break/);
+    ).toThrow(/whitespace, a control character or a backslash/);
+  });
+
+  it.each([
+    ["a trailing space", " "],
+    ["a trailing vertical tab", "\v"],
+    ["a trailing null", "\x00"],
+  ])("refuses %s at the END of the host", (_name, ch) => {
+    // ⚠ The first guard here listed three characters and called the set
+    // closed, on a measurement taken in ONE POSITION. WHATWG strips leading
+    // and trailing C0 controls AND the space as well, so these parsed clean
+    // with `pathname` still `/` — then `HttpSink` appended `/v0/events`, which
+    // put the character mid-string, and `fetch` threw on every send inside the
+    // sink's bare catch. Retried, dropped, forever, from an install that
+    // raised nothing. The likely real input is a DSN copied with a stray space
+    // before the path.
+    expect(() => parseDsn(`https://${KEY}@ingest.example.com${ch}/${WORKSPACE}/srv`)).toThrow(
+      /whitespace, a control character or a backslash/,
+    );
+  });
+
+  it.each([
+    ["a line feed", "\n"],
+    ["a carriage return", "\r"],
+    ["a null", "\x00"],
+  ])("refuses %s inside the KEY", (_name, ch) => {
+    // Measured, not assumed: `new Headers` rejects exactly these three and
+    // accepts every other control character, so these are the ones that could
+    // never have been sent — `Authorization: Bearer <key>` throws inside
+    // `HttpSink`'s bare catch and retries forever. The key is the longest part
+    // of a DSN, so it is where a line wrap most likely lands, and the host
+    // message says nothing about it.
+    expect(() =>
+      parseDsn(`https://baton_pk_aaaa${ch}aaaa@h.example.com/${WORKSPACE}/srv`),
+    ).toThrow(/never be sent in an Authorization header/);
+  });
+
+  it("still accepts the control characters a bearer CAN carry", () => {
+    // Narrow on purpose: the tail's alphabet belongs to the console's mint,
+    // and a parser stricter than the mint refuses valid keys in the field.
+    const odd = "baton_pk_aaaa\x0baaaa";
+    expect(parseDsn(`https://${odd}@h.example.com/${WORKSPACE}/srv`).key).toBe(odd);
   });
 
   it("refuses a backslash-smuggled path in the authority", () => {
@@ -572,9 +619,13 @@ describe("the leaks review found", () => {
     // `https://host\evil`, which `fetch` resolves to
     // `https://host/evil/v0/events`: a 404 at the first tool call, from an
     // install that raised nothing.
+    //
+    // Refused by the character class now rather than by the assertion on what
+    // the URL parser made of the authority — `\` is in `_NOT_IN_A_HOST`, and
+    // one rule owning one message beats two rules answering for one input.
     expect(() =>
       parseDsn(`https://${KEY}@ingest.example.com\\evil/${WORKSPACE}/srv`),
-    ).toThrow(/something other than a host/);
+    ).toThrow(/whitespace, a control character or a backslash/);
   });
 
   it("attaches no cause carrying the original", () => {

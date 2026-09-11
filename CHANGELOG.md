@@ -65,52 +65,46 @@
   removing both reds three. Written into the source, because a reader who
   deletes one of them sees green and concludes it was dead.
 
-- **Two ways a DSN could dial a host the vendor never wrote.** A backslash is
-  folded to `/` by WHATWG for special schemes, so `host\evil` passed the
-  validator as a host with a path while the split kept it whole as the
-  authority — `HttpSink` appended `/v0/events` and `fetch` resolved it to
-  `host/evil/v0/events`: events dropped at the first tool call, from an install
-  that raised nothing. Tab, line feed and carriage return are REMOVED rather
-  than folded, so `ingest.example.com\nevil.com` parsed as one joined host with
-  `pathname` still `/`, defeating the first fix's own criterion. Measured that
-  those three are the whole strip set — every other control character makes
-  `new URL` throw — so the check is closed rather than a sample.
+- **Three ways a DSN could fail silently AFTER a clean install**, which is the
+  one thing the parser exists to prevent. A backslash is folded to `/` by
+  WHATWG for special schemes, so `host\evil` passed as a host with a path while
+  the split kept it whole as the authority — `HttpSink` appended `/v0/events`
+  and `fetch` resolved it to `host/evil/v0/events`. Whitespace and control
+  characters are REMOVED rather than folded, so `ingest.example.com` plus a
+  stray space parsed clean with `pathname` still `/`, and the character then
+  landed mid-string once `/v0/events` was appended, making `fetch` throw on
+  every send into `HttpSink`'s bare catch: retried, dropped, forever. And a
+  line break inside the KEY built an `Authorization` header that `Headers`
+  refuses, failing the same silent way — the key is the longest part of a DSN,
+  so it is where a wrap most likely lands.
 
-- **`BATON_DISABLED=1` turns capture off, and TypeScript honours it now** —
-  S4, which shipped in Python on 2026-09-10 and did not exist here at all.
-  **Off means INSTALL NOTHING and NEVER THROW**: no tool wrapping, no
-  annotation tool on the surface, no instructions rewrite, no intent params, no
-  sink, no DSN parsed. The vendor's server starts and behaves exactly as it
-  would with no `withBaton` call in the file. Both halves are load-bearing — a
-  switch that can still abort a boot is worse than no switch, so a config that
-  would otherwise be refused comes back with a handle instead, and the guard
-  sits ahead of config resolution rather than after it (mutation-verified:
-  moving it below reds the two tests written for that).
+  ⚠ **The first fix for the second case listed `\t`, `\n`, `\r` and called the
+  set CLOSED — measured in ONE POSITION and generalised.** WHATWG strips those
+  three anywhere, and leading/trailing C0 controls and the space as well, so
+  the guard missed exactly the likeliest input. The rule is now a character
+  class over the whole authority, and it is `baton`'s `_NOT_IN_A_HOST`
+  character for character rather than a second guess at the same question: two
+  parsers answering one question differently is how a DSN that works in Python
+  fails in TypeScript. The key's class is narrower and measured too — `Headers`
+  rejects exactly NUL, LF and CR — because the tail's alphabet belongs to the
+  console's mint, and a parser stricter than the mint refuses valid keys in the
+  field.
 
-  **Nothing on stdout, ever.** A stdio MCP server speaks JSON-RPC there, so a
-  courteous "Baton is disabled" line would corrupt the stream and break the
-  server in precisely the deployment this switch exists for. Asserted rather
-  than assumed from the choice of function: the test spies on
-  `process.stdout.write`. The notice goes through `process.emitWarning`, this
-  package's existing channel, because `no-console` is an eslint error here and
-  carving an exception into a repo-wide rule for one line is worse than using
-  the channel already in use. ⚠ **Louder than Python's copy**, which logs at
-  INFO and is therefore silent in a server that configures no logging; this
-  package has no levels to be quiet at, and the alternative was saying nothing.
+- **An explicitly emptied `vendorDisplayName` is refused rather than replaced
+  by the server slug.** With no dsn that input is rejected by validation,
+  citing the SPEC §5.4 whitelabel obligation; with one, `||` quietly
+  substituted. One input, two answers, decided by whether a dsn happens to be
+  present — and this string reaches the calling agent in the server
+  instructions and the annotation tool description, so the quiet substitution
+  was the worse half. ⚠ Python uses `or` here and still has the
+  inconsistency.
 
-  **`DO_NOT_TRACK` is deliberately NOT honoured**, matching Python, where it
-  was built and reversed the same day on a measurement: an MCP client does not
-  hand its environment to the server it spawns — both SDKs pass a fixed
-  allowlist that does not include it — so a global export never reaches a
-  wrapped stdio server, while a user editing their client config's `env` block
-  could have typed `BATON_DISABLED=1` there instead. ⚠ **Whose switch this is:**
-  whoever RUNS the server. For a distributed stdio server that is the end user.
-  For a HOSTED server it is the vendor, and the end user has no switch at all —
-  a per-end-user opt-out is the consent token and remains unbuilt.
-
-  Read once at install, never per event: a boot-time switch, not a live one, so
-  a mid-flight environment change cannot split one session's events across two
-  answers. Pinned in both directions.
+- **REMOVED, not shipped:** the first backslash fix asserted on what the URL
+  parser MADE of the authority (`pathname === "/"`, no search, no hash). The
+  character class above is the better answer to the same question, which left
+  that assertion unreachable by any input — shown by mutation, where deleting
+  it reddened nothing. Deleted rather than kept as a backstop: two rules
+  answering for one input is what the class exists to stop being.
 
 - `test/setup.ts` clears `BATON_DSN` and `BATON_DISABLED` alongside
   `BATON_TENANT_ID`. An ambient DSN does not merely change a tenant id: it
