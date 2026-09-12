@@ -133,7 +133,6 @@ interface WrapContext {
    * handshake has not happened yet when `withBaton` runs. */
   server: SupportedMcpServer;
   scrubber: (value: unknown) => unknown;
-  resolveSessionId: BatonConfig["resolveSessionId"];
   annotationToolName: string;
   intentParamMode: IntentParamMode;
   paramRegistry: Map<string, IntentParamDispositions>;
@@ -265,14 +264,7 @@ function batonWrap(nameRef: { current: string }, original: AnyHandler, ctx: Wrap
         scrubber: ctx.scrubber,
       }) ?? UNKNOWN_AGENT_RUNTIME;
     const scrubbedMeta = meta ? (ctx.scrubber(meta) as Record<string, unknown>) : null;
-    const sessionId = await resolveSessionId(
-      ctx.resolveSessionId,
-      ctx.fallbackSessionId,
-      extra,
-      meta,
-      toolName,
-      params,
-    );
+    const sessionId = await resolveSessionId(ctx.fallbackSessionId, extra);
 
     // Strip the injected goal params IN PLACE, before snapshotting params —
     // `params` is the SAME object forwarded to the vendor handler, so the
@@ -811,7 +803,6 @@ export function withBaton(server: SupportedMcpServer, supplied: BatonConfig = {}
     fallbackSessionId,
     server,
     scrubber,
-    resolveSessionId: config.resolveSessionId,
     annotationToolName,
     intentParamMode,
     paramRegistry: new Map(),
@@ -841,7 +832,6 @@ export function withBaton(server: SupportedMcpServer, supplied: BatonConfig = {}
     consentToken: ctx.consentToken,
     fallbackSessionId: ctx.fallbackSessionId,
     scrubber: ctx.scrubber,
-    resolveSessionId: ctx.resolveSessionId,
     annotationToolName: config.annotationToolName,
     tracker,
   });

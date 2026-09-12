@@ -23,19 +23,6 @@ export { VENDOR_ID_PATTERN } from "../../dsn.js";
 // BATON_INTENT_PARAM and Python's VendorConfig.intent_param_mode).
 const INTENT_PARAM_MODES = new Set(["optional", "required", "off"]);
 
-/** Normalized input to `BatonConfig.resolveSessionId`. Deliberately doesn't
- * carry the raw MCP SDK `extra` object — this shape is stable across
- * whatever the TS MCP ecosystem does with its request-handler signature. */
-export interface SessionResolutionContext {
-  meta: Record<string, unknown> | null;
-  toolName: string;
-  arguments: Record<string, unknown>;
-}
-
-export type ResolveSessionIdHook = (
-  context: SessionResolutionContext,
-) => string | null | undefined | Promise<string | null | undefined>;
-
 export interface BatonConfig {
   /** The packed connection string from /account — one value carrying the
    * ingest host, the workspace, the server and the key that binds them.
@@ -115,9 +102,6 @@ export interface BatonConfig {
    * so untouched integrations get scrubbing without the operator opting in.
    * Pass `identityScrub` to explicitly opt out, or supply your own. */
   scrubber?: (value: unknown) => unknown;
-  /** Optional vendor-supplied session-id resolver, checked BEFORE
-   * `extra.sessionId` — mirrors Python's `resolve_session_id` rung 0. */
-  resolveSessionId?: ResolveSessionIdHook;
   /** Optional override for the annotation tool name. Default is
    * `{vendorId}_annotate`. */
   annotationToolName?: string;

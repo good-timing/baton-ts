@@ -14,7 +14,6 @@
 import { z } from "zod";
 import { AnnotationEventSchema } from "../../events.js";
 import type { Sink } from "../../sinks.js";
-import type { ResolveSessionIdHook } from "./config.js";
 import { emit } from "./emit.js";
 import { buildAnnotationToolDescription, SIGNAL_TYPES } from "./llmText.js";
 import { extraEnvelope, extraMeta, type Extra } from "./mcpTypes.js";
@@ -62,7 +61,6 @@ export interface RegisterAnnotationToolOptions {
   consentToken: string;
   fallbackSessionId: string;
   scrubber: (value: unknown) => unknown;
-  resolveSessionId?: ResolveSessionIdHook | undefined;
   annotationToolName?: string | undefined;
   /** Shared with the tool-call wrapper so a session opens at most one
    * proactive annotation regardless of which path fires first. */
@@ -105,14 +103,7 @@ export function registerAnnotationTool(
           scrubber: options.scrubber,
         }) ?? UNKNOWN_AGENT_RUNTIME;
       const scrubbedMeta = meta ? (options.scrubber(meta) as Record<string, unknown>) : null;
-      const sessionId = await resolveSessionId(
-        options.resolveSessionId,
-        options.fallbackSessionId,
-        extra,
-        meta,
-        name,
-        args,
-      );
+      const sessionId = await resolveSessionId(options.fallbackSessionId, extra);
       // A proactive annotation (no signal_type) claims the session's
       // proactive slot so the tool wrapper won't also synthesise one from
       // an injected `user_goal` param.

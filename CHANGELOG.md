@@ -2,6 +2,44 @@
 
 ## Unreleased
 
+- **REMOVED: `BatonConfig.resolveSessionId`, with the `SessionResolutionContext`
+  and `ResolveSessionIdHook` types.** Python removes its
+  `VendorConfig.resolve_session_id` (SPEC §3.4 rung 0) in the same change; this
+  is that removal on both arms, not a port lagging behind it.
+
+  **Why:** the rung keyed the session on an identifier the SDK did not mint,
+  which is what retired the `_meta` rungs on the Python side. A vendor's handle
+  differs from a client's only in who supplied it, and the join rule does not
+  draw that line — the SDK mints `call_id` and keys on that, while everything
+  else is emitted as data and grouped downstream, where the choice can be
+  revised and re-run against stored events.
+
+  **Nothing changes on the wire.** `session_id` still resolves from the
+  transport's `extra.sessionId`, then the process-wide install-time fallback.
+  Passing `resolveSessionId` is now a type error at compile time; at runtime an
+  extra property is ignored, so a JavaScript consumer gets silence rather than
+  a throw. No deployment's `session_id` changes value: the hook shipped with
+  zero callers, verified across all eight repos and the website at removal.
+
+  ⚠ **The types go here and stay in Python.** `SessionResolutionContext` is
+  still public in `baton` (Python) because `resolve_user` takes it; this SDK
+  has no identity hook yet, so nothing consumed either type once the session
+  hook went. **`user_id` is on the TS envelope and remains null by
+  construction** — the replacement mechanism Python points vendors at does not
+  exist here. That gap is tracked on sdk-hardening and is the reason this
+  removal is strictly a subtraction on this arm.
+
+  ⚠ **A second breaking config removal on a patch-shaped change**, the same
+  pre-1.0 deviation as `defaultAgentRuntime` below, recorded rather than taken
+  quietly.
+
+  **The suite could not see this removal, and that is itself the finding.**
+  290 tests before, 290 after: `resolveSessionId` had no coverage at all here,
+  and deleting the surviving `extra.sessionId` rung outright also passed all
+  290. `test/integrations/mcp/sessionResolution.test.ts` is new and covers the
+  residue — both rungs, the empty-string and non-string guards — verified by
+  two mutants that each red it.
+
 - **`agent_runtime` answers for every client, not just Claude Code.**
   Detection was a single `claudecode/*` key-prefix scan — the pre-B1-R order
   with the top two tiers missing — so Claude Desktop, Cursor, and anything

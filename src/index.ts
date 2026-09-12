@@ -61,11 +61,7 @@ export { Scrubber, identityScrub, DEPTH_LIMIT } from "./scrub.js";
 export type { Sink, StdoutSinkOptions, HttpSinkOptions } from "./sinks.js";
 export { StdoutSink, HttpSink, safeWrite } from "./sinks.js";
 
-export type {
-  BatonConfig,
-  ResolveSessionIdHook,
-  SessionResolutionContext,
-} from "./integrations/mcp/index.js";
+export type { BatonConfig } from "./integrations/mcp/index.js";
 export { withBaton, BatonHandle } from "./integrations/mcp/index.js";
 // The only way a consumer can name `withBaton`'s parameter now that neither
 // SDK major's `McpServer` is imported.
