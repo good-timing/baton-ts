@@ -102,7 +102,7 @@ import {
   OVERALL_TASK_PARAM_NAME,
   USER_GOAL_PARAM_NAME,
 } from "./llmText.js";
-import { extraMeta, type Extra } from "./mcpTypes.js";
+import { extraEnvelope, extraMeta, type Extra } from "./mcpTypes.js";
 import { ProactiveTracker } from "./proactiveTracker.js";
 import { detectAgentRuntime } from "./runtimeAdapter.js";
 import { resolveSessionId } from "./sessionResolution.js";
@@ -128,6 +128,11 @@ interface WrapContext {
   consentToken: string;
   fallbackSessionId: string;
   defaultAgentRuntime: string;
+  /** The wrapped MCP server, kept for one read: the `initialize` handshake
+   * it cached, which is where every client shipping today declares its name
+   * and the only place either peer exposes it. Read lazily per call — the
+   * handshake has not happened yet when `withBaton` runs. */
+  server: SupportedMcpServer;
   scrubber: (value: unknown) => unknown;
   resolveSessionId: BatonConfig["resolveSessionId"];
   annotationToolName: string;
@@ -249,7 +254,17 @@ function batonWrap(nameRef: { current: string }, original: AnyHandler, ctx: Wrap
       unknown
     >;
     const meta = extraMeta(extra);
-    const runtime = detectAgentRuntime(meta) ?? ctx.defaultAgentRuntime;
+    const runtime =
+      detectAgentRuntime(meta, {
+        // v2 lifts the reserved `io.modelcontextprotocol/*` keys out of
+        // `_meta`; 1.x leaves them in. Both are handed over — see
+        // `mcpTypes.extraEnvelope`.
+        envelope: extraEnvelope(extra),
+        // Tier 2's carrier: neither peer puts client identity on the
+        // handler context, both expose the cached handshake on the server.
+        server: ctx.server,
+        scrubber: ctx.scrubber,
+      }) ?? ctx.defaultAgentRuntime;
     const scrubbedMeta = meta ? (ctx.scrubber(meta) as Record<string, unknown>) : null;
     const sessionId = await resolveSessionId(
       ctx.resolveSessionId,
@@ -779,6 +794,7 @@ export function withBaton(server: SupportedMcpServer, supplied: BatonConfig = {}
     consentToken: config.consentToken,
     fallbackSessionId,
     defaultAgentRuntime: config.defaultAgentRuntime ?? "unknown",
+    server,
     scrubber,
     resolveSessionId: config.resolveSessionId,
     annotationToolName,

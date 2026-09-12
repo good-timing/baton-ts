@@ -17,7 +17,11 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { detectAgentRuntime } from "../../../src/integrations/mcp/runtimeAdapter.js";
+import {
+  CLIENT_INFO_META_KEY,
+  CLIENT_NAME_MAX_LEN,
+  detectAgentRuntime,
+} from "../../../src/integrations/mcp/runtimeAdapter.js";
 
 describe("detectAgentRuntime", () => {
   it("answers claude-code from the claudecode/ prefix", () => {
@@ -50,5 +54,104 @@ describe("detectAgentRuntime", () => {
 
   it("returns null for absent meta", () => {
     expect(detectAgentRuntime(null)).toBeNull();
+  });
+});
+
+/**
+ * The ladder above the heuristic — declared before inferred.
+ *
+ * The carriers are NOT Python's and were measured before being used: tier 1
+ * lives in `_meta` on sdk 1.x and in the lifted `mcpReq.envelope` on server
+ * v2, and tier 2 is on the server object rather than the handler context on
+ * BOTH. The round-trip suites (`withBaton*.test.ts`) exercise these against
+ * the real peers; these are the branch-level cases a round trip cannot stage.
+ */
+describe("detectAgentRuntime — the declared tiers", () => {
+  const serverNamed = (name: unknown) => ({
+    server: { getClientVersion: () => ({ name, version: "1.0.0" }) },
+  });
+
+  it("prefers a request-borne declaration over the handshake and the heuristic", () => {
+    expect(
+      detectAgentRuntime(
+        { [CLIENT_INFO_META_KEY]: { name: "on-request" }, "claudecode/toolUseId": "tu_1" },
+        { server: serverNamed("on-connection") },
+      ),
+    ).toBe("on-request");
+  });
+
+  it("reads the request-borne declaration from v2's lifted envelope too", () => {
+    // The port-killer: v2 lifts every reserved `io.modelcontextprotocol/*`
+    // key OUT of the `_meta` the handler sees. Reading only `_meta` — which
+    // is what a line-by-line port of Python would do — is a silent `unknown`
+    // across that entire major. `meta` here is what v2 actually leaves
+    // behind: the unreserved keys only.
+    expect(
+      detectAgentRuntime(
+        { "claudecode/toolUseId": "tu_1" },
+        { envelope: { [CLIENT_INFO_META_KEY]: { name: "on-request" } } },
+      ),
+    ).toBe("on-request");
+  });
+
+  it("prefers the handshake over the heuristic", () => {
+    // The tier that answers for every client shipping today. Before it
+    // existed this call was `claude-code` — an inference from a key whose
+    // real meaning is "this metadata originated from Claude Code".
+    expect(
+      detectAgentRuntime({ "claudecode/toolUseId": "tu_1" }, serverNamed("on-connection")),
+    ).toBe("on-connection");
+  });
+
+  it("falls through to the heuristic when the handshake names nobody", () => {
+    expect(detectAgentRuntime({ "claudecode/toolUseId": "tu_1" }, serverNamed(""))).toBe(
+      "claude-code",
+    );
+    expect(detectAgentRuntime({ "claudecode/toolUseId": "tu_1" }, {})).toBe("claude-code");
+  });
+
+  it("never lets a throwing server object reach the vendor's tool call", () => {
+    // SPEC §11.2: capture may never fail the call it observes. These are two
+    // third-party objects across two majors, free to throw whatever they like
+    // outside a live connection — an enumerated catch is a guess about a
+    // library, and that guess has already cost one vendor's tool call.
+    const throwing = {
+      get server(): never {
+        throw new Error("no session");
+      },
+    };
+    expect(() => detectAgentRuntime({ "claudecode/toolUseId": "tu_1" }, throwing)).not.toThrow();
+    expect(detectAgentRuntime({ "claudecode/toolUseId": "tu_1" }, throwing)).toBe("claude-code");
+  });
+
+  it("scrubs and caps the two client-supplied tiers, and neither for the heuristic", () => {
+    const shout = (v: unknown) => String(v).toUpperCase();
+    expect(detectAgentRuntime(null, { ...serverNamed("quiet"), scrubber: shout })).toBe("QUIET");
+
+    const long = "x".repeat(500);
+    expect(detectAgentRuntime(null, serverNamed(long))).toHaveLength(CLIENT_NAME_MAX_LEN);
+
+    // Tier 3's answer is a constant this module owns — scrubbing or capping
+    // it would be the opposite mistake.
+    expect(
+      detectAgentRuntime({ "claudecode/toolUseId": "tu_1" }, { scrubber: shout }),
+    ).toBe("claude-code");
+  });
+
+  it("loses the TIER, not the ladder, when a scrubber redacts a name", () => {
+    // A scrubber returning null — or anything not a string — must not be
+    // stringified onto the wire: `String(null)` is `"null"`, which is truthy
+    // and would ship as the reported runtime on every event of every call.
+    // It falls through to the next tier instead.
+    const redact = () => null;
+    expect(
+      detectAgentRuntime({ "claudecode/toolUseId": "tu_1" }, {
+        ...serverNamed("on-connection"),
+        scrubber: redact,
+      }),
+    ).toBe("claude-code");
+
+    // And with nothing below it left to answer, null — never `"null"`.
+    expect(detectAgentRuntime(null, { ...serverNamed("on-connection"), scrubber: redact })).toBeNull();
   });
 });

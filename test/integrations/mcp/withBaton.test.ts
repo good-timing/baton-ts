@@ -14,6 +14,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { z } from "zod";
 import { beforeEach, describe, expect, it } from "vitest";
 import { withBaton } from "../../../src/integrations/mcp/withBaton.js";
+import { CLIENT_INFO_META_KEY } from "../../../src/integrations/mcp/runtimeAdapter.js";
 import type { BatonConfig } from "../../../src/integrations/mcp/config.js";
 import { identityScrub } from "../../../src/scrub.js";
 import type { Event } from "../../../src/events.js";
@@ -1352,5 +1353,64 @@ describe("withBaton — tenant_id is the ACCOUNT, not a second copy of vendor_id
       "annotation",
     ]);
     expect(new Set(sink.events.map((e) => e.tenant_id))).toEqual(new Set(["ten_a"]));
+  });
+});
+
+/**
+ * The agent-runtime ladder against the REAL 1.x peer.
+ *
+ * Nothing in this file asserted `agent_runtime` before — the ladder's only
+ * coverage on this major was a unit test over hand-built dicts, which is the
+ * shape that let a wrong `except` tuple ship once already. The carriers here
+ * are two third-party objects; these run against them.
+ */
+describe("withBaton — agent_runtime, against the real 1.x peer", () => {
+  let sink: CapturingSink;
+  beforeEach(() => {
+    sink = new CapturingSink();
+  });
+
+  async function runtimeFor(meta?: Record<string, unknown>): Promise<string> {
+    const server = new McpServer({ name: "vendor", version: "1.0.0" });
+    registerTools(server);
+    withBaton(server, {
+      vendorId: "acme",
+      vendorDisplayName: "Acme",
+      consentToken: "ct",
+      sink,
+    });
+    const client = await connectClient(server);
+    await client.callTool({
+      name: "echo",
+      arguments: { text: "hi" },
+      ...(meta ? { _meta: meta } : {}),
+    });
+    return sink.events.find((e) => e.event_type === "tool_call_start")!.agent_runtime;
+  }
+
+  it("tier 2: reports the name the client declared in its handshake", async () => {
+    // This is the tier that answers for every client shipping today. The
+    // carrier is NOT the handler context — neither peer puts client identity
+    // there — it is `McpServer.server.getClientVersion()`, measured live on
+    // sdk 1.30.0 and server 2.0.0. `vendor` is the SERVER's name, which is
+    // what a tier-2 wired to the wrong object would report.
+    expect(await runtimeFor()).toBe("test-client");
+  });
+
+  it("tier 1: a request-borne declaration outranks the handshake", async () => {
+    // On 1.x the reserved key stays in `_meta`. On v2 it does NOT — it is
+    // lifted to `mcpReq.envelope` — which is why the same assertion lives in
+    // `withBatonV2.test.ts` too and why reading one location is a silent
+    // `unknown` across a whole major.
+    expect(
+      await runtimeFor({ [CLIENT_INFO_META_KEY]: { name: "gateway-declared", version: "1" } }),
+    ).toBe("gateway-declared");
+  });
+
+  it("tier 3: the claudecode/* heuristic is BELOW both declarations", async () => {
+    // A proxy forwards `_meta` verbatim, so `claudecode/*` says where the
+    // metadata came from, not who the caller is. The client here declares
+    // `test-client` and sends a Claude Code key; the declaration wins.
+    expect(await runtimeFor({ "claudecode/toolUseId": "tu_1" })).toBe("test-client");
   });
 });

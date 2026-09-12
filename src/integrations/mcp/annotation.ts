@@ -17,7 +17,7 @@ import type { Sink } from "../../sinks.js";
 import type { ResolveSessionIdHook } from "./config.js";
 import { emit } from "./emit.js";
 import { buildAnnotationToolDescription, SIGNAL_TYPES } from "./llmText.js";
-import { extraMeta, type Extra } from "./mcpTypes.js";
+import { extraEnvelope, extraMeta, type Extra } from "./mcpTypes.js";
 import type { SupportedMcpServer } from "./withBaton.js";
 import type { ProactiveTracker } from "./proactiveTracker.js";
 import { detectAgentRuntime } from "./runtimeAdapter.js";
@@ -95,7 +95,16 @@ export function registerAnnotationTool(
     },
     async (args: AnnotationArgs, extra: Extra) => {
       const meta = extraMeta(extra);
-      const runtime = detectAgentRuntime(meta) ?? options.defaultAgentRuntime;
+      // Same ladder, same inputs as the tool-call wrapper. Wiring only one
+      // of the two would give a single session two runtimes for one client
+      // — tool events naming the client, annotations saying `unknown` —
+      // which is the split N11 hit by wiring two of its four call sites.
+      const runtime =
+        detectAgentRuntime(meta, {
+          envelope: extraEnvelope(extra),
+          server,
+          scrubber: options.scrubber,
+        }) ?? options.defaultAgentRuntime;
       const scrubbedMeta = meta ? (options.scrubber(meta) as Record<string, unknown>) : null;
       const sessionId = await resolveSessionId(
         options.resolveSessionId,
