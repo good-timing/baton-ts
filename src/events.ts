@@ -129,7 +129,26 @@ export const DEFAULT_CONSENT_TOKEN = "customer-consented";
  * edge — the raw principal is never transmitted); null when unresolved.
  * `runtimeMeta` is the runtime-supplied MCP request `_meta` envelope, used
  * by the Console to derive turn/cycle boundaries more precise than
- * `session_id` alone. */
+ * `session_id` alone.
+ *
+ * `call_id` is the minted per-call correlation key: the SAME value on a tool
+ * call's `tool_call_start` and its `tool_call_end` / `tool_call_error`, so a
+ * worker pairs the two legs on an identifier this producer controls rather
+ * than inferring the pairing from session + arrival order. Consumers key
+ * SPEC §11.5.4's tier 1 on `(call_id, tool_name)`, not on the id alone —
+ * which is why a TS server without it is unreachable from that tier and
+ * falls back to the FIFO floor the mint exists to leave.
+ *
+ * It is an ENVELOPE field, present on all five event types, and null on
+ * `annotation` and `surface_snapshot` — SPEC defines a `call_id` for a tool
+ * call's legs and putting one on the other two would invent semantics no
+ * spec text defines. Null is never an error; it is also what every event
+ * emitted before this field existed carries.
+ *
+ * Minted as a bare opaque UUIDv7 in a local inside the scope that emits both
+ * legs — per-call by construction and correct across processes. Never
+ * derived from the JSON-RPC request id, which restarts at 1 per connection.
+ * It says WHICH CALL, never WHO; the principal is `user_id`. */
 const envelopeShape = {
   event_id: z.uuid().default(() => uuidv7()),
   tenant_id: z.string(),
@@ -141,6 +160,7 @@ const envelopeShape = {
   sdk_version: z.string().default(SDK_VERSION),
   agent_runtime: z.string().default("unknown"),
   user_id: z.string().nullable().default(null),
+  call_id: z.string().nullable().default(null),
   runtime_meta: z.record(z.string(), z.unknown()).nullable().default(null),
 };
 

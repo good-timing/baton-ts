@@ -280,6 +280,13 @@ function batonWrap(nameRef: { current: string }, original: AnyHandler, ctx: Wrap
     // the same output on every call.
     const scrubbedWorkflow = rawWorkflow !== null ? (ctx.scrubber(rawWorkflow) as string) : null;
 
+    // The per-call correlation key, minted HERE — in the one scope that emits
+    // both legs — so start and end carry the same value by construction. It
+    // is deliberately NOT part of `common`: `common` is also spread into the
+    // proactive annotation below, and SPEC defines no `call_id` for an
+    // annotation. Stamped onto the three tool-call events individually.
+    const callId = uuidv7();
+
     const common = {
       tenant_id: ctx.tenantId,
       vendor_id: ctx.vendorId,
@@ -313,6 +320,7 @@ function batonWrap(nameRef: { current: string }, original: AnyHandler, ctx: Wrap
     await emit(ctx.sink, () =>
       ToolCallStartEventSchema.parse({
         ...common,
+        call_id: callId,
         sequence_number: ctx.counter.next(sessionId),
         captured_at: new Date().toISOString(),
         payload: {
@@ -336,6 +344,7 @@ function batonWrap(nameRef: { current: string }, original: AnyHandler, ctx: Wrap
       await emit(ctx.sink, () =>
         ToolCallErrorEventSchema.parse({
           ...common,
+          call_id: callId,
           sequence_number: ctx.counter.next(sessionId),
           captured_at: new Date().toISOString(),
           payload: {
@@ -353,6 +362,7 @@ function batonWrap(nameRef: { current: string }, original: AnyHandler, ctx: Wrap
     await emit(ctx.sink, () =>
       ToolCallEndEventSchema.parse({
         ...common,
+        call_id: callId,
         sequence_number: ctx.counter.next(sessionId),
         captured_at: new Date().toISOString(),
         payload: { tool_name: toolName, result: ctx.scrubber(result), duration_ms: durationMs },

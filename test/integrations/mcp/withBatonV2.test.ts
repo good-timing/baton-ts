@@ -88,6 +88,12 @@ describe("withBaton on the official SDK v2", () => {
       "tool_call_end",
     ]);
     expect(sink.events[1]!.payload).toMatchObject({ tool_name: "echo", params: { text: "hi" } });
+    // The pairing key, on v2's own dispatch path. `batonWrap` is shared, but
+    // v2 reaches it through `entry.executor` rather than `entry.handler`, and
+    // that difference has already made one wrapper a silent no-op here.
+    expect(sink.events[1]!.call_id).toEqual(expect.any(String));
+    expect(sink.events[2]!.call_id).toBe(sink.events[1]!.call_id);
+    expect(sink.events[0]!.call_id).toBeNull(); // surface_snapshot
   });
 
   it("captures for a tool registered BEFORE withBaton (retroactive — the executor closure)", async () => {

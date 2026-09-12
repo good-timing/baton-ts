@@ -260,6 +260,39 @@ describe("withBaton", () => {
     });
   });
 
+  it("keeps call_id OFF the proactive annotation it emits from the same scope", async () => {
+    // The param-sourced proactive annotation is built by spreading the SAME
+    // `common` object as the three tool-call legs, so `call_id` living in
+    // `common` would silently stamp it — and SPEC defines no `call_id` for an
+    // annotation. The emitter-conformance suite cannot see this: the
+    // annotation IT captures comes from the annotation TOOL, a different
+    // scope that never had a call_id to leak. This is the only place the
+    // proactive path and the minted id meet.
+    const server = new McpServer({ name: "vendor", version: "1.0.0" });
+    registerTools(server);
+    withBaton(server, {
+      vendorId: "acme",
+      vendorDisplayName: "Acme",
+      consentToken: "ct",
+      sink,
+    });
+
+    const client = await connectClient(server);
+    await client.callTool({
+      name: "echo",
+      arguments: { text: "hi", user_goal: "find the thing" },
+    });
+
+    const annotation = sink.events.find((e) => e.event_type === "annotation")!;
+    const start = sink.events.find((e) => e.event_type === "tool_call_start")!;
+    // The annotation really is the proactive one from batonWrap's scope...
+    expect(annotation.payload).toMatchObject({ intent_source: "injected_param" });
+    // ...and the call it explains really did mint an id, so a null below is
+    // the stamp being withheld rather than there being nothing to stamp.
+    expect(start.call_id).toEqual(expect.any(String));
+    expect(annotation.call_id).toBeNull();
+  });
+
   it("advertises overall_task on the wrapped tool's schema and never leaks it to the handler", async () => {
     const server = new McpServer({ name: "vendor", version: "1.0.0" });
     let seenArgs: Record<string, unknown> | undefined;

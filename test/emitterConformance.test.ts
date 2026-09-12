@@ -74,6 +74,11 @@ const ENVELOPE_ALLOWED_TO_DIFFER = new Set([
   "session_id", // per-install fallback UUID
   "captured_at", // wall clock
   "sdk_version", // "ts-0.1.0" vs Python's "0.5.0" — deliberate, see version.ts
+  // Per-call UUID v7, minted fresh — it can never equal a baked vector value.
+  // Exempting it from the value comparison would leave NOTHING asserting the
+  // one property the field exists for, so the pairing and the nulls are
+  // asserted directly below ("pairs the two legs of a tool call").
+  "call_id",
 ]);
 
 /**
@@ -388,6 +393,31 @@ describe("cross-SDK emitter conformance (Phase 3)", () => {
     // The vendor's own requirement survives both; only ours is absent.
     expect(asRequired.required).toEqual(["name"]);
     expect(asRequired.properties).toHaveProperty("user_goal");
+  });
+
+  it("pairs the two legs of a tool call on one call_id, and nulls it elsewhere", () => {
+    // The field's whole purpose: a worker joins start to end on a value this
+    // producer controls, instead of inferring the pairing from session +
+    // arrival order (SPEC §11.5.4 tier 1 keys on `(call_id, tool_name)`).
+    // `ENVELOPE_ALLOWED_TO_DIFFER` exempts the VALUE from the vector
+    // comparison; this is what holds the behaviour.
+    const start = events.find((e) => e.event_type === "tool_call_start")!;
+    const end = events.find((e) => e.event_type === "tool_call_end")!;
+    const error = events.find((e) => e.event_type === "tool_call_error")!;
+
+    expect(start.call_id).toEqual(expect.any(String));
+    expect(end.call_id).toBe(start.call_id);
+
+    // The error leg came from a DIFFERENT call, so it must carry its own id —
+    // asserting only "is a string" would pass if every call shared one.
+    expect(error.call_id).toEqual(expect.any(String));
+    expect(error.call_id).not.toBe(start.call_id);
+
+    // Null on the two types SPEC defines no call_id for. The field is still
+    // PRESENT — the key-set assertion above covers that; this covers the value.
+    for (const eventType of ["annotation", "surface_snapshot"] as const) {
+      expect(events.find((e) => e.event_type === eventType)!.call_id).toBeNull();
+    }
   });
 
   it("stamps a TS-prefixed sdk_version on every event", () => {
