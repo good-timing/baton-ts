@@ -1428,10 +1428,10 @@ describe("withBaton — agent_runtime, against the real 1.x peer", () => {
 
     const start = sink.events.find((e) => e.event_type === "tool_call_start")!;
     expect(start.agent_runtime).toBe("test-client");
-    // Including where the ladder declines: `unknown` is the SDK's literal,
-    // not a value a vendor can substitute. The surface snapshot is the one
-    // event emitted with no call in scope, so it is where a resurrected
-    // knob would show up first.
+    // Including where the ladder is deliberately not consulted: `unknown` is
+    // the SDK's literal, not a value a vendor can substitute. The surface
+    // snapshot is the one event that takes the literal unconditionally, so
+    // it is where a resurrected knob would show up first.
     const snapshot = sink.events.find((e) => e.event_type === "surface_snapshot")!;
     expect(snapshot.agent_runtime).toBe("unknown");
   });

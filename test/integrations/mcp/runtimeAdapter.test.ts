@@ -131,6 +131,18 @@ describe("detectAgentRuntime — the declared tiers", () => {
     const long = "x".repeat(500);
     expect(detectAgentRuntime(null, serverNamed(long))).toHaveLength(CLIENT_NAME_MAX_LEN);
 
+    // The cap counts CODE POINTS, as Python's `cleaned[:128]` does — not
+    // UTF-16 code units. An astral character is two units, so a code-unit cut
+    // lands inside the surrogate pair straddling the boundary and ships a
+    // lone surrogate as the runtime on every event. `\uFFFD` is what a lone
+    // surrogate round-trips to; requiring its ABSENCE is what distinguishes
+    // the two cuts, since both produce a 128-ish string.
+    const astral = "😀".repeat(200);
+    const cut = detectAgentRuntime(null, serverNamed(astral))!;
+    expect([...cut]).toHaveLength(CLIENT_NAME_MAX_LEN);
+    expect(cut).toBe("😀".repeat(CLIENT_NAME_MAX_LEN));
+    expect(JSON.parse(JSON.stringify(cut))).toBe(cut);
+
     // Tier 3's answer is a constant this module owns — scrubbing or capping
     // it would be the opposite mistake.
     expect(

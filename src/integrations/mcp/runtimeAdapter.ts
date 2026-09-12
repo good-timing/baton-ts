@@ -64,6 +64,25 @@
  */
 export const CLIENT_INFO_META_KEY = "io.modelcontextprotocol/clientInfo";
 
+/*
+ * ⚠ **Tier 1 is forgeable on 1.x and not on v2, and the module heading above
+ * is too absolute about it.** "A caller cannot assert its own runtime" is
+ * true of the removed `io.baton/*` override and true on a new-spec
+ * connection, where the client LIBRARY writes the reserved key and overwrites
+ * anything whoever composed the call planted there. It is NOT true on the
+ * 1.x peer: measured, a hand-written
+ * `_meta["io.modelcontextprotocol/clientInfo"]` arrives verbatim and
+ * outranks the handshake — which is exactly what this package's own
+ * "a request-borne declaration outranks the handshake" test demonstrates.
+ * So on a 2025-11-25 connection anything composing the tool call can set
+ * `agent_runtime` to any string up to the cap, and change it per request.
+ *
+ * That is not a hole to close here — the value is self-reported at every
+ * tier, which is why `agent_runtime` is never attested and `user_id` is a
+ * different field on a different condition. It is a limit to state, because
+ * the sentence above reads stronger than the tier delivers.
+ */
+
 /**
  * Cap on any name the CLIENT supplied. Both declared tiers read arbitrary
  * client text and copy it onto every event of the call, so an unbounded
@@ -115,7 +134,14 @@ function clean(
     cleaned = scrubbed;
   }
   if (!cleaned) return null;
-  return cleaned.slice(0, CLIENT_NAME_MAX_LEN);
+  // Cut by CODE POINT, not by UTF-16 code unit. Python's `cleaned[:128]`
+  // counts code points; `String.prototype.slice` counts units, so a name
+  // whose 128th boundary falls inside a surrogate pair would ship a LONE
+  // SURROGATE as `agent_runtime` on every event of every call. That survives
+  // `JSON.stringify` (as a `\udXXX` escape) and `json.loads`, then raises
+  // `UnicodeEncodeError` in the first Python consumer that re-encodes it —
+  // a capture-side value breaking a downstream reader, far from here.
+  return [...cleaned].slice(0, CLIENT_NAME_MAX_LEN).join("");
 }
 
 /** The declared name off the reserved per-request key, wherever this major

@@ -709,9 +709,23 @@ export function withBaton(server: SupportedMcpServer, supplied: BatonConfig = {}
       consent_token: config.consentToken,
       sequence_number: counter.next(sessionId),
       captured_at: new Date().toISOString(),
-      // No call is in scope here, so no client has declared and no `_meta`
-      // exists to infer from — the ladder has nothing to answer WITH, which
-      // is different from answering `unknown` about a call it could see.
+      // Deliberately the literal, NOT the ladder — and an earlier comment
+      // here justified that by saying no call is in scope, which is false:
+      // `maybeEmitSurfaceSnapshot` is the first line of `batonWrap`, so the
+      // handshake has happened and tier 2's carrier is live in this closure.
+      // The real reason is that the snapshot describes the VENDOR'S SURFACE,
+      // which is the same whoever is calling. It is hashed and emitted at
+      // most once per process per surface, so the client that happens to
+      // trigger it is whichever one called first — attributing the surface to
+      // that client would read as a fact about the surface and be an accident
+      // of timing. Python hardcodes it from the same in-call position
+      // (`_tool_wrap.py`), so this is parity, not a gap.
+      //
+      // ⚠ Consequence worth knowing: one session emits `surface_snapshot`
+      // with `unknown` and everything else with the client's name, so a
+      // consumer grouping on `agent_runtime` alone sees two runtimes for one
+      // client. Intended; group surfaces on `(tenant_id, vendor_id,
+      // surface_hash)`, which is what the Console's table is keyed on.
       agent_runtime: UNKNOWN_AGENT_RUNTIME,
       payload: {
         surface_hash: digest,

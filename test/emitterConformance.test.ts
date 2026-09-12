@@ -83,7 +83,10 @@ const ENVELOPE_ALLOWED_TO_DIFFER = new Set([
   // different client libraries (`spec-scenario` here). That is a harness
   // difference, not a wire divergence; it stops being an exemption the day
   // the vectors regenerate. `surface_snapshot` is `unknown` on BOTH sides
-  // and is not affected — it is emitted outside any call.
+  // is not affected — not because no call is in scope (one is: the snapshot
+  // flushes lazily from inside the first tool call), but because a surface
+  // belongs to the vendor rather than to whichever client triggered the
+  // flush. Python hardcodes the literal there too.
   // The ladder itself is asserted directly below ("reports the client that
   // declared itself"), so exempting the comparison leaves nothing uncovered.
   "agent_runtime",
@@ -416,8 +419,10 @@ describe("cross-SDK emitter conformance (Phase 3)", () => {
     // leave the field unasserted.
     for (const event of events) {
       if (event.event_type === "surface_snapshot") {
-        // Emitted outside any call, so no handshake is in scope. `unknown`
-        // here is the ladder declining to answer, not failing to.
+        // The ladder is deliberately not consulted: a surface is the
+        // vendor's, and the client that triggers the once-per-process flush
+        // is an accident of who called first. The handshake IS available
+        // here — this is a choice, not a limitation.
         expect(event.agent_runtime).toBe("unknown");
         continue;
       }
@@ -431,17 +436,24 @@ describe("cross-SDK emitter conformance (Phase 3)", () => {
     // arrival order (SPEC §11.5.4 tier 1 keys on `(call_id, tool_name)`).
     // `ENVELOPE_ALLOWED_TO_DIFFER` exempts the VALUE from the vector
     // comparison; this is what holds the behaviour.
-    const start = events.find((e) => e.event_type === "tool_call_start")!;
-    const end = events.find((e) => e.event_type === "tool_call_end")!;
-    const error = events.find((e) => e.event_type === "tool_call_error")!;
+    // Two calls ran, so `find` is not enough — it returns the FIRST start,
+    // and pairing the error against that one asserts only that two calls got
+    // different ids. Index into the asserted order instead.
+    const [, , okStart, okEnd, failStart, failError] = events;
 
-    expect(start.call_id).toEqual(expect.any(String));
-    expect(end.call_id).toBe(start.call_id);
+    expect(okStart!.call_id).toEqual(expect.any(String));
+    expect(okEnd!.call_id).toBe(okStart!.call_id);
 
-    // The error leg came from a DIFFERENT call, so it must carry its own id —
-    // asserting only "is a string" would pass if every call shared one.
-    expect(error.call_id).toEqual(expect.any(String));
-    expect(error.call_id).not.toBe(start.call_id);
+    // The FAILING call's two legs pair on their own id — the case SPEC
+    // §11.5.4 tier 1 matters most for, and the one an `error !== okStart`
+    // assertion cannot see: a freshly minted id on the error leg satisfies
+    // that and is unpairable.
+    expect(failStart!.call_id).toEqual(expect.any(String));
+    expect(failError!.call_id).toBe(failStart!.call_id);
+
+    // And the two calls really are distinct, so neither assertion above is
+    // passing on one shared id.
+    expect(failStart!.call_id).not.toBe(okStart!.call_id);
 
     // Null on the two types SPEC defines no call_id for. The field is still
     // PRESENT — the key-set assertion above covers that; this covers the value.
