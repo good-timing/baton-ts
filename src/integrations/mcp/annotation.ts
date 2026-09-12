@@ -20,7 +20,7 @@ import { buildAnnotationToolDescription, SIGNAL_TYPES } from "./llmText.js";
 import { extraEnvelope, extraMeta, type Extra } from "./mcpTypes.js";
 import type { SupportedMcpServer } from "./withBaton.js";
 import type { ProactiveTracker } from "./proactiveTracker.js";
-import { detectAgentRuntime } from "./runtimeAdapter.js";
+import { detectAgentRuntime, UNKNOWN_AGENT_RUNTIME } from "./runtimeAdapter.js";
 import { resolveSessionId } from "./sessionResolution.js";
 import type { SessionCounter } from "./sessionCounter.js";
 
@@ -61,7 +61,6 @@ export interface RegisterAnnotationToolOptions {
   vendorDisplayName: string;
   consentToken: string;
   fallbackSessionId: string;
-  defaultAgentRuntime: string;
   scrubber: (value: unknown) => unknown;
   resolveSessionId?: ResolveSessionIdHook | undefined;
   annotationToolName?: string | undefined;
@@ -104,7 +103,7 @@ export function registerAnnotationTool(
           envelope: extraEnvelope(extra),
           server,
           scrubber: options.scrubber,
-        }) ?? options.defaultAgentRuntime;
+        }) ?? UNKNOWN_AGENT_RUNTIME;
       const scrubbedMeta = meta ? (options.scrubber(meta) as Record<string, unknown>) : null;
       const sessionId = await resolveSessionId(
         options.resolveSessionId,

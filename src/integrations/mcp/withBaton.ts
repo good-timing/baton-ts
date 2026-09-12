@@ -104,7 +104,7 @@ import {
 } from "./llmText.js";
 import { extraEnvelope, extraMeta, type Extra } from "./mcpTypes.js";
 import { ProactiveTracker } from "./proactiveTracker.js";
-import { detectAgentRuntime } from "./runtimeAdapter.js";
+import { detectAgentRuntime, UNKNOWN_AGENT_RUNTIME } from "./runtimeAdapter.js";
 import { resolveSessionId } from "./sessionResolution.js";
 import { SessionCounter } from "./sessionCounter.js";
 import {
@@ -127,7 +127,6 @@ interface WrapContext {
   vendorId: string;
   consentToken: string;
   fallbackSessionId: string;
-  defaultAgentRuntime: string;
   /** The wrapped MCP server, kept for one read: the `initialize` handshake
    * it cached, which is where every client shipping today declares its name
    * and the only place either peer exposes it. Read lazily per call — the
@@ -264,7 +263,7 @@ function batonWrap(nameRef: { current: string }, original: AnyHandler, ctx: Wrap
         // handler context, both expose the cached handshake on the server.
         server: ctx.server,
         scrubber: ctx.scrubber,
-      }) ?? ctx.defaultAgentRuntime;
+      }) ?? UNKNOWN_AGENT_RUNTIME;
     const scrubbedMeta = meta ? (ctx.scrubber(meta) as Record<string, unknown>) : null;
     const sessionId = await resolveSessionId(
       ctx.resolveSessionId,
@@ -710,7 +709,10 @@ export function withBaton(server: SupportedMcpServer, supplied: BatonConfig = {}
       consent_token: config.consentToken,
       sequence_number: counter.next(sessionId),
       captured_at: new Date().toISOString(),
-      agent_runtime: config.defaultAgentRuntime ?? "unknown",
+      // No call is in scope here, so no client has declared and no `_meta`
+      // exists to infer from — the ladder has nothing to answer WITH, which
+      // is different from answering `unknown` about a call it could see.
+      agent_runtime: UNKNOWN_AGENT_RUNTIME,
       payload: {
         surface_hash: digest,
         server_info: snapshot.server_info,
@@ -793,7 +795,6 @@ export function withBaton(server: SupportedMcpServer, supplied: BatonConfig = {}
     vendorId: config.vendorId,
     consentToken: config.consentToken,
     fallbackSessionId,
-    defaultAgentRuntime: config.defaultAgentRuntime ?? "unknown",
     server,
     scrubber,
     resolveSessionId: config.resolveSessionId,
@@ -825,7 +826,6 @@ export function withBaton(server: SupportedMcpServer, supplied: BatonConfig = {}
     vendorDisplayName: config.vendorDisplayName,
     consentToken: ctx.consentToken,
     fallbackSessionId: ctx.fallbackSessionId,
-    defaultAgentRuntime: ctx.defaultAgentRuntime,
     scrubber: ctx.scrubber,
     resolveSessionId: ctx.resolveSessionId,
     annotationToolName: config.annotationToolName,

@@ -107,8 +107,6 @@ export interface BatonConfig {
   consentToken?: string;
   /** Where events go. Defaults to `new StdoutSink()` — zero-config dev mode. */
   sink?: Sink;
-  /** Default `agent_runtime` when `_meta` heuristics can't detect one. */
-  defaultAgentRuntime?: string;
   /** PII scrubber per SPEC §7, applied to tool params/results, `_meta`,
    * intent strings and error bodies before they reach the sink. Defaults to
    * the shipped default ruleset (`new Scrubber().scrub` — email, bearer,

@@ -1,5 +1,59 @@
 # Changelog
 
+## Unreleased
+
+- **`agent_runtime` answers for every client, not just Claude Code.**
+  Detection was a single `claudecode/*` key-prefix scan — the pre-B1-R order
+  with the top two tiers missing — so Claude Desktop, Cursor, and anything
+  behind a gateway that strips `_meta` all reported `unknown`. It is now
+  Python's 4-tier ladder: the client's declaration on the request, then its
+  declaration on the `initialize` handshake, then the heuristic, then
+  `unknown`. **Declared before inferred**: `claudecode/toolUseId` is a
+  per-call tool-use id, and a proxy forwards `_meta` verbatim, so its prefix
+  says where the metadata ORIGINATED, not who the caller is.
+
+  Client-supplied names (the two declared tiers) are scrubbed and capped at
+  128 characters; a scrubber that redacts one loses that tier and falls
+  through rather than shipping a stringified redaction. The heuristic's own
+  answer is an SDK constant and is neither scrubbed nor capped.
+
+  ⚠ **`agent_runtime` values will CHANGE for existing servers** — that is the
+  point of the release, but it is a data change and not only a code one. A
+  client that was `unknown` now reports the name it declares; a Claude Code
+  client that was `claude-code` by heuristic now reports whatever it declares
+  in `clientInfo`, which for a direct connection is `claude-code` and behind a
+  gateway is the gateway. Any saved query grouping on `agent_runtime` spans
+  both populations across the upgrade. No wire-format change: the field, its
+  type and its nullability are unchanged.
+
+- **REMOVED: `BatonConfig.defaultAgentRuntime`.** A vendor set it once at
+  install, for every connection, so it could only ever be right in a
+  single-client deployment — and with the declared tiers in place it would
+  assert a runtime over a client that had just named itself. Python removed
+  its `default_agent_runtime` counterpart on 2026-09-09; this is that removal,
+  not a port of the old behaviour. When no tier answers, the event reports the
+  literal `unknown`.
+
+  ⚠ **A breaking removal on a patch-shaped change, deliberately.** Pre-1.0
+  policy says breakage rides a minor bump; the deviation is recorded here
+  rather than taken quietly, and its consequence is that a `~0.3.0` /
+  `>=0.3.0` range auto-adopts it where a minor would have required a move.
+  Same call, and the same reasoning, as 0.8.1 on the Python side. TypeScript
+  refuses the key at compile time; a JavaScript consumer carrying it across
+  the upgrade finds it inert rather than honoured, which is pinned by a test.
+
+- **`call_id` on the event envelope.** The per-call correlation key Python has
+  minted since 0.7.x, absent here entirely: TS servers paired their
+  `tool_call_start` and `tool_call_end` on session plus arrival order — the
+  FIFO floor the mint exists to leave — and SPEC §11.5.4's tier 1, which keys
+  on `(call_id, tool_name)`, was unreachable from every one of them. Minted as
+  a UUIDv7 per tool call and carried on both legs.
+
+  Null on `annotation` and `surface_snapshot`, which SPEC defines no `call_id`
+  for. **Additive and nullable**, so a consumer that does not read it is
+  unaffected — but the console's pairing improves only for events emitted by
+  this release or later, and null on an older event is never an error.
+
 ## 0.3.1 — 2026-09-11
 
 - **A server can be configured by ONE string.** `withBaton(server, { dsn })` is

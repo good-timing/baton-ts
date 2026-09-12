@@ -145,6 +145,16 @@ function declaredOnRequest(
  * middleware once and failed a vendor's tool call, the one thing SPEC
  * §11.2 says capture may never do. An enumerated catch is a guess about a
  * library; this is a fail-open boundary.
+ *
+ * ⚠ **Per SERVER INSTANCE, where Python's carrier is per SESSION.**
+ * `ctx.session.client_params` is scoped to one session by construction;
+ * `getClientVersion()` returns whatever the last `initialize` on THIS object
+ * cached. The two agree only while server:session is 1:1, which both peers'
+ * documented patterns give (1.x `Protocol.connect` replaces the transport,
+ * v2's `createMcpHandler` takes a per-session factory). A vendor wiring one
+ * `McpServer` across concurrent sessions would get client A's calls
+ * attributed to client B's declared name. Not measured either way — recorded
+ * as the honest limit of this carrier rather than implied away.
  */
 function declaredOnConnection(options: RuntimeDetectionOptions): unknown {
   try {
