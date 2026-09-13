@@ -1,6 +1,6 @@
 {
   "name": "@goodtiming/baton-sdk",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "Baton SDK for TypeScript — structured signal capture for agent-mediated tool use over MCP.",
   "license": "Apache-2.0",
   "type": "module",

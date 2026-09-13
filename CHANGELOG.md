@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.2 — a key in the host slot is refused; a short workspace id parses
 
 - **SECURITY: a DSN with the key and the host transposed no longer parses.**
   `https://x@<key>/ten_.../srv` splits on the last `@`, so the key landed in
