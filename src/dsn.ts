@@ -75,7 +75,12 @@ export const VENDOR_ID_PATTERN = /^[a-zA-Z0-9_-]{1,48}$/;
 // it. Both are accepted because a DSN ships inline in a distributable server's
 // source — refusing the old length breaks installs already out there, on an
 // upgrade meant to be safe. It collapses to `{8}` the day no `ten_<32 hex>`
-// workspace exists, which is a console question, not one this parser can ask.
+// workspace exists — a console question, and a CHECK rather than a note,
+// because a note drifts and nobody re-reads a comment to find out it expired:
+//
+//     SELECT count(*) FROM tenants WHERE vendor_id ~ '^ten_[0-9a-f]{32}$';
+//
+// Zero means the 32-branch and its tests can go in one commit.
 const WORKSPACE_PATTERN = /^ten_(?:[0-9a-fA-F]{8}|[0-9a-fA-F]{32})$/;
 
 // A host contains none of these. Character for character `baton`'s
@@ -114,7 +119,9 @@ const SECRET_PREFIX = "baton_sk_";
 const KEY_RUN = /baton_(?:pk|sk)_[A-Za-z0-9_%-]{8,}/g;
 
 function looksLikeAKey(value: string): boolean {
-  return value.startsWith(PUBLISHABLE_PREFIX) || value.startsWith(SECRET_PREFIX);
+  return (
+    value.startsWith(PUBLISHABLE_PREFIX) || value.startsWith(SECRET_PREFIX)
+  );
 }
 
 /**
@@ -150,7 +157,10 @@ const BARE_KEY_HINT =
  * missing warning channel must not crash a vendor's server startup.
  */
 function warn(message: string): void {
-  if (typeof process !== "undefined" && typeof process.emitWarning === "function") {
+  if (
+    typeof process !== "undefined" &&
+    typeof process.emitWarning === "function"
+  ) {
     process.emitWarning(message);
   }
 }
@@ -237,10 +247,18 @@ function splitDsn(raw: string): SplitDsn | null {
 }
 
 /** `netloc.rpartition("@")` — the LAST `@`, so a key containing one survives. */
-function splitKeyFromAuthority(netloc: string): { key: string; at: boolean; authority: string } {
+function splitKeyFromAuthority(netloc: string): {
+  key: string;
+  at: boolean;
+  authority: string;
+} {
   const index = netloc.lastIndexOf("@");
   if (index === -1) return { key: "", at: false, authority: netloc };
-  return { key: netloc.slice(0, index), at: true, authority: netloc.slice(index + 1) };
+  return {
+    key: netloc.slice(0, index),
+    at: true,
+    authority: netloc.slice(index + 1),
+  };
 }
 
 /**
@@ -324,7 +342,8 @@ function fail(message: string): never {
 /** `BATON_DSN`, or undefined — guarded, since `process` is absent on edge and
  * worker runtimes and this module must not crash a server's startup there. */
 function dsnFromEnvironment(): string | undefined {
-  const fromEnv = typeof process !== "undefined" ? process.env?.BATON_DSN : undefined;
+  const fromEnv =
+    typeof process !== "undefined" ? process.env?.BATON_DSN : undefined;
   // Set-but-empty is how a shell exports a variable it failed to fill.
   // Treating it as a value would raise a parse error naming a string the
   // vendor never wrote.
@@ -452,7 +471,9 @@ export function parseDsn(raw: string): Dsn {
           `https://baton_pk_...@host/ten_.../server`,
       );
     }
-    const misplaced = parts.path.split("/").some((segment) => containsKey(segment));
+    const misplaced = parts.path
+      .split("/")
+      .some((segment) => containsKey(segment));
     const detail = misplaced
       ? "the key is in the PATH — it goes before an @"
       : "the value from /account has the key before an @";
@@ -640,8 +661,16 @@ export function parseDsn(raw: string): Dsn {
  * one being closed.
  */
 function sealKey(dsn: Dsn): Dsn {
-  const shown = { origin: dsn.origin, tenantId: dsn.tenantId, vendorId: dsn.vendorId, key: "<key>" };
-  Object.defineProperty(dsn, "toJSON", { value: () => shown, enumerable: false });
+  const shown = {
+    origin: dsn.origin,
+    tenantId: dsn.tenantId,
+    vendorId: dsn.vendorId,
+    key: "<key>",
+  };
+  Object.defineProperty(dsn, "toJSON", {
+    value: () => shown,
+    enumerable: false,
+  });
   // `Symbol.for`, not an import of `node:util`: this package runs on edge and
   // worker runtimes too, and a registry symbol is inert where nothing reads it.
   Object.defineProperty(dsn, Symbol.for("nodejs.util.inspect.custom"), {

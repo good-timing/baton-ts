@@ -29,11 +29,32 @@ const WORKSPACE = "ten_655b084e118b43f88992ee6357fcc23c";
 const KEY = "baton_pk_" + "a".repeat(43);
 const DSN = `https://${KEY}@ingest.goodtiming.ai/${WORKSPACE}/echo-server`;
 
+// Every shape this parser refuses, in ONE list. Two file-wide properties are
+// stated over it — no refusal repeats the credential, and no refusal that is
+// not ABOUT the workspace pattern names a hex length. Keeping them on one list
+// is the point: a shape added here gets both guarantees at once, where two
+// hand-picked tables drift and the newer property silently misses a row.
+const EVERY_REFUSAL: [name: string, raw: string][] = [
+  ["wrong scheme", `ftp://${KEY}@h.example.com/${WORKSPACE}/srv`],
+  ["password slot", `https://${KEY}:secret@h.example.com/${WORKSPACE}/srv`],
+  ["no server segment", `https://${KEY}@h.example.com/${WORKSPACE}`],
+  ["three segments", `https://${KEY}@h.example.com/${WORKSPACE}/srv/extra`],
+  ["swapped segments", `https://${KEY}@h.example.com/srv/${WORKSPACE}`],
+  ["bad server name", `https://${KEY}@h.example.com/${WORKSPACE}/my.server`],
+  ["a query string where the path belongs", `https://${KEY}@h.example.com?a=b`],
+  [
+    "a bare key as the whole workspace segment",
+    `https://${KEY}@h.example.com/${KEY}/srv`,
+  ],
+];
+
 /** Captures `process.emitWarning`, which is how this package warns (stdout is
  * the JSON-RPC stream under stdio transport, so nothing may print there). */
 function captureWarnings(): { text: () => string } {
   const spy = vi.spyOn(process, "emitWarning").mockImplementation(() => {});
-  return { text: () => spy.mock.calls.map((call) => String(call[0])).join("\n") };
+  return {
+    text: () => spy.mock.calls.map((call) => String(call[0])).join("\n"),
+  };
 }
 
 afterEach(() => {
@@ -64,17 +85,17 @@ describe("the happy path", () => {
   });
 
   it("accepts http for local development", () => {
-    expect(parseDsn(`http://${KEY}@localhost:8000/${WORKSPACE}/echo-server`).origin).toBe(
-      "http://localhost:8000",
-    );
+    expect(
+      parseDsn(`http://${KEY}@localhost:8000/${WORKSPACE}/echo-server`).origin,
+    ).toBe("http://localhost:8000");
   });
 
   it("keeps the port", () => {
     // The authority is taken verbatim rather than rebuilt from a URL object,
     // which drops a default port and the brackets an IPv6 literal needs.
-    expect(parseDsn(`https://${KEY}@127.0.0.1:9443/${WORKSPACE}/srv`).origin).toBe(
-      "https://127.0.0.1:9443",
-    );
+    expect(
+      parseDsn(`https://${KEY}@127.0.0.1:9443/${WORKSPACE}/srv`).origin,
+    ).toBe("https://127.0.0.1:9443");
   });
 
   it("keeps an IPv6 literal's brackets and its default port", () => {
@@ -96,7 +117,9 @@ describe("the happy path", () => {
     // `ten_` is part of the id. And the value is compared as a string
     // server-side, so this parser must never normalise it.
     const mixed = "ten_655B084E118B43F88992EE6357FCC23C";
-    expect(parseDsn(`https://${KEY}@h.example.com/${mixed}/srv`).tenantId).toBe(mixed);
+    expect(parseDsn(`https://${KEY}@h.example.com/${mixed}/srv`).tenantId).toBe(
+      mixed,
+    );
   });
 });
 
@@ -114,16 +137,18 @@ describe("the key crosses verbatim", () => {
 
   it("does not rewrite a percent sign in the tail", () => {
     const odd = "baton_pk_aa%bbcc";
-    expect(parseDsn(`https://${odd}@h.example.com/${WORKSPACE}/srv`).key).toBe(odd);
+    expect(parseDsn(`https://${odd}@h.example.com/${WORKSPACE}/srv`).key).toBe(
+      odd,
+    );
   });
 
   it("does not lowercase or punycode the authority", () => {
     // `new URL` returns `host.example.com` for this, and
     // `xn--mnchen-3ya.de` for an IDN. The origin is the string the vendor
     // wrote, because it is compared against nothing and dialled directly.
-    expect(parseDsn(`https://${KEY}@HOST.Example.COM/${WORKSPACE}/srv`).origin).toBe(
-      "https://HOST.Example.COM",
-    );
+    expect(
+      parseDsn(`https://${KEY}@HOST.Example.COM/${WORKSPACE}/srv`).origin,
+    ).toBe("https://HOST.Example.COM");
   });
 });
 
@@ -138,7 +163,9 @@ describe("deliberate permissiveness", () => {
     // every SDK already in the field refuses every new key.
     for (const tailLength of [32, 43, 44, 80]) {
       const key = "baton_pk_" + "b".repeat(tailLength);
-      expect(parseDsn(`https://${key}@h.example.com/${WORKSPACE}/srv`).key).toBe(key);
+      expect(
+        parseDsn(`https://${key}@h.example.com/${WORKSPACE}/srv`).key,
+      ).toBe(key);
     }
   });
 
@@ -154,12 +181,12 @@ describe("deliberate permissiveness", () => {
     // The boundary is READ OFF the validator rather than typed in, so this
     // test cannot outlive a change to it.
     const longest = "s".repeat(48);
-    expect(parseDsn(`https://${KEY}@h.example.com/${WORKSPACE}/${longest}`).vendorId).toBe(
-      longest,
-    );
-    expect(() => parseDsn(`https://${KEY}@h.example.com/${WORKSPACE}/${"s".repeat(49)}`)).toThrow(
-      /where the server belongs/,
-    );
+    expect(
+      parseDsn(`https://${KEY}@h.example.com/${WORKSPACE}/${longest}`).vendorId,
+    ).toBe(longest);
+    expect(() =>
+      parseDsn(`https://${KEY}@h.example.com/${WORKSPACE}/${"s".repeat(49)}`),
+    ).toThrow(/where the server belongs/);
   });
 });
 
@@ -183,59 +210,55 @@ describe("the workspace is eight or thirty-two hex", () => {
 
   for (const [name, workspace] of accepted) {
     it(`accepts ${name} and passes it through verbatim`, () => {
-      expect(parseDsn(`https://${KEY}@h.example.com/${workspace}/srv`).tenantId).toBe(workspace);
+      expect(
+        parseDsn(`https://${KEY}@h.example.com/${workspace}/srv`).tenantId,
+      ).toBe(workspace);
     });
   }
 
   for (const length of [0, 1, 7, 9, 16, 31, 33, 64]) {
     it(`refuses a run of ${length} hex`, () => {
       const workspace = "ten_" + "a".repeat(length);
-      expect(() => parseDsn(`https://${KEY}@h.example.com/${workspace}/srv`)).toThrow(
-        /where the workspace belongs/,
-      );
+      expect(() =>
+        parseDsn(`https://${KEY}@h.example.com/${workspace}/srv`),
+      ).toThrow(/where the workspace belongs/);
     });
   }
 
   for (const workspace of ["ten_" + "g".repeat(8), "ten_" + "g".repeat(32)]) {
     it(`refuses ${workspace} — length alone is not the rule`, () => {
-      expect(() => parseDsn(`https://${KEY}@h.example.com/${workspace}/srv`)).toThrow(
-        /where the workspace belongs/,
-      );
+      expect(() =>
+        parseDsn(`https://${KEY}@h.example.com/${workspace}/srv`),
+      ).toThrow(/where the workspace belongs/);
     });
   }
 
   // ⚠ This regressed once, in the commit that widened the pattern: the
-  // illustrative examples were rewritten 32 -> 8 along with everything else, so
-  // a pre-2026-09-12 customer with a 32-hex workspace who made some OTHER
-  // mistake was shown `/ten_<8 hex>/<server>` and could "correct" a perfectly
-  // good workspace by truncating it. That DSN parses, so the install succeeds
-  // and every event then 401s at ingest and is dropped. The length belongs in
-  // the one sentence that is ABOUT the length; elsewhere the segment is elided,
-  // exactly as the key already is.
-  const unrelatedMistakes: [name: string, raw: string][] = [
-    ["no server segment", `https://${KEY}@h.example.com/${WORKSPACE}`],
-    ["a key in the workspace slot", `https://${KEY}@h.example.com/${KEY}/srv`],
-    // ⚠ NOT "a key in the host slot" — `baton`'s test suite covers that row and
-    // this one cannot, because THIS PARSER DOES NOT REFUSE IT. Python refuses
-    // `https://x@<key>/ten_.../srv` at `_dsn.py:395` ("has the KEY where the
-    // host belongs"); there is no such check here, so the DSN parses with the
-    // key as the ORIGIN and "x" as the bearer. Tracked separately — this is a
-    // port gap, not something the workspace-length change introduced, and it is
-    // named here rather than silently dropped from the table.
-  ];
-
-  for (const [name, raw] of unrelatedMistakes) {
-    it(`shows no single length in the refusal for ${name}`, () => {
-      expect(() => parseDsn(raw)).toThrow();
+  // illustrative DSN examples were rewritten 32 -> 8 along with everything else,
+  // so a pre-2026-09-12 customer with a 32-hex workspace who made some OTHER
+  // mistake was shown `/ten_<8 hex>/<server>` and could "correct" a good
+  // workspace by truncating it. That DSN parses, the install succeeds, and every
+  // event then 401s at ingest and is dropped. The length belongs in the one
+  // sentence that is ABOUT the length; elsewhere the segment is elided, exactly
+  // as the key already is.
+  //
+  // Stated as an implication over EVERY refusal rather than a hand-picked few —
+  // the credential property uses the same list, so a shape added there gets both.
+  it.each(EVERY_REFUSAL)(
+    "names no length unless it is about one: %s",
+    (_name, raw) => {
       let message = "";
       try {
         parseDsn(raw);
       } catch (error) {
         message = (error as Error).message;
       }
-      expect(message).not.toContain("hex");
-    });
-  }
+      expect(message).not.toBe("");
+      if (message.includes("hex")) {
+        expect(message).toContain("where the workspace belongs");
+      }
+    },
+  );
 
   it("names both lengths in the refusal", () => {
     // A sentence naming only one of two accepted shapes sends the reader
@@ -251,14 +274,22 @@ describe("what it refuses", () => {
     ["a bare publishable key", KEY, /bare key/],
     ["a bare secret key", "baton_sk_" + "c".repeat(43), /bare key/],
     ["no scheme", `ingest.goodtiming.ai/${WORKSPACE}/srv`, /https:\/\//],
-    ["wrong scheme", `ftp://${KEY}@h.example.com/${WORKSPACE}/srv`, /https:\/\//],
+    [
+      "wrong scheme",
+      `ftp://${KEY}@h.example.com/${WORKSPACE}/srv`,
+      /https:\/\//,
+    ],
     ["no key", `https://h.example.com/${WORKSPACE}/srv`, /carries no key/],
     [
       "a password slot",
       `https://${KEY}:secret@h.example.com/${WORKSPACE}/srv`,
       /no password field/,
     ],
-    ["no server segment", `https://${KEY}@h.example.com/${WORKSPACE}`, /exactly two path segments/],
+    [
+      "no server segment",
+      `https://${KEY}@h.example.com/${WORKSPACE}`,
+      /exactly two path segments/,
+    ],
     [
       "three segments",
       `https://${KEY}@h.example.com/${WORKSPACE}/srv/extra`,
@@ -274,7 +305,11 @@ describe("what it refuses", () => {
       `https://${KEY}@h.example.com/${WORKSPACE}/my.server`,
       /where the server belongs/,
     ],
-    ["a query string where the path belongs", `https://${KEY}@h.example.com?a=b`, /two path/],
+    [
+      "a query string where the path belongs",
+      `https://${KEY}@h.example.com?a=b`,
+      /two path/,
+    ],
     ["empty", "", /non-empty/],
     ["whitespace only", "   ", /non-empty/],
   ];
@@ -283,15 +318,7 @@ describe("what it refuses", () => {
     expect(() => parseDsn(raw)).toThrow(expected);
   });
 
-  const credentialCases: [name: string, raw: string][] = [
-    ["wrong scheme", `ftp://${KEY}@h.example.com/${WORKSPACE}/srv`],
-    ["password slot", `https://${KEY}:secret@h.example.com/${WORKSPACE}/srv`],
-    ["no server segment", `https://${KEY}@h.example.com/${WORKSPACE}`],
-    ["three segments", `https://${KEY}@h.example.com/${WORKSPACE}/srv/extra`],
-    ["swapped segments", `https://${KEY}@h.example.com/srv/${WORKSPACE}`],
-    ["bad server name", `https://${KEY}@h.example.com/${WORKSPACE}/my.server`],
-    ["a query string where the path belongs", `https://${KEY}@h.example.com?a=b`],
-  ];
+  const credentialCases = EVERY_REFUSAL;
 
   it.each(credentialCases)("never repeats the credential: %s", (_name, raw) => {
     // The one thing a parse error must not do. Every message above passes
@@ -361,7 +388,9 @@ describe("a secret key warns and works", () => {
 
 describe("redact", () => {
   it("removes the key and keeps everything useful", () => {
-    expect(redact(DSN)).toBe(`https://***@ingest.goodtiming.ai/${WORKSPACE}/echo-server`);
+    expect(redact(DSN)).toBe(
+      `https://***@ingest.goodtiming.ai/${WORKSPACE}/echo-server`,
+    );
   });
 
   it("turns a string it cannot split into a marker, not a leak", () => {
@@ -379,7 +408,9 @@ describe("selectDsn", () => {
   // and the environment is the fallback.
 
   it("still throws for an explicit DSN beside an explicit value", () => {
-    expect(() => selectDsn(DSN, { vendorId: true }, "BatonConfig")).toThrow(/already supplies it/);
+    expect(() => selectDsn(DSN, { vendorId: true }, "BatonConfig")).toThrow(
+      /already supplies it/,
+    );
   });
 
   it("uses an explicit DSN alone", () => {
@@ -389,7 +420,9 @@ describe("selectDsn", () => {
   it("uses an ambient DSN alone", () => {
     // The hosted-vendor case it exists for: one variable instead of five.
     process.env.BATON_DSN = DSN;
-    expect(selectDsn(undefined, { vendorId: false, sink: false }, "BatonConfig")).toBe(DSN);
+    expect(
+      selectDsn(undefined, { vendorId: false, sink: false }, "BatonConfig"),
+    ).toBe(DSN);
   });
 
   it("lets an ambient DSN LOSE to an explicit value instead of throwing", () => {
@@ -398,7 +431,9 @@ describe("selectDsn", () => {
     // died naming a `dsn` they never wrote.
     process.env.BATON_DSN = DSN;
     captureWarnings();
-    expect(selectDsn(undefined, { vendorId: true }, "BatonConfig")).toBeUndefined();
+    expect(
+      selectDsn(undefined, { vendorId: true }, "BatonConfig"),
+    ).toBeUndefined();
   });
 
   it("announces being ignored", () => {
@@ -433,7 +468,9 @@ describe("selectDsn", () => {
   });
 
   it("is undefined when nothing is set anywhere", () => {
-    expect(selectDsn(undefined, { vendorId: true }, "BatonConfig")).toBeUndefined();
+    expect(
+      selectDsn(undefined, { vendorId: true }, "BatonConfig"),
+    ).toBeUndefined();
   });
 });
 
@@ -475,8 +512,14 @@ describe("the leaks review found", () => {
   it.each([
     ["server slot", `https://h.example.com/${WORKSPACE}/${KEY}`],
     ["workspace slot", `https://h.example.com/${KEY}/srv`],
-    ["server slot with a real key", `https://${KEY}@h.example.com/${WORKSPACE}/${KEY}`],
-    ["workspace slot with a real key", `https://${KEY}@h.example.com/${KEY}/srv`],
+    [
+      "server slot with a real key",
+      `https://${KEY}@h.example.com/${WORKSPACE}/${KEY}`,
+    ],
+    [
+      "workspace slot with a real key",
+      `https://${KEY}@h.example.com/${KEY}/srv`,
+    ],
   ])("does not echo a key pasted into a PATH slot: %s", (_name, raw) => {
     // The third leak of this kind, and the likeliest paste error of all. A
     // DSN's userinfo and its two path segments look alike to someone copying
@@ -513,7 +556,10 @@ describe("the leaks review found", () => {
     ["nothing but a key", `https://${KEY}`],
     ["a key as the host, with a path", `https://${KEY}/${WORKSPACE}/srv`],
     ["a key as the host, with a port", `https://${KEY}:8000/${WORKSPACE}/srv`],
-    ["a key where the scheme's slashes are doubled", `https://${KEY}//${WORKSPACE}/srv`],
+    [
+      "a key where the scheme's slashes are doubled",
+      `https://${KEY}//${WORKSPACE}/srv`,
+    ],
   ])("does not echo a key pasted into the AUTHORITY slot: %s", (_name, raw) => {
     // The fourth leak of this kind, and the one the per-slot elision could not
     // see — `elideKey` ran on path segments only, so a key sitting where the
@@ -538,8 +584,12 @@ describe("the leaks review found", () => {
     // Not merely refused, and not the generic "carries no key" either: this
     // vendor did what the previous error told them to do. The sentence has to
     // name the part they still do not have.
-    expect(() => parseDsn(`https://${KEY}`)).toThrow(/bare key with a scheme in front of it/);
-    expect(() => parseDsn(`https://${KEY}`)).toThrow(/host, your workspace and your server/);
+    expect(() => parseDsn(`https://${KEY}`)).toThrow(
+      /bare key with a scheme in front of it/,
+    );
+    expect(() => parseDsn(`https://${KEY}`)).toThrow(
+      /host, your workspace and your server/,
+    );
   });
 
   it("leaves no credential-shaped run anywhere in a redacted string", () => {
@@ -576,13 +626,27 @@ describe("the leaks review found", () => {
     // A spread must NOT quietly drop it: an object that loses its bearer on
     // copy is a worse trap than the one being closed.
     expect({ ...parsed }.key).toBe(KEY);
-    expect(Object.keys(parsed)).toEqual(["origin", "tenantId", "vendorId", "key"]);
+    expect(Object.keys(parsed)).toEqual([
+      "origin",
+      "tenantId",
+      "vendorId",
+      "key",
+    ]);
   });
 
   it.each([
-    ["glued to the server segment", `https://${KEY}@h.example.com/${WORKSPACE}/srv-${KEY}`],
-    ["glued to the workspace segment", `https://${KEY}@h.example.com/x${KEY}/srv`],
-    ["glued to a secret key", `https://${KEY}@h.example.com/${WORKSPACE}/srv-baton_sk_${"s".repeat(43)}`],
+    [
+      "glued to the server segment",
+      `https://${KEY}@h.example.com/${WORKSPACE}/srv-${KEY}`,
+    ],
+    [
+      "glued to the workspace segment",
+      `https://${KEY}@h.example.com/x${KEY}/srv`,
+    ],
+    [
+      "glued to a secret key",
+      `https://${KEY}@h.example.com/${WORKSPACE}/srv-baton_sk_${"s".repeat(43)}`,
+    ],
   ])("does not echo a key GLUED to a path segment: %s", (_name, raw) => {
     // The blind spot in the elision was `startsWith`: a segment carrying a key
     // rather than being one slipped past it and was interpolated into the
@@ -608,14 +672,14 @@ describe("the leaks review found", () => {
     //
     // So this test exists to pin the half the leak test cannot see: WHICH
     // sentence a vendor gets. "has a KEY in the workspace slot" tells them
-    // what they did; "expected ten_ followed by 32 hex characters" describes
+    // what they did; "expected ten_ followed by 8 or 32 hex characters" describes
     // a string they cannot see, because it has just been redacted.
     expect(() => parseDsn(`https://${KEY}@h.example.com/x${KEY}/srv`)).toThrow(
       /KEY in the workspace slot/,
     );
-    expect(() => parseDsn(`https://${KEY}@h.example.com/${WORKSPACE}/srv-${KEY}`)).toThrow(
-      /KEY in the server slot/,
-    );
+    expect(() =>
+      parseDsn(`https://${KEY}@h.example.com/${WORKSPACE}/srv-${KEY}`),
+    ).toThrow(/KEY in the server slot/);
   });
 
   it("still shows the module's own examples and prefix names", () => {
@@ -627,7 +691,9 @@ describe("the leaks review found", () => {
       /baton_pk_\.\.\.@host/,
     );
     const warnings = captureWarnings();
-    parseDsn(`https://baton_sk_${"d".repeat(43)}@h.example.com/${WORKSPACE}/srv`);
+    parseDsn(
+      `https://baton_sk_${"d".repeat(43)}@h.example.com/${WORKSPACE}/srv`,
+    );
     expect(warnings.text()).toContain("baton_sk_");
     expect(warnings.text()).toContain("baton_pk_");
   });
@@ -650,7 +716,9 @@ describe("the leaks review found", () => {
     // first tool call. Measured that these three are the whole strip set:
     // every other control character makes `new URL` throw.
     expect(() =>
-      parseDsn(`https://${KEY}@ingest.example.com${ch}evil.com/${WORKSPACE}/srv`),
+      parseDsn(
+        `https://${KEY}@ingest.example.com${ch}evil.com/${WORKSPACE}/srv`,
+      ),
     ).toThrow(/whitespace, a control character or a backslash/);
   });
 
@@ -667,9 +735,9 @@ describe("the leaks review found", () => {
     // sink's bare catch. Retried, dropped, forever, from an install that
     // raised nothing. The likely real input is a DSN copied with a stray space
     // before the path.
-    expect(() => parseDsn(`https://${KEY}@ingest.example.com${ch}/${WORKSPACE}/srv`)).toThrow(
-      /whitespace, a control character or a backslash/,
-    );
+    expect(() =>
+      parseDsn(`https://${KEY}@ingest.example.com${ch}/${WORKSPACE}/srv`),
+    ).toThrow(/whitespace, a control character or a backslash/);
   });
 
   it.each([
@@ -692,7 +760,9 @@ describe("the leaks review found", () => {
     // Narrow on purpose: the tail's alphabet belongs to the console's mint,
     // and a parser stricter than the mint refuses valid keys in the field.
     const odd = "baton_pk_aaaa\x0baaaa";
-    expect(parseDsn(`https://${odd}@h.example.com/${WORKSPACE}/srv`).key).toBe(odd);
+    expect(parseDsn(`https://${odd}@h.example.com/${WORKSPACE}/srv`).key).toBe(
+      odd,
+    );
   });
 
   it("refuses a backslash-smuggled path in the authority", () => {
