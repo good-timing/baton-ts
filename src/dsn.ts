@@ -565,7 +565,7 @@ export function parseDsn(raw: string): Dsn {
   if (workspace === undefined || server === undefined || extra.length > 0) {
     fail(
       `dsn ${safe} must carry exactly two path segments — the workspace and ` +
-        `the server, as in /ten_<8 hex>/<server>. A missing server is never ` +
+        `the server, as in /ten_.../<server>. A missing server is never ` +
         `defaulted: it is what the key is bound to.`,
     );
   }
@@ -581,7 +581,7 @@ export function parseDsn(raw: string): Dsn {
       fail(
         `dsn ${safe} has a KEY in the ${slot} slot. The key goes before the @, ` +
           `and the path carries the workspace and the server: ` +
-          `https://baton_pk_...@host/ten_<8 hex>/<server>`,
+          `https://baton_pk_...@host/ten_.../<server>`,
       );
     }
   }

@@ -204,6 +204,39 @@ describe("the workspace is eight or thirty-two hex", () => {
     });
   }
 
+  // ⚠ This regressed once, in the commit that widened the pattern: the
+  // illustrative examples were rewritten 32 -> 8 along with everything else, so
+  // a pre-2026-09-12 customer with a 32-hex workspace who made some OTHER
+  // mistake was shown `/ten_<8 hex>/<server>` and could "correct" a perfectly
+  // good workspace by truncating it. That DSN parses, so the install succeeds
+  // and every event then 401s at ingest and is dropped. The length belongs in
+  // the one sentence that is ABOUT the length; elsewhere the segment is elided,
+  // exactly as the key already is.
+  const unrelatedMistakes: [name: string, raw: string][] = [
+    ["no server segment", `https://${KEY}@h.example.com/${WORKSPACE}`],
+    ["a key in the workspace slot", `https://${KEY}@h.example.com/${KEY}/srv`],
+    // ⚠ NOT "a key in the host slot" — `baton`'s test suite covers that row and
+    // this one cannot, because THIS PARSER DOES NOT REFUSE IT. Python refuses
+    // `https://x@<key>/ten_.../srv` at `_dsn.py:395` ("has the KEY where the
+    // host belongs"); there is no such check here, so the DSN parses with the
+    // key as the ORIGIN and "x" as the bearer. Tracked separately — this is a
+    // port gap, not something the workspace-length change introduced, and it is
+    // named here rather than silently dropped from the table.
+  ];
+
+  for (const [name, raw] of unrelatedMistakes) {
+    it(`shows no single length in the refusal for ${name}`, () => {
+      expect(() => parseDsn(raw)).toThrow();
+      let message = "";
+      try {
+        parseDsn(raw);
+      } catch (error) {
+        message = (error as Error).message;
+      }
+      expect(message).not.toContain("hex");
+    });
+  }
+
   it("names both lengths in the refusal", () => {
     // A sentence naming only one of two accepted shapes sends the reader
     // hunting a typo that is not there.
