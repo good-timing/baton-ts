@@ -4,15 +4,15 @@
  * A **DSN** carries the four values an install needs in one string:
  *
  * ```text
- * https://baton_pk_<random>@ingest.goodtiming.ai/ten_<32 hex>/echo-server
- * │       │                 │                    │            │
- * scheme  key (the bearer)  authority            workspace    server
+ * https://baton_pk_<random>@ingest.goodtiming.ai/ten_<8 hex>/echo-server
+ * │       │                 │                    │           │
+ * scheme  key (the bearer)  authority            workspace   server
  *
  * dsn        = scheme "://" key "@" authority "/" workspace "/" server
  * scheme     = "https" | "http"
  * key        = "baton_pk_" tail          ; "baton_sk_" warns and still works
  * authority  = host [ ":" port ]
- * workspace  = "ten_" 32(hexdigit)
+ * workspace  = "ten_" ( 8(hexdigit) | 32(hexdigit) )
  * server     = the vendor_id pattern below
  * ```
  *
@@ -69,7 +69,19 @@ export const VENDOR_ID_PATTERN = /^[a-zA-Z0-9_-]{1,48}$/;
 // uppercase digit would be a rule stricter than the mint. Matched loosely,
 // passed through VERBATIM — the value is compared as a string server-side, so
 // this parser must never normalise it.
-const WORKSPACE_PATTERN = /^ten_[0-9a-fA-F]{32}$/;
+//
+// **Two lengths.** `new_tenant_id` moved 32 -> 8 hex on 2026-09-12; 32 is the
+// shape it replaced, and every workspace minted before that date still carries
+// it. Both are accepted because a DSN ships inline in a distributable server's
+// source — refusing the old length breaks installs already out there, on an
+// upgrade meant to be safe. It collapses to `{8}` the day no `ten_<32 hex>`
+// workspace exists — a console question, and a CHECK rather than a note,
+// because a note drifts and nobody re-reads a comment to find out it expired:
+//
+//     SELECT count(*) FROM tenants WHERE vendor_id ~ '^ten_[0-9a-f]{32}$';
+//
+// Zero means the 32-branch and its tests can go in one commit.
+const WORKSPACE_PATTERN = /^ten_(?:[0-9a-fA-F]{8}|[0-9a-fA-F]{32})$/;
 
 // A host contains none of these. Character for character `baton`'s
 // `_NOT_IN_A_HOST` (`_dsn.py:345`), because the two parsers answering one
@@ -107,7 +119,9 @@ const SECRET_PREFIX = "baton_sk_";
 const KEY_RUN = /baton_(?:pk|sk)_[A-Za-z0-9_%-]{8,}/g;
 
 function looksLikeAKey(value: string): boolean {
-  return value.startsWith(PUBLISHABLE_PREFIX) || value.startsWith(SECRET_PREFIX);
+  return (
+    value.startsWith(PUBLISHABLE_PREFIX) || value.startsWith(SECRET_PREFIX)
+  );
 }
 
 /**
@@ -143,7 +157,10 @@ const BARE_KEY_HINT =
  * missing warning channel must not crash a vendor's server startup.
  */
 function warn(message: string): void {
-  if (typeof process !== "undefined" && typeof process.emitWarning === "function") {
+  if (
+    typeof process !== "undefined" &&
+    typeof process.emitWarning === "function"
+  ) {
     process.emitWarning(message);
   }
 }
@@ -230,10 +247,18 @@ function splitDsn(raw: string): SplitDsn | null {
 }
 
 /** `netloc.rpartition("@")` — the LAST `@`, so a key containing one survives. */
-function splitKeyFromAuthority(netloc: string): { key: string; at: boolean; authority: string } {
+function splitKeyFromAuthority(netloc: string): {
+  key: string;
+  at: boolean;
+  authority: string;
+} {
   const index = netloc.lastIndexOf("@");
   if (index === -1) return { key: "", at: false, authority: netloc };
-  return { key: netloc.slice(0, index), at: true, authority: netloc.slice(index + 1) };
+  return {
+    key: netloc.slice(0, index),
+    at: true,
+    authority: netloc.slice(index + 1),
+  };
 }
 
 /**
@@ -317,7 +342,8 @@ function fail(message: string): never {
 /** `BATON_DSN`, or undefined — guarded, since `process` is absent on edge and
  * worker runtimes and this module must not crash a server's startup there. */
 function dsnFromEnvironment(): string | undefined {
-  const fromEnv = typeof process !== "undefined" ? process.env?.BATON_DSN : undefined;
+  const fromEnv =
+    typeof process !== "undefined" ? process.env?.BATON_DSN : undefined;
   // Set-but-empty is how a shell exports a variable it failed to fill.
   // Treating it as a value would raise a parse error naming a string the
   // vendor never wrote.
@@ -445,7 +471,9 @@ export function parseDsn(raw: string): Dsn {
           `https://baton_pk_...@host/ten_.../server`,
       );
     }
-    const misplaced = parts.path.split("/").some((segment) => containsKey(segment));
+    const misplaced = parts.path
+      .split("/")
+      .some((segment) => containsKey(segment));
     const detail = misplaced
       ? "the key is in the PATH — it goes before an @"
       : "the value from /account has the key before an @";
@@ -489,6 +517,31 @@ export function parseDsn(raw: string): Dsn {
   // than a second guess at the same question. A host contains no whitespace,
   // no control character and no backslash; what a URL parser then does with
   // one does not have to be enumerated.
+  // ⚠ **A key in the HOST slot PARSES, and that is worse than printing one.**
+  // Ported from `baton` (`_dsn.py:395`), which has had this refusal since its
+  // own review found it; this parser went without and the twins diverged on
+  // the one question this file says twice they must not diverge on.
+  //
+  // `https://x@<key>/ten_.../srv` splits on the LAST `@`, so the key lands in
+  // the authority and any userinfo at all — one character will do — keeps it
+  // out of the no-`@` branch that has the sentence for this. Nothing
+  // downstream objects: the segments validate, `origin` becomes
+  // `https://baton_pk_...` and rides on the config, and `HttpSink` appends
+  // `/v0/events` and hands the result to `fetch` as a HOSTNAME — which puts
+  // the bearer in a DNS query and a TLS SNI field on every send, to every
+  // resolver in path. The bearer also silently becomes the one-character
+  // userinfo, so nothing downstream even authenticates.
+  //
+  // Checked BEFORE `NOT_IN_A_HOST`, as in Python: a key contains none of those
+  // characters, so the order only matters for WHICH sentence a paste error
+  // gets, and this one names the mistake.
+  if (containsKey(authority)) {
+    fail(
+      `dsn ${safe} has the KEY where the host belongs. The order is key, ` +
+        `@, host — check whether the two are the wrong way round: ` +
+        `https://baton_pk_...@host/ten_.../<server>`,
+    );
+  }
   if (NOT_IN_A_HOST.test(authority)) {
     fail(
       `dsn ${safe} has whitespace, a control character or a backslash inside ` +
@@ -558,7 +611,7 @@ export function parseDsn(raw: string): Dsn {
   if (workspace === undefined || server === undefined || extra.length > 0) {
     fail(
       `dsn ${safe} must carry exactly two path segments — the workspace and ` +
-        `the server, as in /ten_<32 hex>/<server>. A missing server is never ` +
+        `the server, as in /ten_.../<server>. A missing server is never ` +
         `defaulted: it is what the key is bound to.`,
     );
   }
@@ -574,7 +627,7 @@ export function parseDsn(raw: string): Dsn {
       fail(
         `dsn ${safe} has a KEY in the ${slot} slot. The key goes before the @, ` +
           `and the path carries the workspace and the server: ` +
-          `https://baton_pk_...@host/ten_<32 hex>/<server>`,
+          `https://baton_pk_...@host/ten_.../<server>`,
       );
     }
   }
@@ -582,8 +635,8 @@ export function parseDsn(raw: string): Dsn {
   if (!WORKSPACE_PATTERN.test(workspace)) {
     fail(
       `dsn ${safe} has ${JSON.stringify(workspace)} where the workspace ` +
-        `belongs — expected ten_ followed by 32 hex characters. If the two path ` +
-        `segments are the right way round, this is not a Baton DSN.`,
+        `belongs — expected ten_ followed by 8 or 32 hex characters. If the two ` +
+        `path segments are the right way round, this is not a Baton DSN.`,
     );
   }
   if (!VENDOR_ID_PATTERN.test(server)) {
@@ -633,8 +686,16 @@ export function parseDsn(raw: string): Dsn {
  * one being closed.
  */
 function sealKey(dsn: Dsn): Dsn {
-  const shown = { origin: dsn.origin, tenantId: dsn.tenantId, vendorId: dsn.vendorId, key: "<key>" };
-  Object.defineProperty(dsn, "toJSON", { value: () => shown, enumerable: false });
+  const shown = {
+    origin: dsn.origin,
+    tenantId: dsn.tenantId,
+    vendorId: dsn.vendorId,
+    key: "<key>",
+  };
+  Object.defineProperty(dsn, "toJSON", {
+    value: () => shown,
+    enumerable: false,
+  });
   // `Symbol.for`, not an import of `node:util`: this package runs on edge and
   // worker runtimes too, and a registry symbol is inert where nothing reads it.
   Object.defineProperty(dsn, Symbol.for("nodejs.util.inspect.custom"), {
