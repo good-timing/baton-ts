@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+- **SECURITY: a DSN with the key and the host transposed no longer parses.**
+  `https://x@<key>/ten_.../srv` splits on the last `@`, so the key landed in
+  the authority — and any userinfo at all, one character, kept it out of the
+  no-`@` branch that has the sentence for this. Nothing downstream objected:
+  the segments validated, `origin` became `https://baton_pk_...`, and
+  `HttpSink` appended `/v0/events` and handed that to `fetch` **as a hostname**
+  — putting the publishable key in a DNS query and a TLS SNI field on every
+  send, to every resolver in path. The one-character userinfo silently became
+  the bearer, so nothing authenticated either.
+
+  `parseDsn` now refuses it, naming the mistake ("has the KEY where the host
+  belongs"), without repeating the credential.
+
+  **Python was never affected** — `baton` has had this refusal since its own
+  review found it (`_dsn.py:395`). This was a port gap: the two parsers are
+  kept character-for-character precisely so a DSN that works in one fails in
+  the other, and they had diverged on the single input where the difference is
+  a leak. **Nothing to do on upgrade** unless you hold such a DSN, which never
+  delivered an event.
+
 - **A DSN's workspace segment may now carry 8 hex characters as well as 32.**
   `parseDsn` accepted `ten_` + exactly 32 hex; the Console's `new_tenant_id`
   moved to 8 hex on 2026-09-12, so a DSN the Console hands out today was

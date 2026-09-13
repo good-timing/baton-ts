@@ -46,6 +46,17 @@ const EVERY_REFUSAL: [name: string, raw: string][] = [
     "a bare key as the whole workspace segment",
     `https://${KEY}@h.example.com/${KEY}/srv`,
   ],
+  // The two rows this list could not carry until the host-slot refusal was
+  // ported from `baton`: before that, these DSNs PARSED here while throwing in
+  // Python — with the key as the origin and the userinfo as the bearer.
+  [
+    "a key in the host slot behind userinfo",
+    `https://x@${KEY}/${WORKSPACE}/srv`,
+  ],
+  [
+    "key and host the wrong way round",
+    `https://h.example.com@${KEY}/${WORKSPACE}/srv`,
+  ],
 ];
 
 /** Captures `process.emitWarning`, which is how this package warns (stdout is
@@ -471,6 +482,45 @@ describe("selectDsn", () => {
     expect(
       selectDsn(undefined, { vendorId: true }, "BatonConfig"),
     ).toBeUndefined();
+  });
+});
+
+describe("a key in the host slot is refused rather than parsed", () => {
+  // ⚠ This parser PARSED these until 2026-09-12, while `baton` refused them at
+  // `_dsn.py:395`. Two twins that this file twice says must not diverge, doing
+  // exactly that on the one input where the difference is a credential leak.
+  const transposed = `https://x@${KEY}/${WORKSPACE}/srv`;
+
+  it("refuses it, naming the mistake", () => {
+    expect(() => parseDsn(transposed)).toThrow(/KEY where the host belongs/);
+  });
+
+  it("does not repeat the credential while saying so", () => {
+    expect(() => parseDsn(transposed)).toThrow();
+    let message = "";
+    try {
+      parseDsn(transposed);
+    } catch (error) {
+      message = (error as Error).message;
+    }
+    expect(message).not.toContain(KEY);
+    expect(message).not.toContain("a".repeat(43));
+  });
+
+  it("is what stops the key becoming the ORIGIN, which is the actual harm", () => {
+    // Before the refusal this returned `origin: "https://baton_pk_aaa…"` with
+    // `key: "x"`. `HttpSink` appends `/v0/events` and hands that to `fetch`, so
+    // the bearer went out as a DNS name and a TLS SNI field on every send — and
+    // the one-character userinfo became the bearer, so nothing authenticated
+    // either. Asserted on the PARSE, because no test downstream would have
+    // noticed a hostname that happened to be a secret.
+    let origin: string | undefined;
+    try {
+      origin = parseDsn(transposed).origin;
+    } catch {
+      origin = undefined;
+    }
+    expect(origin).toBeUndefined();
   });
 });
 

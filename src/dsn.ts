@@ -517,6 +517,31 @@ export function parseDsn(raw: string): Dsn {
   // than a second guess at the same question. A host contains no whitespace,
   // no control character and no backslash; what a URL parser then does with
   // one does not have to be enumerated.
+  // ⚠ **A key in the HOST slot PARSES, and that is worse than printing one.**
+  // Ported from `baton` (`_dsn.py:395`), which has had this refusal since its
+  // own review found it; this parser went without and the twins diverged on
+  // the one question this file says twice they must not diverge on.
+  //
+  // `https://x@<key>/ten_.../srv` splits on the LAST `@`, so the key lands in
+  // the authority and any userinfo at all — one character will do — keeps it
+  // out of the no-`@` branch that has the sentence for this. Nothing
+  // downstream objects: the segments validate, `origin` becomes
+  // `https://baton_pk_...` and rides on the config, and `HttpSink` appends
+  // `/v0/events` and hands the result to `fetch` as a HOSTNAME — which puts
+  // the bearer in a DNS query and a TLS SNI field on every send, to every
+  // resolver in path. The bearer also silently becomes the one-character
+  // userinfo, so nothing downstream even authenticates.
+  //
+  // Checked BEFORE `NOT_IN_A_HOST`, as in Python: a key contains none of those
+  // characters, so the order only matters for WHICH sentence a paste error
+  // gets, and this one names the mistake.
+  if (containsKey(authority)) {
+    fail(
+      `dsn ${safe} has the KEY where the host belongs. The order is key, ` +
+        `@, host — check whether the two are the wrong way round: ` +
+        `https://baton_pk_...@host/ten_.../<server>`,
+    );
+  }
   if (NOT_IN_A_HOST.test(authority)) {
     fail(
       `dsn ${safe} has whitespace, a control character or a backslash inside ` +
