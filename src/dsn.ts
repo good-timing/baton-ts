@@ -4,15 +4,15 @@
  * A **DSN** carries the four values an install needs in one string:
  *
  * ```text
- * https://baton_pk_<random>@ingest.goodtiming.ai/ten_<32 hex>/echo-server
- * │       │                 │                    │            │
- * scheme  key (the bearer)  authority            workspace    server
+ * https://baton_pk_<random>@ingest.goodtiming.ai/ten_<8 hex>/echo-server
+ * │       │                 │                    │           │
+ * scheme  key (the bearer)  authority            workspace   server
  *
  * dsn        = scheme "://" key "@" authority "/" workspace "/" server
  * scheme     = "https" | "http"
  * key        = "baton_pk_" tail          ; "baton_sk_" warns and still works
  * authority  = host [ ":" port ]
- * workspace  = "ten_" 32(hexdigit)
+ * workspace  = "ten_" ( 8(hexdigit) | 32(hexdigit) )
  * server     = the vendor_id pattern below
  * ```
  *
@@ -69,7 +69,14 @@ export const VENDOR_ID_PATTERN = /^[a-zA-Z0-9_-]{1,48}$/;
 // uppercase digit would be a rule stricter than the mint. Matched loosely,
 // passed through VERBATIM — the value is compared as a string server-side, so
 // this parser must never normalise it.
-const WORKSPACE_PATTERN = /^ten_[0-9a-fA-F]{32}$/;
+//
+// **Two lengths.** `new_tenant_id` moved 32 -> 8 hex on 2026-09-12; 32 is the
+// shape it replaced, and every workspace minted before that date still carries
+// it. Both are accepted because a DSN ships inline in a distributable server's
+// source — refusing the old length breaks installs already out there, on an
+// upgrade meant to be safe. It collapses to `{8}` the day no `ten_<32 hex>`
+// workspace exists, which is a console question, not one this parser can ask.
+const WORKSPACE_PATTERN = /^ten_(?:[0-9a-fA-F]{8}|[0-9a-fA-F]{32})$/;
 
 // A host contains none of these. Character for character `baton`'s
 // `_NOT_IN_A_HOST` (`_dsn.py:345`), because the two parsers answering one
@@ -558,7 +565,7 @@ export function parseDsn(raw: string): Dsn {
   if (workspace === undefined || server === undefined || extra.length > 0) {
     fail(
       `dsn ${safe} must carry exactly two path segments — the workspace and ` +
-        `the server, as in /ten_<32 hex>/<server>. A missing server is never ` +
+        `the server, as in /ten_<8 hex>/<server>. A missing server is never ` +
         `defaulted: it is what the key is bound to.`,
     );
   }
@@ -574,7 +581,7 @@ export function parseDsn(raw: string): Dsn {
       fail(
         `dsn ${safe} has a KEY in the ${slot} slot. The key goes before the @, ` +
           `and the path carries the workspace and the server: ` +
-          `https://baton_pk_...@host/ten_<32 hex>/<server>`,
+          `https://baton_pk_...@host/ten_<8 hex>/<server>`,
       );
     }
   }
@@ -582,8 +589,8 @@ export function parseDsn(raw: string): Dsn {
   if (!WORKSPACE_PATTERN.test(workspace)) {
     fail(
       `dsn ${safe} has ${JSON.stringify(workspace)} where the workspace ` +
-        `belongs — expected ten_ followed by 32 hex characters. If the two path ` +
-        `segments are the right way round, this is not a Baton DSN.`,
+        `belongs — expected ten_ followed by 8 or 32 hex characters. If the two ` +
+        `path segments are the right way round, this is not a Baton DSN.`,
     );
   }
   if (!VENDOR_ID_PATTERN.test(server)) {

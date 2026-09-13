@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- **A DSN's workspace segment may now carry 8 hex characters as well as 32.**
+  `parseDsn` accepted `ten_` + exactly 32 hex; the Console's `new_tenant_id`
+  moved to 8 hex on 2026-09-12, so a DSN the Console hands out today was
+  refused at install by every shipped SDK — TypeScript 0.3.1 and Python 0.8.2
+  alike. Python widens `_WORKSPACE_PATTERN` in the same change; the two parsers
+  answering one question differently is how a DSN that works in Python fails
+  in TypeScript.
+
+  Both lengths are accepted rather than the new one alone: a DSN ships inline
+  in a distributable server's source, so refusing the old length would break
+  installs already running on an upgrade that is supposed to be safe.
+
+  **Nothing to do on upgrade.** Existing `ten_<32 hex>` DSNs are unaffected —
+  this widens what is accepted and narrows nothing. Only the packed DSN path
+  was ever length-checked; an explicitly configured `tenantId` was not, and
+  still is not.
+
 - **REMOVED: `BatonConfig.resolveSessionId`, with the `SessionResolutionContext`
   and `ResolveSessionIdHook` types.** Python removes its
   `VendorConfig.resolve_session_id` (SPEC §3.4 rung 0) in the same change; this

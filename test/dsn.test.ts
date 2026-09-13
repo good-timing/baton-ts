@@ -163,6 +163,56 @@ describe("deliberate permissiveness", () => {
   });
 });
 
+describe("the workspace is eight or thirty-two hex", () => {
+  // ⚠ The lengths are TYPED IN, not read off WORKSPACE_PATTERN. Deriving them
+  // would make this pass under any pattern — including the `^ten_[0-9a-fA-F]+$`
+  // that provoked it, which parses `ten_a` and reddened nothing in either
+  // suite. Pinning a boundary means naming it where the implementation cannot
+  // move it.
+  //
+  // The adjacent lengths are the discriminating half: 7/9 and 31/33 are what a
+  // `+`, a `{8,}` or a `{8,32}` waves through.
+
+  const accepted = [
+    ["8 hex, what the mint writes today", "ten_" + "a".repeat(8)],
+    ["32 hex, the shape it replaced", "ten_" + "a".repeat(32)],
+    ["8 hex uppercase", "ten_" + "A".repeat(8)],
+    ["32 hex uppercase", "ten_" + "A".repeat(32)],
+    ["a real minted value", "ten_7cd4c8cf"],
+  ] as const;
+
+  for (const [name, workspace] of accepted) {
+    it(`accepts ${name} and passes it through verbatim`, () => {
+      expect(parseDsn(`https://${KEY}@h.example.com/${workspace}/srv`).tenantId).toBe(workspace);
+    });
+  }
+
+  for (const length of [0, 1, 7, 9, 16, 31, 33, 64]) {
+    it(`refuses a run of ${length} hex`, () => {
+      const workspace = "ten_" + "a".repeat(length);
+      expect(() => parseDsn(`https://${KEY}@h.example.com/${workspace}/srv`)).toThrow(
+        /where the workspace belongs/,
+      );
+    });
+  }
+
+  for (const workspace of ["ten_" + "g".repeat(8), "ten_" + "g".repeat(32)]) {
+    it(`refuses ${workspace} — length alone is not the rule`, () => {
+      expect(() => parseDsn(`https://${KEY}@h.example.com/${workspace}/srv`)).toThrow(
+        /where the workspace belongs/,
+      );
+    });
+  }
+
+  it("names both lengths in the refusal", () => {
+    // A sentence naming only one of two accepted shapes sends the reader
+    // hunting a typo that is not there.
+    expect(() => parseDsn(`https://${KEY}@h.example.com/ten_abc/srv`)).toThrow(
+      /8 or 32 hex characters/,
+    );
+  });
+});
+
 describe("what it refuses", () => {
   const refusals: [name: string, raw: string, expected: RegExp][] = [
     ["a bare publishable key", KEY, /bare key/],
