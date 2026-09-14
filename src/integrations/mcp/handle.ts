@@ -13,8 +13,9 @@ export class BatonHandle {
    * when no real per-call session id resolves. Not every event necessarily
    * carries this id; see `withBaton`'s session-resolution order. */
   readonly sessionId: string;
-  /** The resolved annotation tool name (`{vendorId}_annotate` unless
-   * overridden via `BatonConfig.annotationToolName`). */
+  /** The resolved annotation tool name: `BatonConfig.annotationToolName` if
+   * set, else derived from the server's own name (`{slug}_annotate`), else
+   * `{vendorId}_annotate`. */
   readonly annotationToolName: string;
 
   constructor(options: {

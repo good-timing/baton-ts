@@ -1,25 +1,31 @@
 /**
- * Shared LLM-facing text — server instructions + annotation tool
+ * Shared LLM-facing text: server instructions + annotation tool
  * description. Byte-for-byte port of `baton` (Python)'s
  * `integrations/_llm_text.py` template strings; see that module's
  * docstring for the full rationale (split of responsibility under Claude
  * Code's instructions-truncation cap, the mechanical-trigger design). Kept
- * in sync by hand — there is no cross-language codegen for prose.
+ * in sync by hand, as there is no cross-language codegen for prose, and
+ * checked: `test/integrations/mcp/llmTextVectors.json` is Python's own
+ * rendering, compared string-for-string.
+ *
+ * **Python's DEFAULT text, `proactive_mode="off"`.** This arm has no
+ * `proactiveMode`, so it renders what Python renders when that is unset: the
+ * reactive-only head and annotation lead, and no BEFORE clause asking for an
+ * annotation ahead of every call. The injected `user_goal`/`expected_result`/
+ * `overall_task` params carry intent on every call instead, without the extra
+ * turn. ⚠ With `intentParamMode: "off"` nothing asks for intent at all.
+ * Python refuses that combination at install; this arm has no second mode to
+ * refuse it against.
  */
 
 const SERVER_INSTRUCTIONS_TEMPLATE = (
   vendorDisplayName: string,
   annotationToolName: string,
-) => `This server is wrapped in the ${vendorDisplayName} support-signal SDK. \
-Use \`${annotationToolName}\` to record what the user is trying to do and \
-how each ${vendorDisplayName} tool call went. See that tool's \
+) => `This server is wrapped in the ${vendorDisplayName} usage and friction SDK. \
+Use \`${annotationToolName}\` to report when a ${vendorDisplayName} tool \
+call goes wrong, or when a tool you needed does not exist, so \
+${vendorDisplayName} can improve their product. See that tool's \
 description for field-level detail.
-
-BEFORE invoking any ${vendorDisplayName} tool, you MUST call \
-\`${annotationToolName}\` with user_goal (REQUIRED), expected_result \
-(REQUIRED), and overall_task (REQUIRED when the request fits a \
-recognizable \
-broader task, e.g., 'morning meeting prep', 'pre-outreach research').
 
 AFTER any ${vendorDisplayName} tool errors, times out, returns an \
 unhelpful or contradictory result, or the user shows signs of giving \
@@ -38,20 +44,19 @@ NOT replace answering.`;
 
 const ANNOTATION_TOOL_DESCRIPTION_TEMPLATE = (
   vendorDisplayName: string,
-) => `Record structured signal about a ${vendorDisplayName} tool call — \
-what the user is trying to do, and how it went. Populate proactively \
-before the call (user_goal + expected_result + overall_task) and reactively \
-after if the result was unhelpful (signal_type + suggested_improvement).
+) => `Report a ${vendorDisplayName} tool call that went wrong — call this \
+AFTER a call returns an unhelpful, empty, failed or contradictory \
+result, or when no tool covers what the user asked for. Do NOT call it \
+before a tool call or to narrate normal successful work.
 
 Fields:
   - user_goal: one sentence on what the user is trying to accomplish.
   - expected_result: what a successful result should look like, so a \
 silent/thin failure can be told apart from success.
   - overall_task: short stable label for the broader task this call \
-serves, e.g., 'morning meeting prep', 'pre-outreach research', 'personal \
-scheduling'. REPEAT the exact same string on every call serving the same \
-task; change it only when the user starts a different task. Skip when the \
-call doesn't fit a recognizable broader task.
+serves, e.g., 'morning meeting prep', 'pre-outreach research'. REPEAT the \
+exact same string on every call serving the same task; change it only \
+when the user starts a different task.
   - signal_type: reactive-only — omit on a proactive annotation. \
 Set only once a tool call has returned an unhelpful result. One of \
 failure, retry_loop, dead_end, parameter_confusion, \
@@ -83,14 +88,26 @@ export const SIGNAL_TYPES = [
   "other",
 ] as const;
 
-export function buildServerInstructions(options: {
+interface InstructionNames {
   vendorDisplayName: string;
   annotationToolName: string;
-}): string {
-  const rendered = SERVER_INSTRUCTIONS_TEMPLATE(
-    options.vendorDisplayName,
-    options.annotationToolName,
-  );
+}
+
+function renderServerInstructions(options: InstructionNames): string {
+  return SERVER_INSTRUCTIONS_TEMPLATE(options.vendorDisplayName, options.annotationToolName);
+}
+
+/** Would these two names render under the cap? Asked by RENDERING, not by
+ * arithmetic, so the answer cannot drift from the template: the interpolation
+ * count and the cap both live here, and both have moved before. Used by
+ * `annotationName.ts` to keep a name derived from the server only where it
+ * fits. */
+export function fitsInstructionsCap(options: InstructionNames): boolean {
+  return renderServerInstructions(options).length <= INSTRUCTIONS_LENGTH_CAP;
+}
+
+export function buildServerInstructions(options: InstructionNames): string {
+  const rendered = renderServerInstructions(options);
   if (rendered.length > INSTRUCTIONS_LENGTH_CAP) {
     throw new Error(
       `Rendered server instructions are ${rendered.length} chars, which exceeds ` +

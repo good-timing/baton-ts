@@ -170,6 +170,12 @@ async function runSpecScenario(): Promise<Event[]> {
     vendorId: "spec-vectors",
     vendorDisplayName: "Spec Vector Generator",
     consentToken: "ct_spec_vectors",
+    // Pinned because the vectors predate the tool name coming from the
+    // server: `generate.py` sets no `annotation_tool_name`, and its
+    // `surface_snapshot` vector records `spec-vectors_annotate`, where Python
+    // 0.8.3 and this arm now derive `spec-vector-generator_annotate`. Drop
+    // this once baton-spec regenerates its vectors.
+    annotationToolName: "spec-vectors_annotate",
     sink,
   });
 

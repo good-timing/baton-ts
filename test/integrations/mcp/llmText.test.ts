@@ -17,8 +17,12 @@
  * first assertion is the pin, the second names the rejected text explicitly so
  * a future re-introduction fails by name rather than by diff.
  */
+import { readdirSync, readFileSync, statSync } from "node:fs";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
+import vectors from "./llmTextVectors.json" with { type: "json" };
 import {
   buildAnnotationToolDescription,
   buildOverallTaskParamDescription,
@@ -93,5 +97,36 @@ describe("agent-facing text", () => {
         expect(referenced.test(text), `${where} still names ${retired}`).toBe(false);
       }
     }
+  });
+});
+
+// Python's own rendering, generated from the release named in the file's
+// `generated_by`, whose default (`proactive_mode="off"`) text this arm carries.
+// Regenerate it from Python rather than editing it by hand: the point is that
+// the comparison is against what the other SDK actually emits.
+describe("parity with the Python SDK's rendered text", () => {
+  it.each(vectors.cases)("is byte-identical for $vendor_display_name", (c) => {
+    expect(
+      buildServerInstructions({
+        vendorDisplayName: c.vendor_display_name,
+        annotationToolName: c.annotation_tool_name,
+      }),
+    ).toBe(c.instructions);
+    expect(buildAnnotationToolDescription({ vendorDisplayName: c.vendor_display_name })).toBe(
+      c.description,
+    );
+  });
+});
+
+describe("the retired 'support-signal' wording", () => {
+  it("occurs nowhere under src/", () => {
+    // Every file, not just the rendered text, so the phrase cannot survive in
+    // a comment for a later edit to copy back into a template.
+    const src = fileURLToPath(new URL("../../../src", import.meta.url));
+    const hits = readdirSync(src, { recursive: true, encoding: "utf8" })
+      .map((rel) => join(src, rel))
+      .filter((path) => statSync(path).isFile())
+      .filter((path) => readFileSync(path, "utf8").includes("support-signal"));
+    expect(hits).toEqual([]);
   });
 });

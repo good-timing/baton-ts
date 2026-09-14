@@ -167,7 +167,18 @@ describe("a DSN reaches the wire", () => {
 });
 
 describe("what the DSN does not take over", () => {
-  it("defaults the display name to the server slug VERBATIM", () => {
+  it("defaults the display name to the server's OWN name, verbatim", () => {
+    // Changed in 0.3.4. This used to pin the DSN's server segment, which on a
+    // console-minted DSN is an opaque `srv-<8 hex>`: agents were told the
+    // vendor was called `srv-c8eca135`. The server's name is a string the
+    // vendor chose, so it reaches their users as written, neither prettified
+    // nor slugged.
+    expect(
+      resolveBatonConfig({ dsn: DSN, consentToken: "ct" }, "Toybox Pantry").vendorDisplayName,
+    ).toBe("Toybox Pantry");
+  });
+
+  it("falls back to the server segment VERBATIM when the server has no usable name", () => {
     // Not "Echo Server": this string reaches the calling agent, so a
     // capitalisation the vendor never chose is a fabricated name in front of
     // their users.

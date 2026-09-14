@@ -1,5 +1,52 @@
 # Changelog
 
+## 0.3.4: the agent is told your server's name, not its id
+
+- **The annotation tool is named after your server.** `withBaton(server, { dsn })`
+  registered `srv-c8eca135_annotate`, built from the DSN's server segment, an
+  opaque id the console mints. It now registers `{slug}_annotate` from the name
+  you gave `new McpServer({ name })`, so `toybox-pantry` registers
+  `toybox-pantry_annotate`. The rule is Python 0.8.3's, unchanged: lowercased,
+  anything outside `[a-z0-9-]` to a hyphen, hyphens collapsed and stripped,
+  capped at 30. It falls back to `{vendorId}_annotate` for a name a library
+  made up (`fastmcp`, `mcp-server`, `<ClassName>-<4 hex>`), one that slugs to
+  nothing or cannot be read, and one that would push the server instructions
+  over their 1500-char cap. `annotationToolName` still wins.
+
+  ⚠ **This applies without a DSN too**, as it does in Python: a server built as
+  `new McpServer({ name: "vendor" })` with `vendorId: "acme"` now registers
+  `vendor_annotate`, not `acme_annotate`. Clients re-list tools on connect, so
+  agents follow by themselves; it bites only where the old name was written
+  into docs, a prompt or a script. Set `annotationToolName` to keep it.
+  `surface_snapshot.seam_augmentations.injected_tools` carries the new name
+  too, so match that list by the `_annotate` suffix, never by an exact name.
+
+- **The instructions and the tool description name your server, not the DSN
+  segment.** With a `dsn` and no `vendorDisplayName`, the display name is now
+  your server's name VERBATIM (not slugged: you chose it, and it reaches your
+  users), under the same guards, falling back to the DSN segment where they
+  apply. An explicit `vendorDisplayName` still wins, and with no `dsn` it is
+  still required. The Python SDK takes the same rule in a parallel change, so
+  the two implement one rule.
+
+- **The agent-facing wording is Python's default text.** The instructions said
+  the server was "wrapped in the ... support-signal SDK" and asked for an
+  annotation before every tool call. They now carry Python's
+  `proactive_mode="off"` text byte for byte: a "usage and friction SDK", a
+  head asking for a report when a call goes wrong or a needed tool does not
+  exist, and no pre-call request, because the injected
+  `user_goal`/`expected_result`/`overall_task` params already carry intent on
+  every call. The annotation tool description follows. Both are compared
+  against Python 0.8.4's own rendering (`test/integrations/mcp/llmTextVectors.json`).
+  ⚠ With `intentParamMode: "off"`, nothing now asks the agent for intent.
+  Python refuses that combination; this arm has no proactive mode to refuse
+  it against.
+
+- One resolved tool name reaches every consumer. The registration used to
+  re-derive its own from `(vendorId, override)`, which with the server as an
+  input would have registered `srv-..._annotate` while the instructions named
+  the server-derived tool.
+
 ## 0.3.3 — `user_id` has a producer on this arm
 
 - **`BatonConfig.resolveUser` — the vendor identity hook, and the first thing

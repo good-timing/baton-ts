@@ -4,6 +4,7 @@
  */
 
 import { parseDsn, selectDsn, VENDOR_ID_PATTERN } from "../../dsn.js";
+import { displayNameFromServer } from "./annotationName.js";
 import type { ResolveUserHook } from "./userResolution.js";
 import { DEFAULT_CONSENT_TOKEN } from "../../events.js";
 import { HttpSink, type Sink } from "../../sinks.js";
@@ -73,10 +74,13 @@ export interface BatonConfig {
    * annotation tool description — whitelabel obligation (SPEC §5.4): no
    * Baton-branded strings reach the calling agent.
    *
-   * Defaults to the DSN's server segment VERBATIM when a `dsn` is given and
-   * this is not. Verbatim rather than prettified: this string reaches the
-   * calling agent, so inventing a capitalisation the vendor never chose would
-   * put a fabricated name in front of their users. */
+   * When a `dsn` is given and this is not, defaults to your server's OWN name
+   * (`new McpServer({ name })`), VERBATIM: a string you chose, which makes it
+   * the one to put in front of your users. Verbatim rather than prettified
+   * for the same reason: a capitalisation you never chose would be a
+   * fabricated name. Falls back to the DSN's server segment when the server's
+   * name is one a library made up, is blank or unreadable, or would push the
+   * server instructions over their cap. With no `dsn`, this is required. */
   vendorDisplayName?: string;
   /** End-user consent token attached to every emitted event per SPEC §2.3 —
    * the Console MUST reject events missing it.
@@ -104,8 +108,13 @@ export interface BatonConfig {
    * so untouched integrations get scrubbing without the operator opting in.
    * Pass `identityScrub` to explicitly opt out, or supply your own. */
   scrubber?: (value: unknown) => unknown;
-  /** Optional override for the annotation tool name. Default is
-   * `{vendorId}_annotate`. */
+  /** Optional override for the annotation tool name, and the only thing that
+   * pins it. The default is derived from your server's own name, slugged: a
+   * server called `"Acme Knowledge Base"` registers
+   * `acme-knowledge-base_annotate`. It falls back to `{vendorId}_annotate`
+   * when the name is one a library made up, slugs to nothing, is unreadable,
+   * or would not fit the server instructions. Set this to keep a name you have
+   * written into documentation, a prompt or a script. */
   annotationToolName?: string;
   /** Per-tool intent-param injection (mirrors baton-extmcp's vendor-neutral
    * naming). `"optional"` (default) injects `user_goal`/`expected_result`
@@ -232,8 +241,13 @@ export interface ResolvedBatonConfig extends BatonConfig {
  * it — `repr(VendorConfig)` prints the bearer, which is one of the leaks
  * parked for that repo — and nothing here reads the string after parsing, so
  * this arm simply does not import the problem.
+ *
+ * `serverName` is the server's own name as `withBaton` read it, already
+ * through `usableServerName`, so `undefined` when there is none to use. It is
+ * consulted for one field, the display name, and only when a DSN is given:
+ * with no DSN, `vendorDisplayName` stays required.
  */
-export function resolveBatonConfig(config: BatonConfig): ResolvedBatonConfig {
+export function resolveBatonConfig(config: BatonConfig, serverName?: string): ResolvedBatonConfig {
   const dsnString = selectDsn(
     config.dsn,
     {
@@ -275,7 +289,17 @@ export function resolveBatonConfig(config: BatonConfig): ResolvedBatonConfig {
     // in the server instructions and the annotation tool description, which is
     // the whitelabel obligation the validator cites when it refuses the empty
     // one. ⚠ Python uses `or` here and still has the inconsistency.
-    vendorDisplayName: config.vendorDisplayName ?? dsn.vendorId,
+    //
+    // Between the explicit value and the segment sits the server's own name,
+    // under the guards in `annotationName.ts`: the segment is an opaque
+    // `srv-<8 hex>`, and it was what agents were told the vendor is called.
+    vendorDisplayName:
+      config.vendorDisplayName ??
+      displayNameFromServer(serverName, {
+        vendorId: dsn.vendorId,
+        annotationToolName: config.annotationToolName,
+      }) ??
+      dsn.vendorId,
     // `??`, not `||`: an explicit empty string must survive to the validation
     // below and be REFUSED there, rather than be quietly replaced by the
     // default it was deliberately not left as.

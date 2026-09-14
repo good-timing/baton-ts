@@ -372,7 +372,7 @@ describe("withBaton", () => {
 
     const client = await connectClient(server);
     await client.callTool({
-      name: "acme_annotate",
+      name: "vendor_annotate",
       arguments: {
         user_goal: "do a thing",
         overall_task: "invoice for bob@example.com",
@@ -539,12 +539,12 @@ describe("withBaton — instructions + annotation tool", () => {
       sink,
     });
 
-    expect(handle.annotationToolName).toBe("acme_annotate");
+    expect(handle.annotationToolName).toBe("vendor_annotate");
 
     const client = await connectClient(server);
     const instructions = client.getInstructions();
 
-    expect(instructions).toContain("acme_annotate");
+    expect(instructions).toContain("vendor_annotate");
     expect(instructions).toContain("Acme");
     // Whitelabel obligation (SPEC §5.4) — no Baton-branded strings reach
     // the calling agent.
@@ -562,10 +562,10 @@ describe("withBaton — instructions + annotation tool", () => {
 
     const client = await connectClient(server);
     const { tools } = await client.listTools();
-    expect(tools.map((t) => t.name)).toContain("acme_annotate");
+    expect(tools.map((t) => t.name)).toContain("vendor_annotate");
 
     const result = await client.callTool({
-      name: "acme_annotate",
+      name: "vendor_annotate",
       arguments: { user_goal: "look something up", expected_result: "a match" },
     });
     expect(result.isError).toBeFalsy();
@@ -582,7 +582,7 @@ describe("withBaton — instructions + annotation tool", () => {
 
     const client = await connectClient(server);
     await client.callTool({
-      name: "acme_annotate",
+      name: "vendor_annotate",
       arguments: {
         user_goal: "look something up",
         expected_result: "a match",
@@ -614,7 +614,7 @@ describe("withBaton — instructions + annotation tool", () => {
     sink.events.length = 0;
 
     await client.callTool({
-      name: "acme_annotate",
+      name: "vendor_annotate",
       arguments: {
         user_goal: "look something up",
         signal_type: "feature_gap",
@@ -642,7 +642,7 @@ describe("withBaton — instructions + annotation tool", () => {
     const client = await connectClient(server);
     await client.callTool({ name: "echo", arguments: { text: "hi" } });
     await client.callTool({
-      name: "acme_annotate",
+      name: "vendor_annotate",
       arguments: { user_goal: "x" },
     });
 
@@ -671,7 +671,7 @@ describe("withBaton — instructions + annotation tool", () => {
     const client = await connectClient(server);
     const { tools } = await client.listTools();
     expect(tools.map((t) => t.name)).toContain("record_feedback");
-    expect(tools.map((t) => t.name)).not.toContain("acme_annotate");
+    expect(tools.map((t) => t.name)).not.toContain("vendor_annotate");
   });
 
   it("throws at withBaton() time on an invalid annotationToolName override", () => {
@@ -1026,7 +1026,7 @@ describe("withBaton — surface_snapshot", () => {
     expect(echoTool.inputSchema.properties).toHaveProperty("text");
 
     expect(snapshot.payload.seam_augmentations).toEqual({
-      injected_tools: ["acme_annotate"],
+      injected_tools: ["vendor_annotate"],
       intent_param: {
         names: ["expected_result", "overall_task", "user_goal"],
         mode: "optional",
@@ -1269,7 +1269,7 @@ describe("withBaton — tenant_id is the ACCOUNT, not a second copy of vendor_id
     // `ctx`), and annotation (via registerAnnotationTool's own options).
     await client.callTool({ name: "echo", arguments: { text: "hi" } });
     await client.callTool({
-      name: "echo-server_annotate",
+      name: "vendor_annotate",
       arguments: { user_goal: "g", expected_result: "r", overall_task: "t" },
     });
     return sink.events;
@@ -1343,7 +1343,7 @@ describe("withBaton — tenant_id is the ACCOUNT, not a second copy of vendor_id
     // Same install, same session, different environment.
     process.env.BATON_TENANT_ID = "ten_b";
     await client.callTool({
-      name: "echo-server_annotate",
+      name: "vendor_annotate",
       arguments: { user_goal: "g", expected_result: "r", overall_task: "t" },
     });
 
@@ -1485,7 +1485,7 @@ describe("withBaton user_id", () => {
     const client = await connectClient(server);
     await client.callTool({ name: "echo", arguments: { text: "hi" } });
     await client.callTool({
-      name: "acme_annotate",
+      name: "vendor_annotate",
       arguments: { user_goal: "look up", signal_type: "failure" },
     });
     return sink.events;

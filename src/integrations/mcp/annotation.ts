@@ -1,6 +1,7 @@
 /**
  * Annotation tool registration — SPEC §5.1.1. Registers a vendor-namespaced
- * tool (default `{vendorId}_annotate`) that accepts the annotation
+ * tool (named by `annotationName.ts`: explicit, else the server's own name
+ * slugged, else `{vendorId}_annotate`) that accepts the annotation
  * signature (user_goal / expected_result / signal_type / overall_task /
  * suggested_improvement / context) and emits an `annotation` event.
  * Faithful port of `baton` (Python)'s `integrations/fastmcp/annotation.py`
@@ -14,6 +15,7 @@
 import { z } from "zod";
 import { AnnotationEventSchema } from "../../events.js";
 import type { Sink } from "../../sinks.js";
+import { deriveAnnotationToolName } from "./annotationName.js";
 import { emit } from "./emit.js";
 import { type ResolveUserHook, resolveCallUserId } from "./userResolution.js";
 import type { UserIdMode } from "../../identity.js";
@@ -24,8 +26,6 @@ import type { ProactiveTracker } from "./proactiveTracker.js";
 import { detectAgentRuntime, UNKNOWN_AGENT_RUNTIME } from "./runtimeAdapter.js";
 import { resolveSessionId } from "./sessionResolution.js";
 import type { SessionCounter } from "./sessionCounter.js";
-
-const TOOL_NAME_PATTERN = /^[a-zA-Z0-9_-]{1,64}$/;
 
 /** The annotate tool's arguments. Spelled out because `SupportedMcpServer`
  * types `registerTool`'s config as `unknown` — the price of accepting both
@@ -40,18 +40,6 @@ interface AnnotationArgs extends Record<string, unknown> {
   overall_task?: string | undefined;
   suggested_improvement?: string | undefined;
   context?: Record<string, unknown> | undefined;
-}
-
-export function deriveAnnotationToolName(vendorId: string, override?: string): string {
-  const name = override || `${vendorId}_annotate`;
-  if (!TOOL_NAME_PATTERN.test(name)) {
-    throw new Error(
-      `Annotation tool name ${JSON.stringify(name)} violates the cross-runtime ` +
-        `pattern ${TOOL_NAME_PATTERN.source} (Claude Desktop and others reject ` +
-        "names with dots or other separators).",
-    );
-  }
-  return name;
 }
 
 export interface RegisterAnnotationToolOptions {

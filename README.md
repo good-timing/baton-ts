@@ -44,7 +44,7 @@ const server = new McpServer({ name: "your-vendor-mcp", version: "1.0.0" });
 const handle = withBaton(server, {
   dsn: "https://baton_pk_...@ingest.goodtiming.ai/ten_7cd4c8cf.../your-vendor",
 });
-// handle.annotationToolName === "your-vendor_annotate"
+// handle.annotationToolName === "your-vendor-mcp_annotate", from the server's own name
 
 // register tools before or after withBaton — both are captured
 server.registerTool("lookup", { inputSchema: { name: z.string() } }, async ({ name }) => {

@@ -100,6 +100,7 @@ import {
 import { captureDisabled, DisabledSink, logDisabled } from "../../optout.js";
 import { emit } from "./emit.js";
 import { BatonHandle } from "./handle.js";
+import { resolveAnnotationToolName, usableServerName } from "./annotationName.js";
 import { buildServerInstructions } from "./llmText.js";
 import {
   EXPECTED_RESULT_PARAM_NAME,
@@ -683,6 +684,26 @@ export function withBaton(server: SupportedMcpServer, supplied: BatonConfig = {}
     });
   }
 
+  // The internals both majors keep off their public `.d.ts`, on one named
+  // shape rather than an `any` per reach-in, so a future SDK rename is a
+  // compile error here instead of a runtime surprise in five places.
+  const internals = server as unknown as {
+    server: { _instructions?: string; _serverInfo?: { name?: unknown } };
+    registerTool: (...args: AnyArgs) => unknown;
+    _registeredTools?: Record<string, unknown>;
+    _toolInputSchemaJson?: Record<string, unknown>;
+    toolInputSchemaJson?: (name: string) => Record<string, unknown> | undefined;
+  };
+
+  // The name the vendor gave this server, read once for both cosmetic labels:
+  // the display name (only when a DSN is given) and the annotation tool name.
+  // `_serverInfo` is where both majors keep what the constructor was handed;
+  // the guards live in `annotationName.ts`.
+  const serverName = usableServerName(() => ({
+    name: internals.server._serverInfo?.name,
+    className: internals.constructor.name,
+  }));
+
   // Shadowed deliberately: every path below — the tool wrappers, the
   // annotation tool, the surface snapshot — closes over `config`, and one of
   // them reading the caller's raw object would emit its events under a
@@ -692,9 +713,13 @@ export function withBaton(server: SupportedMcpServer, supplied: BatonConfig = {}
   // The parameter defaults to `{}` so `withBaton(server)` works when
   // `BATON_DSN` is exported — the hosted-vendor shape, and Python's
   // `install_baton(mcp)` with nothing but the environment.
-  const config = resolveBatonConfig(supplied);
+  const config = resolveBatonConfig(supplied, serverName);
   const sink = config.sink ?? new StdoutSink();
-  const annotationToolName = config.annotationToolName || `${config.vendorId}_annotate`;
+  // Resolved ONCE and threaded to every consumer below: the wrapper's skip of
+  // the annotate tool, the instructions, the registration and the handle. With
+  // the server's name as an input, two resolutions could register one name
+  // while the wrapper skips another and the instructions cite a third.
+  const annotationToolName = resolveAnnotationToolName(serverName, config);
   const intentParamMode: IntentParamMode = config.intentParamMode ?? "optional";
   const counter = new SessionCounter();
   const fallbackSessionId = `sdk-${uuidv7()}`;
@@ -771,16 +796,6 @@ export function withBaton(server: SupportedMcpServer, supplied: BatonConfig = {}
   // would make injected params work over stdio and vanish over HTTP, per
   // transport, silently. `update({paramsSchema})` deletes the key itself;
   // a direct assignment is ours to clean up.
-  // The internals both majors keep off their public `.d.ts` — one named
-  // shape rather than an `any` per reach-in, so a future SDK rename is a
-  // compile error here instead of a runtime surprise in five places.
-  const internals = server as unknown as {
-    server: { _instructions?: string };
-    registerTool: (...args: AnyArgs) => unknown;
-    _registeredTools?: Record<string, unknown>;
-    _toolInputSchemaJson?: Record<string, unknown>;
-    toolInputSchemaJson?: (name: string) => Record<string, unknown> | undefined;
-  };
   const bustSchemaMemo = (name: string): void => {
     const memo = internals._toolInputSchemaJson;
     if (memo && typeof memo === "object") delete memo[name];
@@ -882,7 +897,10 @@ export function withBaton(server: SupportedMcpServer, supplied: BatonConfig = {}
     userIdHmacKey: ctx.userIdHmacKey,
     fallbackSessionId: ctx.fallbackSessionId,
     scrubber: ctx.scrubber,
-    annotationToolName: config.annotationToolName,
+    // The RESOLVED name, never `config.annotationToolName`: handing over the
+    // raw override and letting the registration re-derive would register
+    // `srv-..._annotate` while the instructions name the server-derived one.
+    annotationToolName,
     tracker,
   });
 

@@ -71,7 +71,14 @@ const LONE_SURROGATE = /\p{Surrogate}/u;
  * Python's order and is load-bearing (normalizing after stripping can expose
  * new strippable codepoints). */
 function canonicalize(rawPrincipal: string): string {
-  return rawPrincipal.normalize("NFC").replace(PYTHON_STRIP, "").toLowerCase();
+  return pythonStrip(rawPrincipal.normalize("NFC")).toLowerCase();
+}
+
+/** Python's `str.strip()`, over exactly the set above. Exported for the
+ * server-name rule in `integrations/mcp/annotationName.ts`, which has to agree
+ * with Python's on what counts as a blank name. */
+export function pythonStrip(value: string): string {
+  return value.replace(PYTHON_STRIP, "");
 }
 
 /** A raw, UNHASHED end-user principal, as a resolver produced it. */
