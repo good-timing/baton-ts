@@ -7,7 +7,8 @@
  * packages pass their own `ServerContext` — and importing either one would
  * pin this package to that major even for a type, which `tsup`'s `.d.ts`
  * rollup then re-exports into `dist/index.d.ts` and a consumer without that
- * package fails to typecheck against. Only these three fields are ever read.
+ * package fails to typecheck against. Only the fields declared below are
+ * ever read — three for `_meta`/session, two more for headers.
  *
  * The divergence that matters: v2's `ServerContext` is
  * `{ sessionId, mcpReq, http }` (measured 2026-08-28) — it keeps `sessionId`
@@ -35,6 +36,21 @@ export interface Extra {
    * major lifts out of `_meta`; absent entirely when the request carried
    * none, which is the common case on a 2025-11-25 connection. */
   mcpReq?: { _meta?: unknown; envelope?: unknown } | undefined;
+  /** 1.x: the transport request's headers, as a plain object whose values may
+   * be a STRING, an ARRAY of strings (a repeated header line), or undefined. */
+  requestInfo?: { headers?: unknown } | undefined;
+  /** v2: HTTP transport info. `req` is the transport request and its
+   * `headers` is a Web `Headers`.
+   *
+   * ⚠ **`req` is MEASURED on `@modelcontextprotocol/server` 2.0.0, not
+   * declared.** That package's own `.d.ts` types `http` as `{ authInfo? }`
+   * only, while the runtime builds
+   * `http: { ...ctx.http, req: transportInfo?.request, closeSSE, ... }`. So
+   * reading the published type alone says v2 exposes no headers at all, which
+   * is what an earlier pass of this work concluded and it was wrong — the type
+   * is one layer above the answer. Do not "correct" this back on the strength
+   * of the `.d.ts`. */
+  http?: { req?: { headers?: unknown } | undefined } | undefined;
 }
 
 /** The call's `_meta`, from wherever this SDK major keeps it.
@@ -57,4 +73,83 @@ export function extraMeta(extra: Extra): Record<string, unknown> | null {
 export function extraEnvelope(extra: Extra): Record<string, unknown> | null {
   const envelope = extra.mcpReq?.envelope as Record<string, unknown> | undefined;
   return envelope ?? null;
+}
+
+/** The call's HTTP headers as ONE shape, whichever major delivered them.
+ *
+ * ⚠ **This exists because the two majors disagree twice over**, and a vendor
+ * hook must not have to know which one it is running under:
+ *
+ * | | where | shape |
+ * |---|---|---|
+ * | 1.x | `extra.requestInfo.headers` | plain object; a repeated header is an ARRAY |
+ * | v2  | `extra.http.req.headers` | Web `Headers`, case-insensitive |
+ *
+ * Left unnormalized, `headers["X-Forwarded-User"]` returns a string on one
+ * major, an array when the header repeats, and `undefined` on the other — and
+ * because the SDK peers type this position loosely, nothing warns the vendor.
+ * That is register A8 (fixed in the Python SDK 2026-09-13, where one adapter
+ * delivered a case-insensitive mapping and the other a lowercased dict) about
+ * to happen again in TypeScript, so it is absorbed HERE rather than shipped.
+ *
+ * Web `Headers` is the normalized shape because it is the platform's own
+ * answer to this question: lookups fold case, and repeated values join with
+ * `", "` by a rule the standard defines — unlike the Python side, where the
+ * two upstreams disagree on first-wins vs last-wins and neither joins.
+ *
+ * Returns `null` when no HTTP request is in flight, which is every stdio call
+ * and the normal case. `null` means "no HTTP request", never "the client sent
+ * no headers".
+ */
+export function extraHeaders(extra: Extra): Headers | null {
+  const fromV2 = extra.http?.req?.headers as Headers | undefined;
+  // Duck-typed rather than `instanceof Headers`. A `Headers` built in another
+  // realm — a `vm` context, a framework's fetch shim, a bundled polyfill —
+  // fails `instanceof`, and the fallthrough would then return `null`, which
+  // this function's contract defines as "no HTTP request is in flight". That
+  // statement would be FALSE: the hook would see stdio semantics on an
+  // authenticated HTTP call and identity would silently disappear.
+  if (fromV2 && typeof fromV2.get === "function") return fromV2;
+
+  const fromV1 = extra.requestInfo?.headers;
+  if (fromV1 && typeof fromV1 === "object") {
+    const headers = new Headers();
+    for (const [name, value] of Object.entries(fromV1 as Record<string, unknown>)) {
+      // `undefined` is a declared value of 1.x's header record, and passing it
+      // to `append` would stringify it into the literal text "undefined" —
+      // a header that exists and holds a lie, which reads downstream as a
+      // client that sent something.
+      // An array is a repeated header line. Appending each lets `Headers`
+      // apply the platform's join rule rather than inventing one here.
+      //
+      // Anything that is not a string is SKIPPED rather than coerced. The 1.x
+      // type says `string | string[] | undefined`, but this value arrives as
+      // `unknown` from a peer we do not control, and `String({})` yields the
+      // literal text "[object Object]" — a header that exists and holds a
+      // lie, which downstream reads as a client that sent something. Refusing
+      // to invent a value is the same rule the null-vs-absent distinction on
+      // `headers` itself follows.
+      for (const item of Array.isArray(value) ? value : [value]) {
+        if (typeof item !== "string") continue;
+        try {
+          headers.append(name, item);
+        } catch {
+          // ⚠ **`Headers.append` REJECTS names and values the 1.x peer will
+          // really hand us, and an identity read may not fail a tool call.**
+          // `SSEServerTransport` passes Node's `req.headers` through verbatim,
+          // and under Node's HTTP/2 compatibility API that object carries the
+          // pseudo-headers `:path` / `:method` / `:authority` / `:scheme` —
+          // `append(":path", …)` throws `TypeError: invalid header name`, and
+          // a CR/LF-bearing value from a custom transport throws the same way.
+          // Unguarded, that escapes this function, escapes the context builder,
+          // and 500s EVERY tool call on an HTTP/2 deployment before the
+          // vendor's own handler runs. Skipping the offending header degrades
+          // identity for that one header; letting it propagate takes down the
+          // server.
+        }
+      }
+    }
+    return headers;
+  }
+  return null;
 }
