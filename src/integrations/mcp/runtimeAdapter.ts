@@ -92,6 +92,8 @@ export const CLIENT_INFO_META_KEY = "io.modelcontextprotocol/clientInfo";
  * The heuristic's own answer is NOT capped or scrubbed — it is a constant
  * this module owns, and mangling it would be the opposite mistake.
  */
+import { capCodePoints } from "../../_text.js";
+
 export const CLIENT_NAME_MAX_LEN = 128;
 
 /** What an event reports when no tier answered. A LITERAL, not a knob. */
@@ -134,14 +136,10 @@ function clean(
     cleaned = scrubbed;
   }
   if (!cleaned) return null;
-  // Cut by CODE POINT, not by UTF-16 code unit. Python's `cleaned[:128]`
-  // counts code points; `String.prototype.slice` counts units, so a name
-  // whose 128th boundary falls inside a surrogate pair would ship a LONE
-  // SURROGATE as `agent_runtime` on every event of every call. That survives
-  // `JSON.stringify` (as a `\udXXX` escape) and `json.loads`, then raises
-  // `UnicodeEncodeError` in the first Python consumer that re-encodes it —
-  // a capture-side value breaking a downstream reader, far from here.
-  return [...cleaned].slice(0, CLIENT_NAME_MAX_LEN).join("");
+  // Code points, not UTF-16 units — `capCodePoints` carries the reasoning,
+  // which moved there when a second capped field turned out to need it and
+  // reintroduced the defect by slicing.
+  return capCodePoints(cleaned, CLIENT_NAME_MAX_LEN);
 }
 
 /** The declared name off the reserved per-request key, wherever this major

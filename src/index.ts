@@ -66,3 +66,23 @@ export { withBaton, BatonHandle } from "./integrations/mcp/index.js";
 // The only way a consumer can name `withBaton`'s parameter now that neither
 // SDK major's `McpServer` is imported.
 export type { SupportedMcpServer } from "./integrations/mcp/index.js";
+
+// End-user identity. `Principal` and `UserResolutionContext` are what a
+// vendor's `resolveUser` hook signs its function against, so they are part of
+// the public contract the moment the hook is — a vendor cannot write a typed
+// hook without naming them. `hashUserId` is exported for the same reason
+// `Scrubber` is: a vendor recomputing a pseudonym outside the SDK (to join
+// their own records against Console data) must get the identical value, and
+// re-implementing the HMAC message layout by hand is how that silently
+// diverges.
+export type { Principal, UserIdMode } from "./identity.js";
+// ⚠ `HASH_SCHEME` ("h1") is deliberately NOT exported. This arm has no
+// attested rung and never emits it, which is the same reason `hashUserId`'s
+// `scheme` is required rather than defaulted — exporting the tag as a named,
+// inviting constant would put the identical zero-row-join trap one door over.
+// It stays defined in `identity.ts` for parity with Python.
+export { VENDOR_HASH_SCHEME, hashUserId } from "./identity.js";
+export type {
+  ResolveUserHook,
+  UserResolutionContext,
+} from "./integrations/mcp/index.js";

@@ -12,13 +12,14 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { z } from "zod";
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { withBaton } from "../../../src/integrations/mcp/withBaton.js";
 import { CLIENT_INFO_META_KEY } from "../../../src/integrations/mcp/runtimeAdapter.js";
 import type { BatonConfig } from "../../../src/integrations/mcp/config.js";
 import { identityScrub } from "../../../src/scrub.js";
 import type { Event } from "../../../src/events.js";
 import type { Sink } from "../../../src/sinks.js";
+import { VENDOR_HASH_SCHEME, hashUserId } from "../../../src/identity.js";
 
 class CapturingSink implements Sink {
   readonly events: Event[] = [];
@@ -1441,5 +1442,127 @@ describe("withBaton — agent_runtime, against the real 1.x peer", () => {
     // metadata came from, not who the caller is. The client here declares
     // `test-client` and sends a Claude Code key; the declaration wins.
     expect(await runtimeFor({ "claudecode/toolUseId": "tu_1" })).toBe("test-client");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// `user_id` (register D6) — the field existed on this SDK's envelope since
+// 0.3.0 with NOTHING able to populate it. These drive the real wrap so the
+// assertion is about what reaches the sink, not about the resolver in
+// isolation (that is `userResolution.test.ts`).
+// ---------------------------------------------------------------------------
+
+describe("withBaton user_id", () => {
+  const TENANT = "tenant-e2e";
+  const KEY = "e2e-identity-key";
+
+  // ⚠ `resolveUserIdHmacKey` falls back to `BATON_USER_ID_HMAC_KEY`, which is
+  // the variable the Console's own setup string tells vendors to export. On a
+  // machine or CI job that has it set, the "no key" test below would see a
+  // REAL hash and fail for a reason unrelated to the code. Cleared for this
+  // block so the assertions depend on the config, not on the environment.
+  beforeEach(() => {
+    vi.stubEnv("BATON_USER_ID_HMAC_KEY", "");
+  });
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  async function drive(
+    sink: CapturingSink,
+    config: Partial<Parameters<typeof withBaton>[1]> = {},
+  ): Promise<Event[]> {
+    const server = new McpServer({ name: "vendor", version: "1.0.0" });
+    withBaton(server, {
+      vendorId: "acme",
+      vendorDisplayName: "Acme",
+      consentToken: "ct",
+      tenantId: TENANT,
+      sink,
+      ...config,
+    });
+    registerTools(server);
+    const client = await connectClient(server);
+    await client.callTool({ name: "echo", arguments: { text: "hi" } });
+    await client.callTool({
+      name: "acme_annotate",
+      arguments: { user_goal: "look up", signal_type: "failure" },
+    });
+    return sink.events;
+  }
+
+  it("is null on every event when no hook is configured", async () => {
+    const events = await drive(new CapturingSink());
+    expect(events.length).toBeGreaterThan(0);
+    for (const event of events) expect(event.user_id).toBeNull();
+  });
+
+  it("reaches the tool-call legs AND the annotation tool from one hook", async () => {
+    // The split that matters: an annotation naming a different actor than the
+    // call it describes is unjoinable downstream. Both paths, one hook, one
+    // resolution — and asserted on the EXPECTED hash, so two paths that are
+    // both broken to null cannot pass by agreeing.
+    const expected = hashUserId("employee-4417", {
+      tenantId: TENANT,
+      key: KEY,
+      scheme: VENDOR_HASH_SCHEME,
+    });
+    const events = await drive(new CapturingSink(), {
+      resolveUser: () => ({ userId: "employee-4417" }),
+      userIdHmacKey: KEY,
+    });
+
+    const carriers = events.filter((e) => e.event_type !== "surface_snapshot");
+    expect(carriers.length).toBeGreaterThan(1);
+    for (const event of carriers) expect(event.user_id).toBe(expected);
+
+    const annotations = carriers.filter((e) => e.event_type === "annotation");
+    expect(annotations.length).toBeGreaterThan(0);
+  });
+
+  it("never lets a vendor's broken hook fail the vendor's tool call", async () => {
+    const sink = new CapturingSink();
+    const events = await drive(sink, {
+      resolveUser: () => {
+        throw new Error("vendor bug");
+      },
+      userIdHmacKey: KEY,
+    });
+    // The call still succeeded and still emitted; identity is simply absent.
+    expect(events.some((e) => e.event_type === "tool_call_end")).toBe(true);
+    for (const event of events) expect(event.user_id).toBeNull();
+  });
+
+  it("drops the field in hashed mode with no key rather than emitting it raw", async () => {
+    // A residency breach that looked like success would be: field present,
+    // populated, carrying the subject verbatim.
+    const events = await drive(new CapturingSink(), {
+      resolveUser: () => ({ userId: "alice@acme.example" }),
+    });
+    for (const event of events) {
+      expect(event.user_id).toBeNull();
+      expect(JSON.stringify(event)).not.toContain("alice@acme.example");
+    }
+  });
+
+  it("emits the subject verbatim in raw mode", async () => {
+    const events = await drive(new CapturingSink(), {
+      resolveUser: () => ({ userId: "alice@acme.example" }),
+      userIdMode: "raw",
+    });
+    const carriers = events.filter((e) => e.event_type !== "surface_snapshot");
+    for (const event of carriers) expect(event.user_id).toBe("alice@acme.example");
+  });
+
+  it("never stamps user_id on a surface_snapshot", async () => {
+    // It describes the SERVER and is captured outside any call, so there is
+    // no caller to name (Python register D5).
+    const events = await drive(new CapturingSink(), {
+      resolveUser: () => ({ userId: "employee-4417" }),
+      userIdHmacKey: KEY,
+    });
+    for (const event of events.filter((e) => e.event_type === "surface_snapshot")) {
+      expect(event.user_id).toBeNull();
+    }
   });
 });

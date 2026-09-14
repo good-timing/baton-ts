@@ -1,5 +1,81 @@
 # Changelog
 
+## Unreleased — `user_id` has a producer on this arm
+
+- **`BatonConfig.resolveUser` — the vendor identity hook, and the first thing
+  on this SDK able to populate `user_id` at all.** The field has been on the
+  envelope since 0.3.0 and was null by construction on every TypeScript event,
+  so a Console partition by end-user worked for Python-sourced traffic and
+  silently did not for TypeScript-sourced traffic. Supply a function returning
+  `{ userId, issuer? }` and it runs on every captured tool call and on the
+  annotation tool.
+
+  `userIdMode` selects `"hashed"` (default, a `v1:`-tagged per-tenant HMAC
+  pseudonym) or `"raw"` (the subject verbatim). `userIdHmacKey` resolves
+  explicit → `BATON_USER_ID_HMAC_KEY` → unset. ⚠ **With no key, hashed mode
+  DROPS the field rather than falling back to raw** — the fallback would be a
+  residency breach that looks like success.
+
+  **Hashes are byte-identical to Python's**, which is asserted rather than
+  claimed: `test/identityVectors.json` is GENERATED from
+  `baton.identity.hash_user_id` and compared string-for-string. That corpus
+  earned its keep immediately — JavaScript's `.trim()` strips `U+FEFF` and
+  Python's `.strip()` does not, so a BOM-prefixed subject would have hashed to
+  two different actors across the two SDKs. The canonicalizer strips Python's
+  whitespace set exactly, measured against CPython rather than assumed.
+
+- **Headers reach the hook as ONE shape on both SDK majors.** The peers
+  disagree twice over: `@modelcontextprotocol/sdk` 1.x puts them at
+  `extra.requestInfo.headers` as a plain object whose value is a **string or
+  an array** when a header repeats, while `@modelcontextprotocol/server` v2
+  puts them at `http.req.headers` as a Web `Headers`. Left alone,
+  `headers["X-Forwarded-User"]` would return text on one major, an array on a
+  repeat, and `undefined` on the other, with nothing to warn the vendor —
+  which is the bug the Python SDK shipped and fixed as register A8. Here it is
+  absorbed before shipping: the hook always receives a Web `Headers`, so
+  lookups fold case and repeated values join by the platform's own rule.
+
+  `context.headers` is `null` when **no HTTP request is in flight** — every
+  stdio call, the common case. That is us saying the question does not apply,
+  never a claim that the client sent no headers.
+
+- **No attested (`h1:`) rung on this arm, stated as a gap.** Python also reads
+  a principal off a verified access token's `claims["sub"]`. TypeScript's
+  `AuthInfo` has no `claims` field at all, so the nearest carrier is the
+  untyped `extra` bag and no specification says a subject lives there. Reading
+  it would mean guessing, vendor by vendor, and a wrong guess is how two
+  people become one actor.
+
+- **`hashUserId`'s `scheme` is REQUIRED here, where Python defaults it.** That
+  arm emits both provenances so an `h1:` default is right there; this arm emits
+  only `v1:`. A vendor following the export's own rationale — recompute the
+  pseudonym to join your records against Console data — would take the default,
+  get `h1:`, and have an equality join return zero rows forever. The hex halves
+  are identical under both tags, so it fails in the most confusing way
+  available. Naming the provenance is one word.
+
+- **A subject containing an unpaired surrogate is a MISS, not a hash.** Node
+  substitutes U+FFFD rather than throwing, so `"a\uD800"`, `"a\uDC00"` and
+  `"a\uFFFD"` all produced ONE digest — distinct people merged into one actor,
+  which is the failure this field exists to prevent. Python raises and drops
+  the field, so refusing keeps the two arms agreeing. Raw mode is capped at 128
+  characters, matching Python's `RAW_USER_ID_MAX_LEN`.
+
+- **It says so when it cannot work.** Configuring `resolveUser` in hashed mode
+  with no key drops `user_id` from every event — correct, and previously
+  silent, with no string anywhere in the process to grep for. One
+  `process.emitWarning` at install now names the state and the fix. It never
+  contains the principal: identity was configured and produced nothing, and
+  printing the value to explain that would put raw end-user identity in the
+  vendor's log files.
+
+- ⚠ **The hook is awaited INLINE with no timeout**, matching this SDK's
+  existing `resolveSessionId` convention and diverging from Python, which runs
+  vendor hooks off the event loop under a 5-second budget. A hook that blocks
+  stalls its own request. Recorded rather than half-built.
+
+---
+
 ## 0.3.2 — a key in the host slot is refused; a short workspace id parses
 
 - **SECURITY: a DSN with the key and the host transposed no longer parses.**

@@ -91,7 +91,12 @@ import {
 import { StdoutSink, type Sink } from "../../sinks.js";
 import { registerAnnotationTool } from "./annotation.js";
 import { Scrubber } from "../../scrub.js";
-import { resolveBatonConfig, resolveTenantId, type BatonConfig } from "./config.js";
+import {
+  resolveBatonConfig,
+  resolveTenantId,
+  resolveUserIdHmacKey,
+  type BatonConfig,
+} from "./config.js";
 import { captureDisabled, DisabledSink, logDisabled } from "../../optout.js";
 import { emit } from "./emit.js";
 import { BatonHandle } from "./handle.js";
@@ -106,6 +111,12 @@ import { extraEnvelope, extraMeta, type Extra } from "./mcpTypes.js";
 import { ProactiveTracker } from "./proactiveTracker.js";
 import { detectAgentRuntime, UNKNOWN_AGENT_RUNTIME } from "./runtimeAdapter.js";
 import { resolveSessionId } from "./sessionResolution.js";
+import {
+  type ResolveUserHook,
+  resolveCallUserId,
+  warnIfIdentityCannotResolve,
+} from "./userResolution.js";
+import type { UserIdMode } from "../../identity.js";
 import { SessionCounter } from "./sessionCounter.js";
 import {
   injectGoalParams,
@@ -141,6 +152,13 @@ interface WrapContext {
   vendorToolJsonSchema: (name: string, inputSchema: unknown) => Record<string, unknown>;
   /** Drop v2's per-tool JSON-Schema memo after we mutate `inputSchema`. */
   bustSchemaMemo: (name: string) => void;
+  /** The vendor's per-request identity resolver, or `undefined`. Resolved
+   * ONCE at install and shared by the tool-call and annotation paths — two
+   * resolutions could disagree, and an annotation naming a different actor
+   * than the call it describes is worse than one naming nobody. */
+  resolveUser: ResolveUserHook | undefined;
+  userIdMode: UserIdMode;
+  userIdHmacKey: string | Uint8Array | undefined;
   tracker: ProactiveTracker;
   surfaceState: SurfaceState;
   emitSurface: (
@@ -293,12 +311,27 @@ function batonWrap(nameRef: { current: string }, original: AnyHandler, ctx: Wrap
     // annotation. Stamped onto the three tool-call events individually.
     const callId = uuidv7();
 
+    // Resolved AFTER the intent-param strip, so the hook's `arguments` are
+    // exactly what the vendor's own handler receives — Baton's injected
+    // params are never a caller's input and must not look like one.
+    const userId = await resolveCallUserId(
+      ctx.resolveUser,
+      { extra, toolName, arguments: params },
+      { mode: ctx.userIdMode, tenantId: ctx.tenantId, key: ctx.userIdHmacKey },
+    );
+
     const common = {
       tenant_id: ctx.tenantId,
       vendor_id: ctx.vendorId,
       session_id: sessionId,
       consent_token: ctx.consentToken,
       agent_runtime: runtime,
+      // The four `...common` sites below are the tool-call legs and the
+      // proactive annotation — the same four Python stamps
+      // (`middleware.py` 481/524/562/606). `surface_snapshot` is deliberately
+      // NOT among them: it describes the SERVER and is captured outside any
+      // call, so there is no caller to name (register D5).
+      user_id: userId,
       runtime_meta: scrubbedMeta,
     };
 
@@ -806,12 +839,20 @@ export function withBaton(server: SupportedMcpServer, supplied: BatonConfig = {}
     annotationToolName,
     intentParamMode,
     paramRegistry: new Map(),
+    resolveUser: config.resolveUser,
+    userIdMode: config.userIdMode ?? "hashed",
+    userIdHmacKey: resolveUserIdHmacKey(config.userIdHmacKey),
     vendorToolJsonSchema,
     bustSchemaMemo,
     tracker,
     surfaceState,
     emitSurface,
   };
+
+  // Install-time, not per-call: all three inputs are resolved above and cannot
+  // change for the life of this server. See `warnIfIdentityCannotResolve` for
+  // why the silent-success case is the one that needs saying out loud.
+  warnIfIdentityCannotResolve(ctx);
 
   // Server instructions — load-bearing on instruction-aware runtimes (SPEC
   // §5.1.2). No public setter exists post-construction; see module
@@ -830,6 +871,15 @@ export function withBaton(server: SupportedMcpServer, supplied: BatonConfig = {}
     vendorId: ctx.vendorId,
     vendorDisplayName: config.vendorDisplayName,
     consentToken: ctx.consentToken,
+    // Read off `ctx`, never re-resolved from `config`: the two paths must
+    // agree on the actor, and `userIdMode`/`userIdHmacKey` each have a
+    // default and an env fallback that a second resolution could take
+    // differently. Required (not optional) on the options type ON PURPOSE —
+    // the compiler then refuses a registration that forgets them, which is
+    // the mechanical version of "wiring two of four call sites".
+    resolveUser: ctx.resolveUser,
+    userIdMode: ctx.userIdMode,
+    userIdHmacKey: ctx.userIdHmacKey,
     fallbackSessionId: ctx.fallbackSessionId,
     scrubber: ctx.scrubber,
     annotationToolName: config.annotationToolName,

@@ -1,0 +1,126 @@
+{
+  "_note": "GENERATED from baton.identity.hash_user_id. Never hand-edit; regenerate with scripts/gen_identity_vectors.py.",
+  "key_utf8": "parity-corpus-key-🔑",
+  "tenant_id": "tenant-parity",
+  "cases": [
+    {
+      "name": "plain ascii",
+      "principal": "employee-4417",
+      "issuer": null,
+      "scheme": "h1",
+      "expected": "h1:311e59dcfc8cf3abb267b85dec03bc3e924b2e3fa9d627209a9cfaf0f1164d47"
+    },
+    {
+      "name": "vendor scheme",
+      "principal": "employee-4417",
+      "issuer": null,
+      "scheme": "v1",
+      "expected": "v1:311e59dcfc8cf3abb267b85dec03bc3e924b2e3fa9d627209a9cfaf0f1164d47"
+    },
+    {
+      "name": "issuer present",
+      "principal": "employee-4417",
+      "issuer": "https://idp.example",
+      "scheme": "h1",
+      "expected": "h1:389aef6856185fa165fa5ee84af59c37749d5aa24f0e64f760eef8dba177e99e"
+    },
+    {
+      "name": "issuer WHITESPACE-ONLY (paired defect)",
+      "principal": "e-1",
+      "issuer": "   ",
+      "scheme": "h1",
+      "expected": "h1:bcdcbe24b47552801f9bc6912114c4dac144d8cf6fe3c2a9d8696f54fb85fcbd"
+    },
+    {
+      "name": "issuer empty string",
+      "principal": "e-1",
+      "issuer": "",
+      "scheme": "h1",
+      "expected": "h1:bcdcbe24b47552801f9bc6912114c4dac144d8cf6fe3c2a9d8696f54fb85fcbd"
+    },
+    {
+      "name": "uppercase folds",
+      "principal": "Employee-4417",
+      "issuer": null,
+      "scheme": "h1",
+      "expected": "h1:311e59dcfc8cf3abb267b85dec03bc3e924b2e3fa9d627209a9cfaf0f1164d47"
+    },
+    {
+      "name": "surrounding whitespace",
+      "principal": "  employee-4417\t\n",
+      "issuer": null,
+      "scheme": "h1",
+      "expected": "h1:311e59dcfc8cf3abb267b85dec03bc3e924b2e3fa9d627209a9cfaf0f1164d47"
+    },
+    {
+      "name": "NFD needs NFC",
+      "principal": "José",
+      "issuer": null,
+      "scheme": "h1",
+      "expected": "h1:096486779996f25021279b4c4adb3051f91d74cce20e943336189172f1a69115"
+    },
+    {
+      "name": "NFC already",
+      "principal": "José",
+      "issuer": null,
+      "scheme": "h1",
+      "expected": "h1:096486779996f25021279b4c4adb3051f91d74cce20e943336189172f1a69115"
+    },
+    {
+      "name": "BOM-prefixed (JS trim strips U+FEFF, Python strip does NOT)",
+      "principal": "﻿employee-4417",
+      "issuer": null,
+      "scheme": "h1",
+      "expected": "h1:8cd2644e70b39a343b6abd57a6a5a436292d3c41955b5a0b473a97a5e85030e0"
+    },
+    {
+      "name": "non-breaking space around",
+      "principal": " employee ",
+      "issuer": null,
+      "scheme": "h1",
+      "expected": "h1:aaab734ca385c96aed05e7cf410a7df8505450cb79d1a070b9d78884be2a536c"
+    },
+    {
+      "name": "turkish dotted I",
+      "principal": "İSTANBUL",
+      "issuer": null,
+      "scheme": "h1",
+      "expected": "h1:4cc6644cffb46da20c2ae1425cbd55c8b4e0de5ea6d4e3069c9a8fc171db5de6"
+    },
+    {
+      "name": "sharp s",
+      "principal": "STRAẞE",
+      "issuer": null,
+      "scheme": "h1",
+      "expected": "h1:ec77739ce2e7bfc05f40fc3637cb6883087fecdc7c6a36c4649ed6701efa42fc"
+    },
+    {
+      "name": "emoji principal",
+      "principal": "😀-user",
+      "issuer": null,
+      "scheme": "h1",
+      "expected": "h1:a18c3b04411e342f438c9cadb7f62e3e15d13b0ed9458cb0ec79d641bbb6372c"
+    },
+    {
+      "name": "cyrillic",
+      "principal": "Петр",
+      "issuer": null,
+      "scheme": "h1",
+      "expected": "h1:2a8380281d89911d340635abde574f6d272362e44314c32c4cc5141cdddba20c"
+    },
+    {
+      "name": "issuer needs NFC too",
+      "principal": "e-1",
+      "issuer": "https://idé.example",
+      "scheme": "h1",
+      "expected": "h1:fd45790fd0541410769c8ac9fbf321486bfd2dddbaf88cb67647bb2112c128d4"
+    },
+    {
+      "name": "empty after canonicalize",
+      "principal": "   ",
+      "issuer": null,
+      "scheme": "h1",
+      "expected": "h1:fefe6b2afa8dbe6d62c193054e3c8a46bbae50ae0d2327abc708b13c47863668"
+    }
+  ]
+}
