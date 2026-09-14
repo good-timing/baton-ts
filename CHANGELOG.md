@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased — `user_id` has a producer on this arm
+## 0.3.3 — `user_id` has a producer on this arm
 
 - **`BatonConfig.resolveUser` — the vendor identity hook, and the first thing
   on this SDK able to populate `user_id` at all.** The field has been on the
