@@ -21,6 +21,35 @@
 - **`hashPrincipalId`, `PrincipalIdMode` and `Principal.issuer`.** The sub hook
   returns the subject alone.
 
+### Changed
+
+- **The tie-break between the two names now matches Python 0.8.5.** When a
+  server's name is too long for the readable display name and the readable
+  tool name to both fit under the instructions cap, the tool name keeps its
+  readable form and the display name falls back to the DSN segment. The
+  display name is now checked beside the tool name the ladder proposes (the
+  explicit one, else the server-derived candidate, else `{vendorId}_annotate`)
+  rather than beside the fallback, so the tool name is always the one the
+  tool-name rule gives beside the segment, and the display name can never make
+  an install throw.
+
+  ⚠ 0.3.4 through 0.5.1 made the opposite choice, so some long names change
+  on upgrade. Both cases need a `dsn` and neither `vendorDisplayName` nor
+  `annotationToolName`; an install with an explicit tool name is unchanged.
+
+  - **The tool is renamed.** A server name of 85 to 95 characters that slugs
+    to the full 30 registered `srv-..._annotate` with the server's name as
+    display name, and now registers its readable `{slug}_annotate` with the
+    DSN segment as display name. The band starts later for a shorter slug
+    (91 for a 20-character one).
+  - **The display name changes, the tool name does not.** A server name of 96
+    to 102 characters whose slug is shorter than the DSN segment (mostly
+    punctuation or non-ASCII) showed the segment as display name and now shows
+    the server's name.
+
+  These bands are for the 12-character `srv-` segment; a segment of another
+  length moves them.
+
 ## 0.5.1: the vendor's hook can name a person, and two OAuth hooks ship ready-made
 
 ### Added
