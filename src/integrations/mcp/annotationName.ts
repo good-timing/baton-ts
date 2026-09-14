@@ -19,16 +19,18 @@
  * `surface_snapshot.seam_augmentations.injected_tools`, so a consumer matches
  * that list by the `_annotate` suffix, never by an exact name.
  *
- * **Order, and why the display name goes first.** Both names enter the server
+ * **Order, and who keeps the readable name.** Both names enter the server
  * instructions, whose cap THROWS, so they share one budget. The display name
- * is resolved first, checked beside the tool name the install would otherwise
- * use (the explicit one, or `{vendorId}_annotate`); the tool name is then
- * checked beside the display name that won. Each step keeps a name only if it
- * renders beside the other, so neither can turn a server that booted before
- * this rule into one that throws, and where both derived names do not fit
- * together it is the tool name that gives way. The second check is Python
- * 0.8.3's own (`annotation_tool_name_from_server` already measures against the
- * resolved display name), so this order leaves that code as it is.
+ * is resolved first, rendered beside the tool name the ladder is about to
+ * PROPOSE: the explicit one, else the server-derived candidate before its own
+ * budget check, else `{vendorId}_annotate`. The tool name is then checked
+ * beside the display name that won. So where the budget has room for only one
+ * readable name, the TOOL name keeps it and the display name stays the DSN
+ * segment. The tool name is therefore always the one the tool-name rule gives
+ * beside the segment, which is the name Python 0.8.4 shipped, and every pair
+ * that renders has been checked. Python 0.8.5's tie-break
+ * (`resolve_annotation_names`), adopted unchanged; this package's 0.3.4 had
+ * let the display name win it.
  *
  * ⚠ **Nothing here throws, except on a tool name the vendor passed
  * explicitly.** Both labels are cosmetic and a vendor's boot is not, so every
@@ -130,25 +132,40 @@ export function slugServerName(serverName: string): string | undefined {
   return collapsed.slice(0, SLUG_CAP).replace(/^-+|-+$/g, "") || undefined;
 }
 
+/** `{slug}_annotate` from a vendor-chosen name, pattern-checked, or
+ * `undefined`. Not yet checked against the instructions budget: the display
+ * name is rendered beside this candidate before the tool name's own check. */
+function toolNameCandidate(serverName: string): string | undefined {
+  const slug = slugServerName(serverName);
+  if (slug === undefined) return undefined;
+  const candidate = `${slug}${SUFFIX}`;
+  // The slug's alphabet is a subset of the pattern's and the cap is well
+  // inside it, so this cannot currently fail. Checked anyway, because the
+  // alternative to a check here is a throw at a vendor's startup.
+  return TOOL_NAME_PATTERN.test(candidate) ? candidate : undefined;
+}
+
 /**
  * The display name from the server's own name, VERBATIM, or `undefined`.
  *
  * Not slugged: it is a string the vendor chose, and it reaches their users.
- * Rendered beside the tool name this install would use if nothing were
- * derived, so a name that does not fit leaves the DSN segment in place rather
- * than making the install throw.
+ * Rendered beside the tool name the ladder is about to propose, so a name
+ * that does not fit leaves the DSN segment in place: it never takes the
+ * readable tool name's budget, and never makes the install throw.
  */
 export function displayNameFromServer(
   serverName: string | undefined,
   tool: { vendorId: string; annotationToolName?: string | undefined },
 ): string | undefined {
   if (serverName === undefined) return undefined;
-  const fallbackToolName = tool.annotationToolName || `${tool.vendorId}${SUFFIX}`;
-  if (!fitsInstructionsCap({ vendorDisplayName: serverName, annotationToolName: fallbackToolName })) {
+  const proposed =
+    tool.annotationToolName || toolNameCandidate(serverName) || `${tool.vendorId}${SUFFIX}`;
+  if (!fitsInstructionsCap({ vendorDisplayName: serverName, annotationToolName: proposed })) {
     warn(
       `baton: the server name (${serverName.length} chars) does not fit the ` +
-        "server-instructions budget as the display name; keeping the DSN's " +
-        "server segment. Pass vendorDisplayName to choose a shorter one.",
+        "server-instructions budget as the display name beside the annotation " +
+        `tool ${JSON.stringify(proposed)}; keeping the DSN's server segment. ` +
+        "Pass vendorDisplayName to name the server in fewer characters.",
     );
     return undefined;
   }
@@ -169,13 +186,8 @@ export function annotationToolNameFromServer(
   vendorDisplayName: string,
 ): string | undefined {
   if (serverName === undefined) return undefined;
-  const slug = slugServerName(serverName);
-  if (slug === undefined) return undefined;
-  const candidate = `${slug}${SUFFIX}`;
-  // The slug's alphabet is a subset of the pattern's and the cap is well
-  // inside it, so this cannot currently fail. Checked anyway, because the
-  // alternative to a check here is a throw at a vendor's startup.
-  if (!TOOL_NAME_PATTERN.test(candidate)) return undefined;
+  const candidate = toolNameCandidate(serverName);
+  if (candidate === undefined) return undefined;
   if (!fitsInstructionsCap({ vendorDisplayName, annotationToolName: candidate })) {
     warn(
       `baton: the server-derived annotation tool name ${JSON.stringify(candidate)} ` +

@@ -26,8 +26,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { withBaton } from "../../../src/integrations/mcp/withBaton.js";
 import type { BatonConfig } from "../../../src/integrations/mcp/config.js";
-import { usableServerName } from "../../../src/integrations/mcp/annotationName.js";
-import { buildServerInstructions } from "../../../src/integrations/mcp/llmText.js";
+import {
+  annotationToolNameFromServer,
+  usableServerName,
+} from "../../../src/integrations/mcp/annotationName.js";
+import {
+  buildServerInstructions,
+  fitsInstructionsCap,
+} from "../../../src/integrations/mcp/llmText.js";
 
 const KEY = "baton_pk_" + "a".repeat(43);
 const SEGMENT = "srv-c8eca135";
@@ -271,15 +277,69 @@ describe("the instructions cap", () => {
     expect(warnings.join("\n")).toMatch(/does not fit the server-instructions budget as the display name/);
   });
 
-  it("resolves the display name first, so the tool name is the one that gives way", () => {
-    // 90 chars fits beside `srv-c8eca135_annotate` (21) but not beside the
-    // 39-char derived tool name. The order is the one Python's parallel pass
-    // implements: its tool-name check already measures against the resolved
-    // display name.
-    const name = "y".repeat(90);
-    const s = installedOnV1(new McpServerV1({ name, version: "1.0.0" }), { dsn: DSN });
-    expect(s.instructions).toMatch(new RegExp(`^This server is wrapped in the ${name} usage`));
-    expect(s.handleToolName).toBe(`${SEGMENT}_annotate`);
+  it("gives the readable name to the TOOL when only one of the two fits", () => {
+    // Python 0.8.5's tie-break, for both SDKs. The tie is found by rendering
+    // rather than written down as a length: the shortest name that fits
+    // beside `srv-c8eca135_annotate` but not beside its own readable tool
+    // name. Under this arm's template (Python's proactive-off text) that is 85
+    // characters; Python's test uses 31 because it pins the proactive-on
+    // text, which spends more of the budget.
+    const readable = (n: number) => `${"q".repeat(Math.min(n, 30))}_annotate`;
+    let tie = 0;
+    for (let n = 31; n <= 120 && tie === 0; n++) {
+      const name = "q".repeat(n);
+      const both = fitsInstructionsCap({ vendorDisplayName: name, annotationToolName: readable(n) });
+      const displayOnly = fitsInstructionsCap({
+        vendorDisplayName: name,
+        annotationToolName: `${SEGMENT}_annotate`,
+      });
+      if (!both && displayOnly) tie = n;
+    }
+    expect(tie, "no length ties under the current template").toBeGreaterThan(30);
+
+    const s = installedOnV1(new McpServerV1({ name: "q".repeat(tie), version: "1.0.0" }), {
+      dsn: DSN,
+    });
+    expect(s.handleToolName).toBe(readable(tie));
+    expect(s.instructions).toMatch(new RegExp(`^This server is wrapped in the ${SEGMENT} usage`));
     expect(s.instructions.length).toBeLessThanOrEqual(CAP);
+
+    // One shorter, both fit, and both stay readable.
+    const below = installedOnV1(
+      new McpServerV1({ name: "q".repeat(tie - 1), version: "1.0.0" }),
+      { dsn: DSN },
+    );
+    expect(below.handleToolName).toBe(readable(tie - 1));
+    expect(below.instructions).toMatch(
+      new RegExp(`^This server is wrapped in the ${"q".repeat(tie - 1)} usage`),
+    );
+  });
+
+  it("never changes the tool name and never throws, over every length from 1 to 120", () => {
+    // Python 0.8.5's sweep, the same two properties. The tool name is the one
+    // the tool-name rule gives beside the DSN segment (Python 0.8.4's name,
+    // and the reason for the tie-break): the display name is the only thing
+    // that moves. And the pair always renders, so a cosmetic default never
+    // stops a boot.
+    let moved = 0;
+    for (let n = 1; n <= 120; n++) {
+      const name = "p".repeat(n);
+      let s: Seen | undefined;
+      expect(() => {
+        s = installedOnV1(new McpServerV1({ name, version: "1.0.0" }), { dsn: DSN });
+      }, `length ${n}`).not.toThrow();
+      const besideTheSegment = annotationToolNameFromServer(name, SEGMENT) ?? `${SEGMENT}_annotate`;
+      expect(s!.handleToolName, `length ${n}`).toBe(besideTheSegment);
+      expect(s!.instructions.length, `length ${n}`).toBeLessThanOrEqual(CAP);
+      const display = /^This server is wrapped in the (.*?) usage and friction SDK\./.exec(
+        s!.instructions,
+      )?.[1];
+      if (display !== SEGMENT) {
+        expect(display, `length ${n}`).toBe(name);
+        moved += 1;
+      }
+    }
+    // Anchored: without it the sweep passes if the display name never moves.
+    expect(moved).toBeGreaterThanOrEqual(30);
   });
 });
