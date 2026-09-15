@@ -1,22 +1,33 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { VENDOR_HASH_SCHEME, hashUserId } from "../../../src/identity.js";
+import { VENDOR_HASH_SCHEME, hashPrincipalId } from "../../../src/identity.js";
 import { extraHeaders } from "../../../src/integrations/mcp/mcpTypes.js";
 import {
-  resolveCallUserId,
-  type UserResolutionContext,
+  resolveCallPrincipalId,
+  type PrincipalResolutionContext,
   warnIfIdentityCannotResolve,
-} from "../../../src/integrations/mcp/userResolution.js";
+} from "../../../src/integrations/mcp/principalResolution.js";
 
 const TENANT = "tenant-ts";
 const KEY = "ts-identity-key";
 
+/** Collects `process.emitWarning` messages until `restore()`. `vi.spyOn`
+ * rather than a hand-rolled swap: it restores cleanly and avoids reassigning a
+ * bound method off `process`. */
+function spyWarnings(): { seen: string[]; restore: () => void } {
+  const seen: string[] = [];
+  const spy = vi.spyOn(process, "emitWarning").mockImplementation((m) => {
+    seen.push(String(m));
+  });
+  return { seen, restore: () => spy.mockRestore() };
+}
+
 /** What a vendor writes — the canonical header spelling, because that is what
  * the header is called in every document describing it. ONE function, run
  * against both majors' context shapes. */
-function vendorHook(ctx: UserResolutionContext) {
+function vendorHook(ctx: PrincipalResolutionContext) {
   const id = ctx.headers?.get("X-Forwarded-User");
-  return id === null || id === undefined ? null : { userId: id };
+  return id === null || id === undefined ? null : { principalId: id };
 }
 
 /** The 1.x shape: `requestInfo.headers` is a plain record whose values may be
@@ -38,7 +49,7 @@ describe("one vendor hook across both SDK majors (register A8, applied prospecti
     // Assert the EXPECTED value, not merely that the two agree: two majors
     // broken identically — both `null`, which is the state before this change
     // — pass an agreement-only check. Python's parity file rule 1.
-    const expected = hashUserId("employee-4417", {
+    const expected = hashPrincipalId("employee-4417", {
       tenantId: TENANT,
       key: KEY,
       scheme: VENDOR_HASH_SCHEME,
@@ -50,7 +61,7 @@ describe("one vendor hook across both SDK majors (register A8, applied prospecti
       ["1.x", extraV1({ "x-forwarded-user": "employee-4417" })],
       ["v2", extraV2({ "x-forwarded-user": "employee-4417" })],
     ] as const) {
-      resolved[major] = await resolveCallUserId(
+      resolved[major] = await resolveCallPrincipalId(
         vendorHook,
         { extra, toolName: "lookup", arguments: {} },
         { mode: "hashed", tenantId: TENANT, key: KEY },
@@ -143,7 +154,7 @@ describe("one vendor hook across both SDK majors (register A8, applied prospecti
   });
 });
 
-describe("resolveCallUserId fail-open", () => {
+describe("resolveCallPrincipalId fail-open", () => {
   const call = {
     extra: extraV1({ "x-forwarded-user": "employee-4417" }),
     toolName: "lookup",
@@ -152,30 +163,30 @@ describe("resolveCallUserId fail-open", () => {
   const opts = { mode: "hashed", tenantId: TENANT, key: KEY } as const;
 
   it("returns null when no hook is configured", async () => {
-    expect(await resolveCallUserId(undefined, call, opts)).toBeNull();
+    expect(await resolveCallPrincipalId(undefined, call, opts)).toBeNull();
   });
 
   it("treats a throwing hook as anonymous, never as a failed call", async () => {
     const boom = () => {
       throw new Error("vendor bug");
     };
-    await expect(resolveCallUserId(boom, call, opts)).resolves.toBeNull();
+    await expect(resolveCallPrincipalId(boom, call, opts)).resolves.toBeNull();
   });
 
   it("treats a rejecting async hook the same way", async () => {
     const boom = () => Promise.reject(new Error("vendor bug"));
-    await expect(resolveCallUserId(boom, call, opts)).resolves.toBeNull();
+    await expect(resolveCallPrincipalId(boom, call, opts)).resolves.toBeNull();
   });
 
   it("accepts a SYNC hook as well as an async one", async () => {
     // The prior art was bitten here: their resolver took the hook's return
     // value verbatim, so an `async` hook silently produced an anonymous event.
-    const sync = () => ({ userId: "employee-4417" });
-    const async = () => Promise.resolve({ userId: "employee-4417" });
-    expect(await resolveCallUserId(sync, call, opts)).toBe(
-      await resolveCallUserId(async, call, opts),
+    const sync = () => ({ principalId: "employee-4417" });
+    const async = () => Promise.resolve({ principalId: "employee-4417" });
+    expect(await resolveCallPrincipalId(sync, call, opts)).toBe(
+      await resolveCallPrincipalId(async, call, opts),
     );
-    expect(await resolveCallUserId(sync, call, opts)).not.toBeNull();
+    expect(await resolveCallPrincipalId(sync, call, opts)).not.toBeNull();
   });
 
   it("does not let the HASHING step throw into the vendor's tool call", async () => {
@@ -183,7 +194,7 @@ describe("resolveCallUserId fail-open", () => {
     // validation refuses that now, but this function's docstring promises it
     // cannot raise, and a promise like that must not rest on an argument about
     // who calls it.
-    const resolved = await resolveCallUserId(() => ({ userId: "e-1" }), call, {
+    const resolved = await resolveCallPrincipalId(() => ({ principalId: "e-1" }), call, {
       mode: "hashed",
       tenantId: TENANT,
       key: 12345 as unknown as string,
@@ -197,7 +208,23 @@ describe("resolveCallUserId fail-open", () => {
     // reds two files for one cause. What is unique HERE is only that the
     // wrapper consults it at all — a snake_case key is the shape a vendor
     // reaches for first, and it must not duck-type through.
-    expect(await resolveCallUserId(() => ({ user_id: "e-1" }) as never, call, opts)).toBeNull();
+    expect(await resolveCallPrincipalId(() => ({ principal_id: "e-1" }) as never, call, opts)).toBeNull();
+  });
+
+  it("warns once, without the value, when a hook still returns the pre-0.3.5 { userId }", async () => {
+    // A renamed config key throws; a hook's return is only seen when it runs,
+    // and without this it would resolve nobody, silently, on every call.
+    const warnings = spyWarnings();
+    try {
+      const old = () => ({ userId: "employee-4417" }) as never;
+      expect(await resolveCallPrincipalId(old, call, opts)).toBeNull();
+      expect(await resolveCallPrincipalId(old, call, opts)).toBeNull();
+    } finally {
+      warnings.restore();
+    }
+    expect(warnings.seen).toHaveLength(1);
+    expect(warnings.seen[0]).toContain("{ principalId }");
+    expect(warnings.seen[0]).not.toContain("employee-4417");
   });
 
   it("gives the hook the tool name and the post-strip arguments", async () => {
@@ -205,17 +232,17 @@ describe("resolveCallUserId fail-open", () => {
     // annotation tool than for a lookup.
     const seen: string[] = [];
     const seenArgs: Record<string, unknown>[] = [];
-    const hook = (c: UserResolutionContext) => {
+    const hook = (c: PrincipalResolutionContext) => {
       seen.push(c.toolName);
       seenArgs.push(c.arguments);
-      return { userId: `user-of-${c.toolName}` };
+      return { principalId: `user-of-${c.toolName}` };
     };
-    const a = await resolveCallUserId(
+    const a = await resolveCallPrincipalId(
       hook,
       { extra: {}, toolName: "lookup", arguments: { q: "one" } },
       opts,
     );
-    const b = await resolveCallUserId(
+    const b = await resolveCallPrincipalId(
       hook,
       { extra: {}, toolName: "acme_annotate", arguments: { q: "two" } },
       opts,
@@ -234,40 +261,51 @@ describe("warnIfIdentityCannotResolve", () => {
   /** The silent-success case: identity configured, nothing emitted, and until
    * this warning existed there was no string in the process to grep for. */
   function capture(config: Parameters<typeof warnIfIdentityCannotResolve>[0]): string[] {
-    const seen: string[] = [];
-    // `vi.spyOn` rather than a hand-rolled swap: it restores on its own and
-    // avoids reassigning a bound method off `process`.
-    const spy = vi.spyOn(process, "emitWarning").mockImplementation((m) => {
-      seen.push(String(m));
-    });
+    const warnings = spyWarnings();
     try {
       warnIfIdentityCannotResolve(config);
     } finally {
-      spy.mockRestore();
+      warnings.restore();
     }
-    return seen;
+    return warnings.seen;
   }
 
-  const hook = () => ({ userId: "employee-4417" });
+  const hook = () => ({ principalId: "employee-4417" });
 
   it("warns when a hook is set, mode is hashed, and no key exists", () => {
-    const seen = capture({ resolveUser: hook, userIdMode: "hashed", userIdHmacKey: undefined });
+    const seen = capture({ resolvePrincipal: hook, principalIdMode: "hashed", principalIdHmacKey: undefined });
     expect(seen).toHaveLength(1);
-    expect(seen[0]).toContain("BATON_USER_ID_HMAC_KEY");
+    expect(seen[0]).toContain("BATON_PRINCIPAL_ID_HMAC_KEY");
   });
 
   it("never puts the principal in the message", () => {
     // Identity was configured and produced nothing; printing the value to
     // explain that would be the residency leak one layer sideways.
-    const seen = capture({ resolveUser: hook, userIdMode: "hashed", userIdHmacKey: undefined });
+    const seen = capture({ resolvePrincipal: hook, principalIdMode: "hashed", principalIdHmacKey: undefined });
     expect(seen[0]).not.toContain("employee-4417");
+  });
+
+  it("names the renamed variable when it is set, and never its value", () => {
+    // 0.3.5 renamed BATON_USER_ID_HMAC_KEY with no fallback, so a leftover one
+    // is the likeliest reason for this warning after an upgrade.
+    const warn = () =>
+      capture({ resolvePrincipal: hook, principalIdMode: "hashed", principalIdHmacKey: undefined })[0];
+    try {
+      vi.stubEnv("BATON_USER_ID_HMAC_KEY", "old-secret-value");
+      expect(warn()).toContain("BATON_USER_ID_HMAC_KEY");
+      expect(warn()).not.toContain("old-secret-value");
+      vi.stubEnv("BATON_USER_ID_HMAC_KEY", "");
+      expect(warn()).not.toContain("BATON_USER_ID_HMAC_KEY");
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it("stays quiet in every state that is not that one", () => {
     // A server with no hook is the common case and must not be nagged; raw
     // mode needs no key; a key present is the working configuration.
-    expect(capture({ userIdMode: "hashed", userIdHmacKey: undefined })).toEqual([]);
-    expect(capture({ resolveUser: hook, userIdMode: "raw", userIdHmacKey: undefined })).toEqual([]);
-    expect(capture({ resolveUser: hook, userIdMode: "hashed", userIdHmacKey: "k" })).toEqual([]);
+    expect(capture({ principalIdMode: "hashed", principalIdHmacKey: undefined })).toEqual([]);
+    expect(capture({ resolvePrincipal: hook, principalIdMode: "raw", principalIdHmacKey: undefined })).toEqual([]);
+    expect(capture({ resolvePrincipal: hook, principalIdMode: "hashed", principalIdHmacKey: "k" })).toEqual([]);
   });
 });

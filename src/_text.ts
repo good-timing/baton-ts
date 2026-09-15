@@ -15,7 +15,7 @@
  * also keeps the two SDKs agreeing on what "128 characters" means.
  *
  * Extracted from `runtimeAdapter.clean()`, which had it first and carried this
- * reasoning alone. `identity.userIdForPrincipal` then capped a raw `user_id`
+ * reasoning alone. `identity.principalIdFor` then capped a raw `principal_id`
  * with a plain `.slice()` and reintroduced exactly the defect — in a module
  * whose own `normalizePrincipal` REJECTS lone surrogates on the way in. One
  * home, so the next capped field inherits the rule instead of rediscovering

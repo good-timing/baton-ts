@@ -9,8 +9,8 @@ import type { Extra } from "./mcpTypes.js";
  * mint, which is what retired the `_meta` rungs on the Python side: a
  * vendor's handle differs from a client's only in who supplied it, and the
  * join rule does not draw that line. What a vendor knows about a caller
- * belongs in `user_id`, which `BatonConfig.resolveUser` now populates on this
- * SDK (see `userResolution.ts`). That sentence read "cannot yet populate at
+ * belongs in `principal_id`, which `BatonConfig.resolvePrincipal` now populates on this
+ * SDK (see `principalResolution.ts`). That sentence read "cannot yet populate at
  * all" until the hook landed. */
 export async function resolveSessionId(
   fallbackSessionId: string,

@@ -125,7 +125,7 @@ export const DEFAULT_CONSENT_TOKEN = "customer-consented";
  * `consentToken` is REQUIRED — the Console rejects any event missing it.
  * `vendorId` is REQUIRED — the wrapped vendor identifier; the Console groups
  * friction by `(tenant_id, vendor_id)`.
- * `userId` is the hashed end-user actor (HMAC-SHA256, hashed at the capture
+ * `principalId` is the hashed resolved principal (HMAC-SHA256, hashed at the capture
  * edge — the raw principal is never transmitted); null when unresolved.
  * `runtimeMeta` is the runtime-supplied MCP request `_meta` envelope, used
  * by the Console to derive turn/cycle boundaries more precise than
@@ -148,7 +148,7 @@ export const DEFAULT_CONSENT_TOKEN = "customer-consented";
  * Minted as a bare opaque UUIDv7 in a local inside the scope that emits both
  * legs — per-call by construction and correct across processes. Never
  * derived from the JSON-RPC request id, which restarts at 1 per connection.
- * It says WHICH CALL, never WHO; the principal is `user_id`. */
+ * It says WHICH CALL, never WHO; the principal is `principal_id`. */
 const envelopeShape = {
   event_id: z.uuid().default(() => uuidv7()),
   tenant_id: z.string(),
@@ -159,7 +159,7 @@ const envelopeShape = {
   consent_token: z.string(),
   sdk_version: z.string().default(SDK_VERSION),
   agent_runtime: z.string().default("unknown"),
-  user_id: z.string().nullable().default(null),
+  principal_id: z.string().nullable().default(null),
   call_id: z.string().nullable().default(null),
   runtime_meta: z.record(z.string(), z.unknown()).nullable().default(null),
 };

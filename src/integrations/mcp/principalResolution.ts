@@ -1,9 +1,9 @@
-/** `BatonConfig.resolveUser` — the ASSERTED identity provenance.
+/** `BatonConfig.resolvePrincipal` — the ASSERTED identity provenance.
  *
  * The TypeScript half of Python's `integrations/identity_adapter.py`, built to
- * close register D6: `user_id` has been on this SDK's envelope since 0.3.0 and
- * NOTHING could populate it, so a partition that works on one of two SDKs is
- * not a partition.
+ * close register D6: the field (`user_id` until 0.3.5) had been on this SDK's
+ * envelope since 0.3.0 and NOTHING could populate it, so a partition that
+ * works on one of two SDKs is not a partition.
  *
  * **Hook only — there is deliberately no attested (`h1:`) rung here yet.**
  * Python reads `claims["sub"]` off a verified access token; TypeScript's
@@ -17,14 +17,15 @@
 
 import {
   type Principal,
-  type UserIdMode,
-  USER_ID_MODE_HASHED,
+  type PrincipalIdMode,
+  PRINCIPAL_ID_MODE_HASHED,
   normalizePrincipal,
-  userIdForPrincipal,
+  principalIdFor,
 } from "../../identity.js";
+import { warn } from "./annotationName.js";
 import { type Extra, extraHeaders, extraMeta } from "./mcpTypes.js";
 
-/** What a vendor's `resolveUser` hook is handed.
+/** What a vendor's `resolvePrincipal` hook is handed.
  *
  * Adapter-neutral BY CONSTRUCTION rather than by convention — the peers' own
  * handler-context objects differ in shape between the two majors, and this
@@ -35,7 +36,7 @@ import { type Extra, extraHeaders, extraMeta } from "./mcpTypes.js";
  * That is the divergence handed to the vendor as `any`; this is the divergence
  * absorbed by us.
  */
-export interface UserResolutionContext {
+export interface PrincipalResolutionContext {
   /** The call's HTTP headers, case-insensitive on BOTH majors — see
    * `extraHeaders` for the two shapes it reconciles.
    *
@@ -56,8 +57,8 @@ export interface UserResolutionContext {
 
 /** A vendor's per-request identity resolver. Sync or async; returning `null`
  * means "no opinion about this caller", which is not an error. */
-export type ResolveUserHook = (
-  context: UserResolutionContext,
+export type ResolvePrincipalHook = (
+  context: PrincipalResolutionContext,
 ) => Principal | null | Promise<Principal | null>;
 
 /** Build the hook's input from whichever major's context arrived.
@@ -68,11 +69,11 @@ export type ResolveUserHook = (
  * with two adapters delivering different header shapes behind one declared
  * type — and no test could see it, because each path only ever tested itself.
  */
-function buildUserResolutionContext(
+function buildPrincipalResolutionContext(
   extra: Extra,
   toolName: string,
   args: Record<string, unknown>,
-): UserResolutionContext {
+): PrincipalResolutionContext {
   return {
     headers: extraHeaders(extra),
     meta: extraMeta(extra),
@@ -81,29 +82,10 @@ function buildUserResolutionContext(
   };
 }
 
-/** Run a vendor's hook and turn its answer into the envelope's `user_id`.
- *
- * ⚠ **Never throws.** A hook that raises, returns the wrong shape, or returns
- * `null` yields an anonymous call, not a failed one — `user_id` is additive
- * analytics and a vendor's own bug in their resolver may not fail their tool
- * call (SPEC §11.2 fail-open). The prior art converged on the identical rule.
- *
- * ⚠ **No timeout, and that is a DIVERGENCE from Python recorded rather than
- * an omission.** Python runs vendor hooks off the event loop under a 5s
- * budget (`integrations/_hooks.py`); this arm awaits the hook inline. ⚠ An
- * earlier draft justified that by "matching `resolveSessionId`, the convention
- * already shipped here" — but `BatonConfig.resolveSessionId` was REMOVED
- * 2026-09-12 and the surviving function takes no vendor callable at all. The
- * real precedent is `scrubber`, the only other vendor code this SDK runs
- * inline; `resolveUser` is the first vendor hook on its per-call path. So the
- * gap is real and deserves its true weight rather than an argument from a
- * convention that no longer exists. A hook that blocks stalls this request.
- * Containment is a separate, larger change on this arm.
- */
 /** Warn ONCE at install when identity is configured but cannot produce a value.
  *
  * ⚠ **The silent-success case is the one that needs a voice.** A vendor sets
- * `resolveUser`, ships, and sees `user_id: null` on every event forever —
+ * `resolvePrincipal`, ships, and sees `principal_id: null` on every event forever —
  * hashed mode with no key DROPS the field by design, and without this there is
  * no string anywhere in the process to grep for. Python spends a `warned` set
  * threaded through five call sites to say this; here all three inputs are
@@ -121,27 +103,67 @@ function buildUserResolutionContext(
  * worker runtimes, where a missing warning channel must not crash startup.
  */
 export function warnIfIdentityCannotResolve(config: {
-  resolveUser?: ResolveUserHook | undefined;
-  userIdMode: UserIdMode;
-  userIdHmacKey: string | Uint8Array | undefined;
+  resolvePrincipal?: ResolvePrincipalHook | undefined;
+  principalIdMode: PrincipalIdMode;
+  principalIdHmacKey: string | Uint8Array | undefined;
 }): void {
-  if (config.resolveUser === undefined) return;
-  if (config.userIdMode !== USER_ID_MODE_HASHED) return;
-  if (config.userIdHmacKey !== undefined) return;
+  if (config.resolvePrincipal === undefined) return;
+  if (config.principalIdMode !== PRINCIPAL_ID_MODE_HASHED) return;
+  if (config.principalIdHmacKey !== undefined) return;
   if (typeof process === "undefined" || typeof process.emitWarning !== "function") return;
+  // The pre-0.3.5 variable is never read. Naming it is the only way an upgrade
+  // that kept it learns why identity stopped; its value is never logged.
+  const renamed = process.env?.BATON_USER_ID_HMAC_KEY
+    ? "BATON_USER_ID_HMAC_KEY is set, but it was renamed to " +
+      "BATON_PRINCIPAL_ID_HMAC_KEY in 0.3.5 and is no longer read. "
+    : "";
   process.emitWarning(
-    "baton: resolveUser is configured but no user_id HMAC key is set, so " +
-      "user_id is dropped from every event (events still emit). Set " +
-      "BATON_USER_ID_HMAC_KEY or BatonConfig.userIdHmacKey, or pass " +
-      'userIdMode: "raw" if you intend to emit the subject verbatim.',
+    "baton: resolvePrincipal is configured but no principal_id HMAC key is set, so " +
+      `principal_id is dropped from every event (events still emit). ${renamed}Set ` +
+      "BATON_PRINCIPAL_ID_HMAC_KEY or BatonConfig.principalIdHmacKey, or pass " +
+      'principalIdMode: "raw" if you intend to emit the subject verbatim.',
   );
 }
 
-export async function resolveCallUserId(
-  hook: ResolveUserHook | undefined,
+let warnedPreRenameShape = false;
+
+/** A hook still returning the pre-0.3.5 `{ userId }` resolves nobody on every
+ * call and throws nothing, unlike a renamed config key. Say so once, and never
+ * with the value. */
+function warnIfPreRenameShape(result: unknown): void {
+  const userId = (result as { userId?: unknown } | null | undefined)?.userId;
+  if (warnedPreRenameShape || typeof userId !== "string") return;
+  warnedPreRenameShape = true;
+  warn(
+    "baton: resolvePrincipal returned { userId }, which was renamed to { principalId } " +
+      "in 0.3.5, so principal_id is dropped from every event until the hook returns the new key.",
+  );
+}
+
+/** Run a vendor's hook and turn its answer into the envelope's `principal_id`.
+ *
+ * ⚠ **Never throws.** A hook that raises, returns the wrong shape, or returns
+ * `null` yields an anonymous call, not a failed one — `principal_id` is additive
+ * analytics and a vendor's own bug in their resolver may not fail their tool
+ * call (SPEC §11.2 fail-open). The prior art converged on the identical rule.
+ *
+ * ⚠ **No timeout, and that is a DIVERGENCE from Python recorded rather than
+ * an omission.** Python runs vendor hooks off the event loop under a 5s
+ * budget (`integrations/_hooks.py`); this arm awaits the hook inline. ⚠ An
+ * earlier draft justified that by "matching `resolveSessionId`, the convention
+ * already shipped here" — but `BatonConfig.resolveSessionId` was REMOVED
+ * 2026-09-12 and the surviving function takes no vendor callable at all. The
+ * real precedent is `scrubber`, the only other vendor code this SDK runs
+ * inline; `resolvePrincipal` is the first vendor hook on its per-call path. So the
+ * gap is real and deserves its true weight rather than an argument from a
+ * convention that no longer exists. A hook that blocks stalls this request.
+ * Containment is a separate, larger change on this arm.
+ */
+export async function resolveCallPrincipalId(
+  hook: ResolvePrincipalHook | undefined,
   call: { extra: Extra; toolName: string; arguments: Record<string, unknown> },
   options: {
-    mode: UserIdMode;
+    mode: PrincipalIdMode;
     tenantId: string;
     key?: Uint8Array | string | null | undefined;
   },
@@ -158,7 +180,7 @@ export async function resolveCallUserId(
   if (hook === undefined) return null;
   let result: unknown;
   try {
-    const context = buildUserResolutionContext(call.extra, call.toolName, call.arguments);
+    const context = buildPrincipalResolutionContext(call.extra, call.toolName, call.arguments);
     result = await hook(context);
   } catch {
     // Broad on purpose, and for the reason the sibling guards are: this calls
@@ -168,9 +190,12 @@ export async function resolveCallUserId(
     return null;
   }
   const principal = normalizePrincipal(result);
-  if (principal === null) return null;
+  if (principal === null) {
+    warnIfPreRenameShape(result);
+    return null;
+  }
   try {
-    return userIdForPrincipal(principal, {
+    return principalIdFor(principal, {
       mode: options.mode,
       tenantId: options.tenantId,
       key: options.key,
@@ -179,7 +204,7 @@ export async function resolveCallUserId(
     // The hashing step, which the guard above did NOT cover. `createHmac`
     // rejects a key that is not a string/TypedArray, and a JavaScript vendor
     // — or a TypeScript one whose config came from parsed settings and is
-    // typed `any` — reaches this with `userIdHmacKey: 12345`. Install-time
+    // typed `any` — reaches this with `principalIdHmacKey: 12345`. Install-time
     // validation refuses that now, but this function's docstring promises it
     // cannot raise, and a promise like that needs the guard rather than an
     // argument about who calls it. Python guards the same call for the same

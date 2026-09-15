@@ -108,7 +108,7 @@ collected. One real line from that stream, pretty-printed:
   "consent_token": "customer-consented",
   "sdk_version": "ts-0.3.0",
   "agent_runtime": "unknown",
-  "user_id": null,
+  "principal_id": null,
   "runtime_meta": null,
   "event_type": "tool_call_start",
   "payload": {

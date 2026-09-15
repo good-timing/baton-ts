@@ -94,7 +94,7 @@ import { Scrubber } from "../../scrub.js";
 import {
   resolveBatonConfig,
   resolveTenantId,
-  resolveUserIdHmacKey,
+  resolvePrincipalIdHmacKey,
   type BatonConfig,
 } from "./config.js";
 import { captureDisabled, DisabledSink, logDisabled } from "../../optout.js";
@@ -113,11 +113,11 @@ import { ProactiveTracker } from "./proactiveTracker.js";
 import { detectAgentRuntime, UNKNOWN_AGENT_RUNTIME } from "./runtimeAdapter.js";
 import { resolveSessionId } from "./sessionResolution.js";
 import {
-  type ResolveUserHook,
-  resolveCallUserId,
+  type ResolvePrincipalHook,
+  resolveCallPrincipalId,
   warnIfIdentityCannotResolve,
-} from "./userResolution.js";
-import type { UserIdMode } from "../../identity.js";
+} from "./principalResolution.js";
+import type { PrincipalIdMode } from "../../identity.js";
 import { SessionCounter } from "./sessionCounter.js";
 import {
   injectGoalParams,
@@ -157,9 +157,9 @@ interface WrapContext {
    * ONCE at install and shared by the tool-call and annotation paths — two
    * resolutions could disagree, and an annotation naming a different actor
    * than the call it describes is worse than one naming nobody. */
-  resolveUser: ResolveUserHook | undefined;
-  userIdMode: UserIdMode;
-  userIdHmacKey: string | Uint8Array | undefined;
+  resolvePrincipal: ResolvePrincipalHook | undefined;
+  principalIdMode: PrincipalIdMode;
+  principalIdHmacKey: string | Uint8Array | undefined;
   tracker: ProactiveTracker;
   surfaceState: SurfaceState;
   emitSurface: (
@@ -315,10 +315,10 @@ function batonWrap(nameRef: { current: string }, original: AnyHandler, ctx: Wrap
     // Resolved AFTER the intent-param strip, so the hook's `arguments` are
     // exactly what the vendor's own handler receives — Baton's injected
     // params are never a caller's input and must not look like one.
-    const userId = await resolveCallUserId(
-      ctx.resolveUser,
+    const principalId = await resolveCallPrincipalId(
+      ctx.resolvePrincipal,
       { extra, toolName, arguments: params },
-      { mode: ctx.userIdMode, tenantId: ctx.tenantId, key: ctx.userIdHmacKey },
+      { mode: ctx.principalIdMode, tenantId: ctx.tenantId, key: ctx.principalIdHmacKey },
     );
 
     const common = {
@@ -332,7 +332,7 @@ function batonWrap(nameRef: { current: string }, original: AnyHandler, ctx: Wrap
       // (`middleware.py` 481/524/562/606). `surface_snapshot` is deliberately
       // NOT among them: it describes the SERVER and is captured outside any
       // call, so there is no caller to name (register D5).
-      user_id: userId,
+      principal_id: principalId,
       runtime_meta: scrubbedMeta,
     };
 
@@ -854,9 +854,9 @@ export function withBaton(server: SupportedMcpServer, supplied: BatonConfig = {}
     annotationToolName,
     intentParamMode,
     paramRegistry: new Map(),
-    resolveUser: config.resolveUser,
-    userIdMode: config.userIdMode ?? "hashed",
-    userIdHmacKey: resolveUserIdHmacKey(config.userIdHmacKey),
+    resolvePrincipal: config.resolvePrincipal,
+    principalIdMode: config.principalIdMode ?? "hashed",
+    principalIdHmacKey: resolvePrincipalIdHmacKey(config.principalIdHmacKey),
     vendorToolJsonSchema,
     bustSchemaMemo,
     tracker,
@@ -887,14 +887,14 @@ export function withBaton(server: SupportedMcpServer, supplied: BatonConfig = {}
     vendorDisplayName: config.vendorDisplayName,
     consentToken: ctx.consentToken,
     // Read off `ctx`, never re-resolved from `config`: the two paths must
-    // agree on the actor, and `userIdMode`/`userIdHmacKey` each have a
+    // agree on the actor, and `principalIdMode`/`principalIdHmacKey` each have a
     // default and an env fallback that a second resolution could take
     // differently. Required (not optional) on the options type ON PURPOSE —
     // the compiler then refuses a registration that forgets them, which is
     // the mechanical version of "wiring two of four call sites".
-    resolveUser: ctx.resolveUser,
-    userIdMode: ctx.userIdMode,
-    userIdHmacKey: ctx.userIdHmacKey,
+    resolvePrincipal: ctx.resolvePrincipal,
+    principalIdMode: ctx.principalIdMode,
+    principalIdHmacKey: ctx.principalIdHmacKey,
     fallbackSessionId: ctx.fallbackSessionId,
     scrubber: ctx.scrubber,
     // The RESOLVED name, never `config.annotationToolName`: handing over the

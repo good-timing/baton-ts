@@ -13,7 +13,7 @@ person reaching both must be one actor in the Console.
 ⚠ The method is NEW here. `scrub.ts` parity mirrors Python's test matrix by
 hand, case-for-case; nothing there is generated.
 
-⚠ **When Python's `hash_user_id` changes, regenerate and expect reds.** That is
+⚠ **When Python's `hash_principal_id` changes, regenerate and expect reds.** That is
 the mechanism working, not a broken test. In particular the `issuer
 WHITESPACE-ONLY` case pins a defect BOTH arms carry deliberately (see
 `normalizePrincipal`): whichever arm is fixed first reddens the other and
@@ -25,7 +25,7 @@ from __future__ import annotations
 import json
 import pathlib
 
-from baton.identity import HASH_SCHEME, VENDOR_HASH_SCHEME, hash_user_id
+from baton.identity import HASH_SCHEME, VENDOR_HASH_SCHEME, hash_principal_id
 
 TENANT = "tenant-parity"
 # Non-ASCII bytes in the key too, so a UTF-8 encoding mistake on either arm
@@ -63,7 +63,7 @@ CASES: list[tuple[str, str, str | None, str]] = [
 def main() -> None:
     payload = {
         "_note": (
-            "GENERATED from baton.identity.hash_user_id. Never hand-edit; "
+            "GENERATED from baton.identity.hash_principal_id. Never hand-edit; "
             "regenerate with scripts/gen_identity_vectors.py."
         ),
         "key_utf8": KEY.decode(),
@@ -74,7 +74,7 @@ def main() -> None:
                 "principal": principal,
                 "issuer": issuer,
                 "scheme": scheme,
-                "expected": hash_user_id(
+                "expected": hash_principal_id(
                     principal, tenant_id=TENANT, key=KEY, issuer=issuer, scheme=scheme
                 ),
             }

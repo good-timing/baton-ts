@@ -1,5 +1,5 @@
 {
-  "_note": "GENERATED from baton.identity.hash_user_id. Never hand-edit; regenerate with scripts/gen_identity_vectors.py.",
+  "_note": "GENERATED from baton.identity.hash_principal_id. Never hand-edit; regenerate with scripts/gen_identity_vectors.py.",
   "key_utf8": "parity-corpus-key-🔑",
   "tenant_id": "tenant-parity",
   "cases": [

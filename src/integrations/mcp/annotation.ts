@@ -17,8 +17,8 @@ import { AnnotationEventSchema } from "../../events.js";
 import type { Sink } from "../../sinks.js";
 import { deriveAnnotationToolName } from "./annotationName.js";
 import { emit } from "./emit.js";
-import { type ResolveUserHook, resolveCallUserId } from "./userResolution.js";
-import type { UserIdMode } from "../../identity.js";
+import { type ResolvePrincipalHook, resolveCallPrincipalId } from "./principalResolution.js";
+import type { PrincipalIdMode } from "../../identity.js";
 import { buildAnnotationToolDescription, SIGNAL_TYPES } from "./llmText.js";
 import { extraEnvelope, extraMeta, type Extra } from "./mcpTypes.js";
 import type { SupportedMcpServer } from "./withBaton.js";
@@ -57,9 +57,9 @@ export interface RegisterAnnotationToolOptions {
   tracker?: ProactiveTracker | undefined;
   /** The vendor's identity resolver and its hashing settings — the SAME
    * values the tool-call wrapper holds, resolved once at install. */
-  resolveUser?: ResolveUserHook | undefined;
-  userIdMode: UserIdMode;
-  userIdHmacKey: string | Uint8Array | undefined;
+  resolvePrincipal?: ResolvePrincipalHook | undefined;
+  principalIdMode: PrincipalIdMode;
+  principalIdHmacKey: string | Uint8Array | undefined;
 }
 
 /** Register the annotation tool on `server`. Returns the resolved tool name. */
@@ -112,13 +112,13 @@ export function registerAnnotationTool(
       // other would put an annotation and the calls it describes under two
       // different actors, which is unjoinable downstream: the identical split
       // the runtime ladder above already carries a comment about.
-      const userId = await resolveCallUserId(
-        options.resolveUser,
+      const principalId = await resolveCallPrincipalId(
+        options.resolvePrincipal,
         { extra, toolName: name, arguments: args },
         {
-          mode: options.userIdMode,
+          mode: options.principalIdMode,
           tenantId: options.tenantId,
-          key: options.userIdHmacKey,
+          key: options.principalIdHmacKey,
         },
       );
 
@@ -131,7 +131,7 @@ export function registerAnnotationTool(
           captured_at: new Date().toISOString(),
           consent_token: options.consentToken,
           agent_runtime: runtime,
-          user_id: userId,
+          principal_id: principalId,
           runtime_meta: scrubbedMeta,
           payload: {
             // Agent-facing names -> wire keys, as with `overall_task`

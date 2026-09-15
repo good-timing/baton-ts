@@ -1,5 +1,43 @@
 # Changelog
 
+## 0.3.5: `user_id` is now `principal_id`
+
+- ⚠ **BREAKING — the identity field and everything that configures it are
+  renamed, with no aliases.** The value is unchanged: same derivation, same
+  `v1:` tag, and every hashed value is byte-identical, because the field name
+  was never part of the HMAC.
+
+  | was | now |
+  |---|---|
+  | envelope `user_id` | `principal_id` |
+  | `BatonConfig.resolveUser` | `resolvePrincipal` |
+  | `BatonConfig.userIdMode` | `principalIdMode` |
+  | `BatonConfig.userIdHmacKey` | `principalIdHmacKey` |
+  | `BATON_USER_ID_HMAC_KEY` | `BATON_PRINCIPAL_ID_HMAC_KEY` |
+  | `Principal.userId` | `Principal.principalId` |
+  | `hashUserId` | `hashPrincipalId` |
+  | `ResolveUserHook` / `UserResolutionContext` / `UserIdMode` | `ResolvePrincipalHook` / `PrincipalResolutionContext` / `PrincipalIdMode` |
+
+  **Why.** The field was documented as "which person" and "which customer" at
+  once. What a vendor can honestly resolve is often a service account or an
+  organisation, and under the old name those looked like misuse.
+  `principal_id` is whoever your resolver asserted, at whatever grain that is.
+  It is not an agent-run key: one principal commonly covers several concurrent
+  runs.
+
+  **What you change.** Rename the config keys; an old key now throws when
+  `withBaton` validates its config. Have your hook return `{ principalId }`;
+  one still returning `{ userId }` resolves nobody, and the SDK warns once
+  when it sees that. Rename the
+  environment variable: the old one is **not read**, and when a
+  `resolvePrincipal` hook has no key, the install warning names the old
+  variable if it is still set, because hashed identity fails open and would
+  otherwise just stop appearing.
+
+  **If you run your own collector,** accept `principal_id` before upgrading
+  producers, and keep accepting `user_id` as the same field until none remain.
+  Python `baton-sdk` 0.8.6 makes the same change.
+
 ## 0.3.4: the agent is told your server's name, not its id
 
 - **The annotation tool is named after your server.** `withBaton(server, { dsn })`

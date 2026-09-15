@@ -5,7 +5,7 @@
 
 import { parseDsn, selectDsn, VENDOR_ID_PATTERN } from "../../dsn.js";
 import { displayNameFromServer } from "./annotationName.js";
-import type { ResolveUserHook } from "./userResolution.js";
+import type { ResolvePrincipalHook } from "./principalResolution.js";
 import { DEFAULT_CONSENT_TOKEN } from "../../events.js";
 import { HttpSink, type Sink } from "../../sinks.js";
 
@@ -24,7 +24,7 @@ export { VENDOR_ID_PATTERN } from "../../dsn.js";
 // Per-tool intent-param injection modes (mirrors baton-proxy's
 // BATON_INTENT_PARAM and Python's VendorConfig.intent_param_mode).
 const INTENT_PARAM_MODES = new Set(["optional", "required", "off"]);
-const USER_ID_MODES = new Set(["hashed", "raw"]);
+const PRINCIPAL_ID_MODES = new Set(["hashed", "raw"]);
 
 export interface BatonConfig {
   /** The packed connection string from /account — one value carrying the
@@ -127,38 +127,38 @@ export interface BatonConfig {
    * nothing. A tool registered with no `inputSchema` at all is left alone
    * regardless of this setting (see `schemaCompat.injectGoalParams`). */
   intentParamMode?: "optional" | "required" | "off";
-  /** Per-request end-user identity — the ASSERTED provenance behind the
-   * envelope's `user_id` (SPEC §11.4 rung 0), tagged `v1:`.
+  /** Per-request principal identity — the ASSERTED provenance behind the
+   * envelope's `principal_id` (SPEC §11.4 rung 0), tagged `v1:`.
    *
    * Called on every captured tool call and on the annotation tool, with an
-   * adapter-neutral {@link UserResolutionContext}: headers folded to ONE
+   * adapter-neutral {@link PrincipalResolutionContext}: headers folded to ONE
    * case-insensitive shape across both SDK majors, the call's `_meta`, the
    * tool name, and the arguments the vendor's own handler will see. Return a
    * `Principal`, or `null` for "no opinion about this caller".
    *
    * **This is the only identity mechanism on this arm.** MCP auth is HTTP
    * middleware, so a stdio server has no token at all; and unlike Python, no
-   * attested rung is implemented here — see `userResolution.ts` for why
+   * attested rung is implemented here — see `principalResolution.ts` for why
    * (TypeScript's `AuthInfo` carries no `claims`).
    *
    * Never fails a tool call: a hook that throws or returns junk yields an
    * anonymous call. ⚠ It is awaited INLINE with no timeout — a blocking hook
    * stalls its own request. */
-  resolveUser?: ResolveUserHook;
+  resolvePrincipal?: ResolvePrincipalHook;
   /** `"hashed"` (default) emits a `v1:` per-tenant HMAC pseudonym; `"raw"`
    * emits the subject VERBATIM.
    *
-   * `"raw"` puts real end-user identity in the collector's database and is the
+   * `"raw"` puts real identity in the collector's database and is the
    * vendor's deliberate choice — which is why SPEC §11.4 tells a consumer
    * never to treat this field as anonymous. */
-  userIdMode?: "hashed" | "raw";
+  principalIdMode?: "hashed" | "raw";
   /** The HMAC secret for hashed mode. Resolved explicit →
-   * `BATON_USER_ID_HMAC_KEY` → unset.
+   * `BATON_PRINCIPAL_ID_HMAC_KEY` → unset.
    *
-   * ⚠ **With none set, hashed mode DROPS `user_id` rather than falling back to
+   * ⚠ **With none set, hashed mode DROPS `principal_id` rather than falling back to
    * raw.** The fallback would be a residency breach that looks like success:
    * the field present, populated, and carrying the subject verbatim. */
-  userIdHmacKey?: string | Uint8Array;
+  principalIdHmacKey?: string | Uint8Array;
 }
 
 /**
@@ -179,7 +179,7 @@ export function resolveTenantId(explicit: string | undefined, vendorId: string):
   if (explicit) return explicit;
   // Guarded: `process` is absent on edge/worker runtimes, and a missing one is
   // a miss, not a crash inside the vendor's server startup. (This said "this
-  // package reads no other environment variable" until `resolveUserIdHmacKey`
+  // package reads no other environment variable" until `resolvePrincipalIdHmacKey`
   // below added a second one; `dsn.ts` and `optout.ts` read theirs too.)
   const fromEnv = typeof process !== "undefined" ? process.env?.BATON_TENANT_ID : undefined;
   if (fromEnv) return fromEnv;
@@ -187,11 +187,11 @@ export function resolveTenantId(explicit: string | undefined, vendorId: string):
 }
 
 /**
- * The HMAC secret for hashed `user_id`: explicit → `BATON_USER_ID_HMAC_KEY` →
- * unset. Mirrors Python's `_resolve_user_id_hmac_key`.
+ * The HMAC secret for hashed `principal_id`: explicit → `BATON_PRINCIPAL_ID_HMAC_KEY` →
+ * unset. Mirrors Python's `_resolve_principal_id_hmac_key`.
  *
  * `undefined` is a SUPPORTED state, not an error: it means hashed-mode
- * identity is off and events emit without `user_id`. A string is kept as a
+ * identity is off and events emit without `principal_id`. A string is kept as a
  * string and UTF-8 encoded at the HMAC, which is the same byte sequence
  * Python's env path produces — the env var has always carried text.
  *
@@ -199,7 +199,7 @@ export function resolveTenantId(explicit: string | undefined, vendorId: string):
  * resolutions could disagree, and one person would hash two ways within a
  * single server.
  */
-export function resolveUserIdHmacKey(
+export function resolvePrincipalIdHmacKey(
   explicit: string | Uint8Array | undefined,
 ): string | Uint8Array | undefined {
   if (explicit !== undefined) return explicit;
@@ -207,7 +207,7 @@ export function resolveUserIdHmacKey(
   // worker runtimes, and a missing one is a miss rather than a crash inside
   // the vendor's server startup.
   const fromEnv =
-    typeof process !== "undefined" ? process.env?.BATON_USER_ID_HMAC_KEY : undefined;
+    typeof process !== "undefined" ? process.env?.BATON_PRINCIPAL_ID_HMAC_KEY : undefined;
   return fromEnv ? fromEnv : undefined;
 }
 
@@ -325,7 +325,22 @@ export function resolveBatonConfig(config: BatonConfig, serverName?: string): Re
   };
 }
 
+/** Keys renamed in 0.3.5, REFUSED rather than ignored: a JavaScript caller gets
+ * no compile error, and identity fails open, so an ignored `resolveUser` would
+ * just stop producing `principal_id`. The renamed subset of what Python's
+ * `TypeError` refuses, which is any unknown keyword. */
+const RENAMED_KEYS: Record<string, string> = {
+  resolveUser: "resolvePrincipal",
+  userIdMode: "principalIdMode",
+  userIdHmacKey: "principalIdHmacKey",
+};
+
 export function validateBatonConfig(config: BatonConfig): asserts config is ResolvedBatonConfig {
+  for (const [was, now] of Object.entries(RENAMED_KEYS)) {
+    if (was in config) {
+      throw new Error(`BatonConfig.${was} was renamed to ${now} in 0.3.5.`);
+    }
+  }
   if (!config.vendorId) {
     throw new Error(
       "BatonConfig needs a vendorId — either directly, or via a dsn whose " +
@@ -367,32 +382,32 @@ export function validateBatonConfig(config: BatonConfig): asserts config is Reso
         `${JSON.stringify([...INTENT_PARAM_MODES].sort())}.`,
     );
   }
-  if (config.resolveUser !== undefined && typeof config.resolveUser !== "function") {
+  if (config.resolvePrincipal !== undefined && typeof config.resolvePrincipal !== "function") {
     // Refused AT INSTALL rather than at the first call. Unvalidated it would
     // fail inside the hook's own fail-open guard — logged nowhere, identity
     // silently absent for the life of the process, in the one deployment shape
     // (stdio, where no token can exist) that this field is the only mechanism
     // for. Mirrors Python's `resolve_user must be callable`.
-    throw new Error("BatonConfig.resolveUser must be a function.");
+    throw new Error("BatonConfig.resolvePrincipal must be a function.");
   }
   if (
-    config.userIdHmacKey !== undefined &&
-    typeof config.userIdHmacKey !== "string" &&
-    !(config.userIdHmacKey instanceof Uint8Array)
+    config.principalIdHmacKey !== undefined &&
+    typeof config.principalIdHmacKey !== "string" &&
+    !(config.principalIdHmacKey instanceof Uint8Array)
   ) {
     // The one new field with no install-time check until now, and the shape
     // that reaches it is ordinary: a config built from parsed settings is
-    // typed `any`, so `userIdHmacKey: 12345` compiles. Unvalidated, `createHmac`
+    // typed `any`, so `principalIdHmacKey: 12345` compiles. Unvalidated, `createHmac`
     // rejects it INSIDE the per-call identity path — once per tool call, for
     // the life of the process. Mirrors Python, which guards this at install
     // AND around the hash itself; both, because a promise that a function
     // cannot raise should not rest on an argument about who calls it.
-    throw new Error("BatonConfig.userIdHmacKey must be a string or a Uint8Array.");
+    throw new Error("BatonConfig.principalIdHmacKey must be a string or a Uint8Array.");
   }
-  if (config.userIdMode !== undefined && !USER_ID_MODES.has(config.userIdMode)) {
+  if (config.principalIdMode !== undefined && !PRINCIPAL_ID_MODES.has(config.principalIdMode)) {
     throw new Error(
-      `BatonConfig.userIdMode ${JSON.stringify(config.userIdMode)} must be one of ` +
-        `${JSON.stringify([...USER_ID_MODES].sort())}.`,
+      `BatonConfig.principalIdMode ${JSON.stringify(config.principalIdMode)} must be one of ` +
+        `${JSON.stringify([...PRINCIPAL_ID_MODES].sort())}.`,
     );
   }
 }

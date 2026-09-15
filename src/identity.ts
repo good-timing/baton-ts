@@ -1,8 +1,9 @@
-/** End-user identity — resolve a raw principal, hash it at the edge.
+/** Principal identity — resolve a raw principal, hash it at the edge.
  *
- * The TypeScript half of Python's `baton/identity.py`. Baton attaches an
- * end-user actor (`user_id`) to every event so the Console can answer "which
- * *customer* hit this" and group by `(tenant_id, vendor_id, user_id)`.
+ * The TypeScript half of Python's `baton/identity.py`. Baton attaches the
+ * resolved principal (`principal_id`) to every event so the Console can group
+ * by `(tenant_id, vendor_id, principal_id)`, at whatever grain the vendor
+ * resolved (SPEC §11.4).
  *
  * Residency contract: the Console DB is metadata-only and may only ever see
  * the HASH — raw identity must never leave the capture edge. So hashing
@@ -31,17 +32,17 @@ export const HASH_SCHEME = "h1";
  * attestation (SPEC §11.4's registered-set rule). */
 export const VENDOR_HASH_SCHEME = "v1";
 
-/** Ceiling on a RAW `user_id`, mirroring Python's `RAW_USER_ID_MAX_LEN`.
+/** Ceiling on a RAW `principal_id`, mirroring Python's `RAW_PRINCIPAL_ID_MAX_LEN`.
  *
  * Raw mode copies vendor-supplied text onto EVERY event of a call — three
  * tool-call legs plus any annotation — so an unbounded value is unbounded
  * several times over. A hook returning a JWT or a concatenated gateway header
  * is the realistic shape, not a hostile one. */
-export const RAW_USER_ID_MAX_LEN = 128;
+export const RAW_PRINCIPAL_ID_MAX_LEN = 128;
 
-export const USER_ID_MODE_HASHED = "hashed";
-export const USER_ID_MODE_RAW = "raw";
-export type UserIdMode = typeof USER_ID_MODE_HASHED | typeof USER_ID_MODE_RAW;
+export const PRINCIPAL_ID_MODE_HASHED = "hashed";
+export const PRINCIPAL_ID_MODE_RAW = "raw";
+export type PrincipalIdMode = typeof PRINCIPAL_ID_MODE_HASHED | typeof PRINCIPAL_ID_MODE_RAW;
 
 /** Codepoints Python's `str.strip()` removes, measured against CPython rather
  * than assumed — `\s` in JavaScript is the WRONG set in BOTH directions.
@@ -81,12 +82,12 @@ export function pythonStrip(value: string): string {
   return value.replace(PYTHON_STRIP, "");
 }
 
-/** A raw, UNHASHED end-user principal, as a resolver produced it. */
+/** A raw, UNHASHED principal, as a resolver produced it. */
 export interface Principal {
-  /** The subject — a stable per-person identifier from the vendor's own
+  /** The subject — a stable identifier from the vendor's own
    * system. Never an application id: that names the app and is identical for
    * every one of its users, which merges them into one actor. */
-  userId: string;
+  principalId: string;
   /** The issuing authority, where one exists (the OIDC `iss`). Folded into
    * the hash because a subject is unique only within the provider that minted
    * it, so two identity providers behind one vendor can hand the same subject
@@ -94,7 +95,7 @@ export interface Principal {
   issuer?: string | null | undefined;
 }
 
-/** HMAC-SHA256 a raw principal into a console-safe, per-tenant `user_id`.
+/** HMAC-SHA256 a raw principal into a console-safe, per-tenant `principal_id`.
  *
  * `tenantId` is folded into the HMAC MESSAGE (not just the key) so the same
  * principal under two tenants can never collide or be cross-tenant-correlated.
@@ -110,7 +111,7 @@ export interface Principal {
  * form** — the append-only message layout is what guarantees it, and every
  * hash baton-proxy and baton-extmcp have produced since 0.5.0 was issuer-less.
  */
-export function hashUserId(
+export function hashPrincipalId(
   rawPrincipal: string,
   options: {
     tenantId: string;
@@ -143,7 +144,7 @@ export function hashUserId(
     message += `\x00${canonicalize(issuer)}`;
   }
   // A string key is UTF-8 encoded, matching Python's env-var path
-  // (`BATON_USER_ID_HMAC_KEY` arrives as text and is `.encode()`d there).
+  // (`BATON_PRINCIPAL_ID_HMAC_KEY` arrives as text and is `.encode()`d there).
   const keyBytes = typeof key === "string" ? Buffer.from(key, "utf8") : key;
   const digest = createHmac("sha256", keyBytes).update(message, "utf8").digest("hex");
   return `${scheme}:${digest}`;
@@ -156,20 +157,20 @@ export function hashUserId(
  * types vanish at runtime and a hook is vendor code, so a plain string, a
  * dict, or a half-built object is exactly what arrives first — AgentCat's
  * `identify()`, the prior art this is modelled on, returns a bare object. The
- * very next thing that happens to this value is an HMAC over `userId`, so a
+ * very next thing that happens to this value is an HMAC over `principalId`, so a
  * wrong return is a MISS, never a partially-built principal.
  *
- * ⚠ **An empty or whitespace-only `userId` is REJECTED**, and this is a
+ * ⚠ **An empty or whitespace-only `principalId` is REJECTED**, and this is a
  * measured divergence from the prior art rather than a stylistic one: their
- * guard is falsy-only, so `{userId: ""}` reaches their wire. An empty
+ * guard is falsy-only, so `{principalId: ""}` reaches their wire. An empty
  * principal canonicalizes to `""` and hashes to one stable digest naming
  * nobody — so every such caller merges into a single phantom actor, which is
  * the exact failure this field exists to prevent.
  */
 export function normalizePrincipal(result: unknown): Principal | null {
   if (result === null || typeof result !== "object") return null;
-  const candidate = result as { userId?: unknown; issuer?: unknown };
-  if (typeof candidate.userId !== "string") return null;
+  const candidate = result as { principalId?: unknown; issuer?: unknown };
+  if (typeof candidate.principalId !== "string") return null;
   // ⚠ **A lone surrogate MERGES distinct people, so it is a miss.** Node's
   // `update(…, "utf8")` does not throw on an unpaired surrogate — it replaces
   // it with U+FFFD — so `"a\uD800"`, `"a\uDC00"` and `"a\uFFFD"` all hash to
@@ -178,10 +179,10 @@ export function normalizePrincipal(result: unknown): Principal | null {
   // `UnicodeEncodeError` on `.encode()` and drops the field, so refusing here
   // is also what keeps the two arms agreeing: same input, same answer (none).
   // Reachable from a subject sliced out of a JSON payload or a header.
-  if (LONE_SURROGATE.test(candidate.userId)) return null;
+  if (LONE_SURROGATE.test(candidate.principalId)) return null;
   // `.strip()`-equivalent, because the canonicalizer strips: a whitespace-only
   // subject is a phantom actor every such caller merges into.
-  if (canonicalize(candidate.userId) === "") return null;
+  if (canonicalize(candidate.principalId) === "") return null;
 
   // ⚠ **This guard is falsy-not-stripped, and that is a KNOWN PAIRED DEFECT
   // carried deliberately rather than fixed here.** Python's
@@ -197,8 +198,8 @@ export function normalizePrincipal(result: unknown): Principal | null {
   // resolves, which is the difference between a degraded actor and no actor.
   //
   // ⚠ **This DIVERGES from Python and the corpus structurally cannot pin it.**
-  // There, `hash_user_id` raises `UnicodeEncodeError` on the issuer and
-  // `_finish_principal` drops `user_id` entirely; here the subject still
+  // There, `hash_principal_id` raises `UnicodeEncodeError` on the issuer and
+  // `_finish_principal` drops `principal_id` entirely; here the subject still
   // hashes, issuer-less — so the same input yields no field on one arm and a
   // digest on the other, one that collides with the same `sub` from a
   // different IdP. Recorded rather than aligned, because dropping a resolvable
@@ -206,24 +207,24 @@ export function normalizePrincipal(result: unknown): Principal | null {
   // corpus cannot carry this case: Python's generator cannot produce a vector
   // for an input that raises.
   const issuer = issuerRaw !== null && !LONE_SURROGATE.test(issuerRaw) ? issuerRaw : null;
-  return { userId: candidate.userId, issuer };
+  return { principalId: candidate.principalId, issuer };
 }
 
-/** The envelope's `user_id` for one principal, or `null` to omit the field.
+/** The envelope's `principal_id` for one principal, or `null` to omit the field.
  *
- * `raw` mode is UNTAGGED and puts real end-user identity in the collector's
+ * `raw` mode is UNTAGGED and puts real identity in the collector's
  * database — the vendor's deliberate choice, and why SPEC §11.4 tells a
  * consumer never to treat this field as anonymous.
  *
  * ⚠ **Hashed mode with no key DROPS the field rather than falling back to
  * raw.** The fallback would be a residency breach that looks like success:
- * `user_id` present, populated, and carrying the subject verbatim. Absent is
+ * `principal_id` present, populated, and carrying the subject verbatim. Absent is
  * the safe direction — this is additive analytics and never a consent gate.
  */
-export function userIdForPrincipal(
+export function principalIdFor(
   principal: Principal,
   options: {
-    mode: UserIdMode;
+    mode: PrincipalIdMode;
     tenantId: string;
     key?: Uint8Array | string | null | undefined;
   },
@@ -231,12 +232,12 @@ export function userIdForPrincipal(
   // `capCodePoints`, not `.slice()`: a plain slice counts UTF-16 units, so an
   // astral subject cut at the boundary ships a LONE SURROGATE — the very thing
   // `normalizePrincipal` refuses on the way IN — and disagrees with Python's
-  // `user_id[:128]`, which counts code points.
-  if (options.mode === USER_ID_MODE_RAW) {
-    return capCodePoints(principal.userId, RAW_USER_ID_MAX_LEN);
+  // `principal_id[:128]`, which counts code points.
+  if (options.mode === PRINCIPAL_ID_MODE_RAW) {
+    return capCodePoints(principal.principalId, RAW_PRINCIPAL_ID_MAX_LEN);
   }
   if (options.key === null || options.key === undefined) return null;
-  return hashUserId(principal.userId, {
+  return hashPrincipalId(principal.principalId, {
     tenantId: options.tenantId,
     key: options.key,
     issuer: principal.issuer ?? null,
