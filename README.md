@@ -2,7 +2,7 @@
 
 *The TypeScript counterpart to [`baton-sdk`](https://github.com/good-timing/baton) (Python) — structured signal capture for agent-mediated tool use over MCP.*
 
-**Status: published — [`@goodtiming/baton-sdk@0.3.0`](https://www.npmjs.com/package/@goodtiming/baton-sdk) on npm.** `withBaton` instruments a high-level `McpServer` — **either** official SDK major, 1.x (`@modelcontextprotocol/sdk`) or v2 (`@modelcontextprotocol/server`): wraps every tool call, injects server `instructions`, registers the `<vendor>_annotate` tool (SPEC §5.1.1–§5.1.2), injects `user_goal`/`expected_result`/`overall_task` intent params on every wrapped tool's schema, captures a `surface_snapshot` of the vendor-true surface, and PII-scrubs every payload with the same default ruleset the Python SDK ships. What's still not here: intent-param injection for **non-zod** schemas on v2, MRTR (Python's `_is_mrtr_pause`/`_is_mrtr_continuation`), and the low-level `Server` adapter — see [What's deferred](#whats-deferred).
+**Status: published — [`@goodtiming/baton-sdk`](https://www.npmjs.com/package/@goodtiming/baton-sdk) on npm.** `withBaton` instruments a high-level `McpServer` — **either** official SDK major, 1.x (`@modelcontextprotocol/sdk`) or v2 (`@modelcontextprotocol/server`): wraps every tool call, injects server `instructions`, registers the `<vendor>_annotate` tool (SPEC §5.1.1–§5.1.2), injects `user_goal`/`expected_result`/`overall_task` intent params on every wrapped tool's schema, captures a `surface_snapshot` of the vendor-true surface, and PII-scrubs every payload with the same default ruleset the Python SDK ships. What's still not here: intent-param injection for **non-zod** schemas on v2, MRTR (Python's `_is_mrtr_pause`/`_is_mrtr_continuation`), and the low-level `Server` adapter — see [What's deferred](#whats-deferred).
 
 ## Why this exists
 
@@ -39,10 +39,11 @@ npm install @goodtiming/baton-sdk
 ```typescript
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { withBaton } from "@goodtiming/baton-sdk";
+import { z } from "zod";
 
 const server = new McpServer({ name: "your-vendor-mcp", version: "1.0.0" });
 const handle = withBaton(server, {
-  dsn: "https://baton_pk_...@ingest.goodtiming.ai/ten_7cd4c8cf.../your-vendor",
+  dsn: "https://baton_pk_...@baton.goodtiming.ai/ten_.../your-vendor",
 });
 // handle.annotationToolName === "your-vendor-mcp_annotate", from the server's own name
 
@@ -99,16 +100,17 @@ collected. One real line from that stream, pretty-printed:
 
 ```json
 {
-  "event_id": "01a091a9-24d0-732e-9e92-8165c2018a93",
-  "tenant_id": "ten_7cd4c8cf9a0e4b1d8f2a6c3e5b7d9f10",
+  "event_id": "01a0a6ad-e5f5-70d6-992d-02d79682fa40",
+  "tenant_id": "ten_7cd4c8cf",
   "vendor_id": "your-vendor",
-  "session_id": "sdk-01a091a9-24c8-72c8-a64e-e49164e1f568",
+  "session_id": "sdk-01a0a6ad-e5eb-748d-9f90-dbb6b039bd64",
   "sequence_number": 3,
-  "captured_at": "2026-09-11T18:09:36.463Z",
+  "captured_at": "2026-09-15T20:06:49.588Z",
   "consent_token": "customer-consented",
-  "sdk_version": "ts-0.3.0",
-  "agent_runtime": "unknown",
+  "sdk_version": "ts-0.3.6",
+  "agent_runtime": "example-client",
   "principal_id": null,
+  "call_id": "01a0a6ad-e5f4-721e-acbd-de78059613d9",
   "runtime_meta": null,
   "event_type": "tool_call_start",
   "payload": {
@@ -138,8 +140,7 @@ Every other option — the intent-param mode, a session-id resolver, your own
 scrubber — is set the same way with or without a DSN. Passing a `dsn` **and** an
 explicit `vendorId`, `tenantId` or `sink` throws: two sources for one value
 cannot be reconciled without guessing, and a wrong guess routes a server's
-traffic under someone else's identity. `consentToken` defaults to a value the
-SDK supplies, so you never carry one.
+traffic under someone else's identity.
 
 ### Turning capture off
 
