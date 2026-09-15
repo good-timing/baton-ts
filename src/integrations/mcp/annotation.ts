@@ -14,6 +14,7 @@
 
 import { z } from "zod";
 import { AnnotationEventSchema } from "../../events.js";
+import { roundMetaCoordinates } from "../../metaCoordinates.js";
 import type { Sink } from "../../sinks.js";
 import { deriveAnnotationToolName } from "./annotationName.js";
 import { emit } from "./emit.js";
@@ -97,7 +98,11 @@ export function registerAnnotationTool(
           server,
           scrubber: options.scrubber,
         }) ?? UNKNOWN_AGENT_RUNTIME;
-      const scrubbedMeta = meta ? (options.scrubber(meta) as Record<string, unknown>) : null;
+      // As in the tool-call wrapper: coordinates coarsened after the ladder
+      // read the raw meta, before the vendor's scrubber (handoff D5).
+      const scrubbedMeta = meta
+        ? (options.scrubber(roundMetaCoordinates(meta)) as Record<string, unknown>)
+        : null;
       const sessionId = await resolveSessionId(options.fallbackSessionId, extra);
       // A proactive annotation (no signal_type) claims the session's
       // proactive slot so the tool wrapper won't also synthesise one from

@@ -91,6 +91,7 @@ import {
 import { StdoutSink, type Sink } from "../../sinks.js";
 import { registerAnnotationTool } from "./annotation.js";
 import { Scrubber } from "../../scrub.js";
+import { roundMetaCoordinates } from "../../metaCoordinates.js";
 import {
   resolveBatonConfig,
   resolveTenantId,
@@ -285,7 +286,13 @@ function batonWrap(nameRef: { current: string }, original: AnyHandler, ctx: Wrap
         server: ctx.server,
         scrubber: ctx.scrubber,
       }) ?? UNKNOWN_AGENT_RUNTIME;
-    const scrubbedMeta = meta ? (ctx.scrubber(meta) as Record<string, unknown>) : null;
+    // Coordinates are coarsened here: after the ladder above has read the
+    // raw meta, and before the vendor's scrubber, so a vendor scrubber still
+    // gets the rule (handoff D5). `_meta` only; params and results keep
+    // full precision. The annotation tool does the same.
+    const scrubbedMeta = meta
+      ? (ctx.scrubber(roundMetaCoordinates(meta)) as Record<string, unknown>)
+      : null;
     const sessionId = await resolveSessionId(ctx.fallbackSessionId, extra);
 
     // Strip the injected goal params IN PLACE, before snapshotting params —

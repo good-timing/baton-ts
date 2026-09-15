@@ -20,6 +20,7 @@ import { identityScrub } from "../../../src/scrub.js";
 import type { Event } from "../../../src/events.js";
 import type { Sink } from "../../../src/sinks.js";
 import { VENDOR_HASH_SCHEME, hashPrincipalId } from "../../../src/identity.js";
+import { CHATGPT_IPHONE_META } from "../../openaiMetaSamples.js";
 
 class CapturingSink implements Sink {
   readonly events: Event[] = [];
@@ -1471,6 +1472,96 @@ describe("withBaton — agent_runtime, against the real 1.x peer", () => {
     // metadata came from, not who the caller is. The client here declares
     // `test-client` and sends a Claude Code key; the declaration wins.
     expect(await runtimeFor({ "claudecode/toolUseId": "tu_1" })).toBe("test-client");
+  });
+});
+
+/**
+ * Handoff D5 through the real wrap: `_meta`'s latitude and longitude are
+ * rounded to 1 decimal on the way to runtime_meta, by `roundMetaCoordinates`
+ * ahead of the scrubber. `_meta` only: a tool's own coordinates in its params
+ * or result are captured at full precision.
+ */
+describe("withBaton — coordinates in runtime_meta", () => {
+  let sink: CapturingSink;
+  beforeEach(() => {
+    sink = new CapturingSink();
+  });
+
+  const ROUNDED_IPHONE_LOCATION = {
+    ...CHATGPT_IPHONE_META["openai/userLocation"],
+    latitude: "37.8",
+    longitude: "-122.4",
+  };
+
+  async function connect(register: (server: McpServer) => void = registerTools): Promise<Client> {
+    const server = new McpServer({ name: "vendor", version: "1.0.0" });
+    register(server);
+    withBaton(server, {
+      vendorId: "acme",
+      vendorDisplayName: "Acme",
+      consentToken: "ct",
+      sink,
+    });
+    return connectClient(server);
+  }
+
+  it("runtime_meta carries rounded coordinates; agent_runtime still reads the raw meta", async () => {
+    // The request declares `openai-mcp`, so that name (not the handshake's
+    // `test-client`) proves the ladder ran on this very meta.
+    const client = await connect();
+    const meta = {
+      ...CHATGPT_IPHONE_META,
+      [CLIENT_INFO_META_KEY]: { name: "openai-mcp", version: "1.0.0" },
+    };
+    await client.callTool({ name: "echo", arguments: { text: "hi" }, _meta: meta });
+
+    const legs = sink.events.filter(
+      (e) => e.event_type === "tool_call_start" || e.event_type === "tool_call_end",
+    );
+    expect(legs).toHaveLength(2);
+    for (const e of legs) {
+      expect(e.agent_runtime).toBe("openai-mcp");
+      expect(e.runtime_meta).toEqual({ ...meta, "openai/userLocation": ROUNDED_IPHONE_LOCATION });
+    }
+  });
+
+  it("captures a tool's own latitude param and result unchanged", async () => {
+    const client = await connect((server) => {
+      server.registerTool(
+        "locate",
+        { inputSchema: { latitude: z.string() } },
+        async (args: { latitude: string }) => ({
+          content: [{ type: "text" as const, text: args.latitude }],
+        }),
+      );
+    });
+    await client.callTool({
+      name: "locate",
+      arguments: { latitude: "37.79535123456789" },
+      _meta: CHATGPT_IPHONE_META,
+    });
+
+    const start = sink.events.find((e) => e.event_type === "tool_call_start")!;
+    const end = sink.events.find((e) => e.event_type === "tool_call_end")!;
+    expect(start.payload).toMatchObject({ params: { latitude: "37.79535123456789" } });
+    expect(JSON.stringify(end.payload)).toContain('"37.79535123456789"');
+    // ...while the same call's `_meta` was rounded, so the rule did run.
+    expect(start.runtime_meta?.["openai/userLocation"]).toEqual(ROUNDED_IPHONE_LOCATION);
+  });
+
+  it("the annotation tool's runtime_meta carries rounded coordinates too", async () => {
+    const client = await connect();
+    await client.callTool({
+      name: "vendor_annotate",
+      arguments: { user_goal: "find the thing" },
+      _meta: CHATGPT_IPHONE_META,
+    });
+
+    const annotation = sink.events.find((e) => e.event_type === "annotation")!;
+    expect(annotation.runtime_meta).toEqual({
+      ...CHATGPT_IPHONE_META,
+      "openai/userLocation": ROUNDED_IPHONE_LOCATION,
+    });
   });
 });
 
