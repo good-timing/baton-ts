@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.6: intent is asked for on every call, never enforced
 
 - **`intentParamMode: "required"` now advertises `user_goal` as required, and
   is the default.** Until now it advertised exactly what `"optional"` did:
