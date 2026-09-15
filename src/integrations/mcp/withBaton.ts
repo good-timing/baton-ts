@@ -120,6 +120,7 @@ import {
 import type { PrincipalIdMode } from "../../identity.js";
 import { SessionCounter } from "./sessionCounter.js";
 import {
+  advertiseUserGoalRequired,
   injectGoalParams,
   injectGoalParamsV2,
   toolInputJsonSchema,
@@ -170,7 +171,9 @@ interface WrapContext {
 }
 
 // `_registeredTools`, `RegisteredTool.handler`/`.executor`,
-// `server.server._instructions` and `server.server._serverInfo` are internal
+// `server.server._instructions`, `server.server._serverInfo` and
+// `server.server._requestHandlers` (with the `setRequestHandler` that fills
+// it, for the `tools/list` seam) are internal
 // to the official SDK — 1.x and v2 alike — and not part of either public
 // `.d.ts` surface. Reaching into them is deliberate (see module docstring),
 // the same way Python's `_registry.py` does, and isolated to this one module
@@ -494,8 +497,8 @@ function captureAndInject(name: string, entry: unknown, ctx: WrapContext): void 
   const isV2 = typeof mutable.executor === "function";
   try {
     const { schema, dispositions } = isV2
-      ? injectGoalParamsV2(mutable.inputSchema)
-      : injectGoalParams(mutable.inputSchema);
+      ? injectGoalParamsV2(mutable.inputSchema, ctx.intentParamMode)
+      : injectGoalParams(mutable.inputSchema, ctx.intentParamMode);
     if (Object.keys(dispositions).length > 0) {
       // Assigned directly rather than via `entry.update({paramsSchema})`,
       // which would route back through our OWN patched update and re-read
@@ -513,6 +516,83 @@ function captureAndInject(name: string, entry: unknown, ctx: WrapContext): void 
     // Fail open — a schema this module can't handle just skips injection
     // for this tool; capture/wrap of the tool itself is unaffected.
   }
+}
+
+/** The two request-handler internals the `tools/list` seam reaches, shared
+ * by both majors' `Protocol`: the per-method dispatch map, and the setter
+ * that fills it. Typed `unknown` and checked at install, so a server laid out
+ * differently gets no seam rather than a crash. */
+interface ToolsListInternals {
+  _requestHandlers?: unknown;
+  setRequestHandler?: unknown;
+}
+
+const TOOLS_LIST_METHOD = "tools/list";
+const TOOLS_LIST_SEAM = Symbol("batonToolsListSeam");
+type SeamedHandler = AnyHandler & { [TOOLS_LIST_SEAM]?: boolean };
+
+/**
+ * The `tools/list` RESPONSE seam, which is what lets `intentParamMode:
+ * "required"` advertise `user_goal` as required without the validator
+ * enforcing it (see `schemaCompat.buildIntentFields` for why zod cannot).
+ *
+ * Both majors dispatch requests through `server.server._requestHandlers`, a
+ * `Map` keyed by method and read per request (1.x `shared/protocol.js`
+ * `_onrequest`; v2 `Protocol._onrequest`), and both `McpServer`s install
+ * their `tools/list` handler lazily, on the first `registerTool` (v2 also
+ * eagerly, when constructed with a `tools` capability). So both orders are
+ * covered: a handler already in the map is wrapped now, and
+ * `setRequestHandler` is patched so one set later is wrapped as it lands.
+ * Keyed on the map entry rather than on the setter's arguments, because the
+ * majors spell the method differently (a zod schema on 1.x, a string on v2)
+ * and both land in the same map.
+ *
+ * ⚠ Fail-open, twice. A throw from the transform is logged and the SDK's own
+ * result goes out untouched, because a vendor's `tools/list` may never break
+ * on Baton's account. And a server whose internals do not have this shape
+ * gets no seam at all, which costs the advertisement and nothing else.
+ */
+function installToolsListSeam(lowLevel: ToolsListInternals, ctx: WrapContext): void {
+  const table = lowLevel._requestHandlers;
+  const originalSet = lowLevel.setRequestHandler;
+  if (!(table instanceof Map) || typeof originalSet !== "function") return;
+  const handlers = table as Map<string, unknown>;
+  const setRequestHandler = originalSet as AnyHandler;
+
+  const isInjected = (toolName: string): boolean =>
+    ctx.paramRegistry.get(toolName)?.[USER_GOAL_PARAM_NAME] === "injected";
+  const advertise = (result: unknown): unknown => {
+    try {
+      return advertiseUserGoalRequired(result, isInjected);
+    } catch (err) {
+      process.stderr.write(
+        `baton: tools/list advertisement failed; serving the SDK's own result: ${String(err)}\n`,
+      );
+      return result;
+    }
+  };
+
+  const wrapCurrent = (): void => {
+    const handler = handlers.get(TOOLS_LIST_METHOD) as SeamedHandler | undefined;
+    if (typeof handler !== "function" || handler[TOOLS_LIST_SEAM]) return;
+    const seamed: SeamedHandler = (...args: AnyArgs) => {
+      const out = handler(...args);
+      return isThenable(out) ? out.then(advertise) : advertise(out);
+    };
+    seamed[TOOLS_LIST_SEAM] = true;
+    handlers.set(TOOLS_LIST_METHOD, seamed);
+  };
+
+  wrapCurrent();
+  lowLevel.setRequestHandler = (...args: AnyArgs): unknown => {
+    const registered = setRequestHandler.apply(lowLevel, args);
+    wrapCurrent();
+    return registered;
+  };
+}
+
+function isThenable(value: unknown): value is PromiseLike<unknown> {
+  return typeof (value as { then?: unknown } | null | undefined)?.then === "function";
 }
 
 /** Wrap the entry's CURRENT dispatch target iff it isn't already Baton's
@@ -688,7 +768,7 @@ export function withBaton(server: SupportedMcpServer, supplied: BatonConfig = {}
   // shape rather than an `any` per reach-in, so a future SDK rename is a
   // compile error here instead of a runtime surprise in five places.
   const internals = server as unknown as {
-    server: { _instructions?: string; _serverInfo?: { name?: unknown } };
+    server: { _instructions?: string; _serverInfo?: { name?: unknown } } & ToolsListInternals;
     registerTool: (...args: AnyArgs) => unknown;
     _registeredTools?: Record<string, unknown>;
     _toolInputSchemaJson?: Record<string, unknown>;
@@ -720,7 +800,10 @@ export function withBaton(server: SupportedMcpServer, supplied: BatonConfig = {}
   // the server's name as an input, two resolutions could register one name
   // while the wrapper skips another and the instructions cite a third.
   const annotationToolName = resolveAnnotationToolName(serverName, config);
-  const intentParamMode: IntentParamMode = config.intentParamMode ?? "optional";
+  // "required" by default since 2026-09-15 (Ujwal, #features): advertised
+  // through the `tools/list` seam, never enforced, so the default asks every
+  // agent for `user_goal` and refuses no call that omits it.
+  const intentParamMode: IntentParamMode = config.intentParamMode ?? "required";
   const counter = new SessionCounter();
   const fallbackSessionId = `sdk-${uuidv7()}`;
   // Resolved ONCE, here, and read by every emit path below — the tool-call
@@ -878,6 +961,11 @@ export function withBaton(server: SupportedMcpServer, supplied: BatonConfig = {}
     annotationToolName,
   });
   internals.server._instructions = instructions;
+
+  // Before the annotate tool registers: on a server with no tools yet, that
+  // registration is what makes the SDK install its `tools/list` handler, and
+  // the seam has to be in place to wrap it as it lands.
+  if (intentParamMode === "required") installToolsListSeam(internals.server, ctx);
 
   const resolvedAnnotationToolName = registerAnnotationTool(server, {
     sink,

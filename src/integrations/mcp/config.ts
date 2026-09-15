@@ -117,10 +117,12 @@ export interface BatonConfig {
    * written into documentation, a prompt or a script. */
   annotationToolName?: string;
   /** Per-tool intent-param injection (mirrors baton-extmcp's vendor-neutral
-   * naming). `"optional"` (default) injects `user_goal`/`expected_result`
-   * string params on every wrapped tool's advertised schema; `"required"`
-   * also adds `user_goal` to the schema's required fields (`expected_result`
-   * stays optional regardless); `"off"` disables injection. Both params are
+   * naming). `"required"` (default) injects `user_goal`/`expected_result`/
+   * `overall_task` string params on every wrapped tool's advertised schema
+   * and ADVERTISES `user_goal` as required in `tools/list`, without enforcing
+   * it: a call that omits it still reaches your handler, and its event simply
+   * carries no intent. `"optional"` injects the same params and advertises
+   * none of them as required. `"off"` disables injection. The params are
    * stripped before the vendor handler runs, so the tool never sees them.
    * This is what captures intent on runtimes that drop `instructions`
    * (notably Claude Desktop) — where the annotation tool alone yields

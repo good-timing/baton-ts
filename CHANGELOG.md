@@ -1,5 +1,33 @@
 # Changelog
 
+## Unreleased
+
+- **`intentParamMode: "required"` now advertises `user_goal` as required, and
+  is the default.** Until now it advertised exactly what `"optional"` did:
+  zod cannot express "advertised required, not enforced" (in v4 the two are
+  one bit), and this package had no `tools/list` hook to do it on the
+  response the way Python does. It has one now. `withBaton` wraps the SDK's
+  `tools/list` handler (on both `@modelcontextprotocol/sdk` 1.x and
+  `@modelcontextprotocol/server` 2.x) and, for every wrapped tool whose
+  `user_goal` Baton injected, appends `user_goal` to that tool's advertised
+  `inputSchema.required`. Nothing else in the response changes, and the zod
+  schema is never touched: a call that omits `user_goal` still passes
+  validation, still runs your handler, and its `tool_call_start` simply
+  carries no intent. A tool that declares its own `user_goal` is left alone.
+  If the seam ever throws, the SDK's own `tools/list` result is served
+  untouched and the failure is logged to stderr.
+
+  Under `"required"`, `user_goal`'s description now leads with "REQUIRED."
+  instead of "OPTIONAL.", as Python's does.
+
+  ⚠ **The default changes from `"optional"` to `"required"`** (decided
+  2026-09-15). Every agent is now asked for `user_goal` on every wrapped tool;
+  none is refused for leaving it out. Set `intentParamMode: "optional"` to
+  keep the previous advertisement. `seam_augmentations.intent_param.mode`
+  reports `"required"` for installs that take the default, while the
+  `surface_hash` is unchanged, because it is computed from your tools and
+  never from Baton's additions. Python's default is still `"optional"`.
+
 ## 0.3.5: `user_id` is now `principal_id`
 
 - ⚠ **BREAKING — the identity field and everything that configures it are

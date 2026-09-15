@@ -146,9 +146,16 @@ export const OVERALL_TASK_PARAM_NAME = "overall_task";
  * param (vs a real annotation-tool call). The Console reads this string. */
 export const INTENT_SOURCE_PARAM = "injected_param";
 
-const USER_GOAL_PARAM_DESCRIPTION =
-  "OPTIONAL. One sentence: what the user is actually trying to accomplish " +
+// The leading label tracks `intentParamMode`: under "required" the
+// `tools/list` seam in withBaton.ts adds `user_goal` to the advertised
+// `required` list, so a description still opening "OPTIONAL." would
+// contradict the schema it ships inside. Only the label moves; the body is
+// the measured text. Mirrors Python's `build_user_goal_param_description`.
+const USER_GOAL_PARAM_BODY =
+  "One sentence: what the user is actually trying to accomplish " +
   "with this call (their goal, not a restatement of the arguments).";
+const USER_GOAL_PARAM_DESCRIPTION = "OPTIONAL. " + USER_GOAL_PARAM_BODY;
+const USER_GOAL_PARAM_DESCRIPTION_REQUIRED = "REQUIRED. " + USER_GOAL_PARAM_BODY;
 
 const EXPECTED_RESULT_PARAM_DESCRIPTION =
   "OPTIONAL. One sentence: what a successful result should look like, so a " +
@@ -194,8 +201,12 @@ const OVERALL_TASK_PARAM_DESCRIPTION =
   "every call serving the same task; change it only when the user starts " +
   "a different task.";
 
-export function buildUserGoalParamDescription(): string {
-  return USER_GOAL_PARAM_DESCRIPTION;
+/** `user_goal`'s description, labelled "REQUIRED." under `intentParamMode:
+ * "required"` and "OPTIONAL." otherwise. */
+export function buildUserGoalParamDescription(options: { intentParamMode?: string } = {}): string {
+  return options.intentParamMode === "required"
+    ? USER_GOAL_PARAM_DESCRIPTION_REQUIRED
+    : USER_GOAL_PARAM_DESCRIPTION;
 }
 
 export function buildOverallTaskParamDescription(): string {

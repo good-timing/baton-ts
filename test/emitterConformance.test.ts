@@ -170,6 +170,12 @@ async function runSpecScenario(): Promise<Event[]> {
     vendorId: "spec-vectors",
     vendorDisplayName: "Spec Vector Generator",
     consentToken: "ct_spec_vectors",
+    // Pinned to what `generate.py` ran with. The vectors are Python's
+    // default, `"optional"`, and this package's default is `"required"`
+    // since 2026-09-15; `seam_augmentations.intent_param.mode` is compared
+    // field for field, so the scenario states the generator's mode rather
+    // than inheriting a different default.
+    intentParamMode: "optional",
     sink,
   });
 
@@ -373,13 +379,12 @@ describe("cross-SDK emitter conformance (Phase 3)", () => {
     ).toBeNull();
   });
 
-  it("X-2: the advertised schema is identical under `optional` and `required`", async () => {
-    // The half TypeScript CANNOT match Python on, pinned so it stays a known
-    // divergence rather than becoming a surprise. Python advertises
-    // `user_goal` as required by editing the rendered JSON Schema of a
-    // `tools/list` response; this package has no `tools/list` hook, and
-    // measured on both zod majors there is no expression that advertises
-    // required without also enforcing it (v4) or that advertises at all (v3).
+  it("X-2: `required` advertises user_goal after the vendor's own, as Python does", async () => {
+    // Flipped 2026-09-15. This pinned the one half TypeScript could not match:
+    // Python advertises `user_goal` as required by editing the rendered JSON
+    // Schema of a `tools/list` response, and this package had no such hook.
+    // It has one now, so the producers agree: Python appends the name to the
+    // tool's advertised `required`, and so does this.
     const advertised = async (mode: "optional" | "required") => {
       const server = new McpServer({ name: "parity", version: "1.0.0" });
       server.registerTool(
@@ -405,9 +410,9 @@ describe("cross-SDK emitter conformance (Phase 3)", () => {
 
     const asOptional = await advertised("optional");
     const asRequired = await advertised("required");
-    expect(asRequired).toEqual(asOptional);
-    // The vendor's own requirement survives both; only ours is absent.
-    expect(asRequired.required).toEqual(["name"]);
+    // The vendor's own requirement survives both; ours is appended after it.
+    expect(asOptional.required).toEqual(["name"]);
+    expect(asRequired.required).toEqual(["name", "user_goal"]);
     expect(asRequired.properties).toHaveProperty("user_goal");
   });
 

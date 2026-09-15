@@ -695,7 +695,10 @@ describe("withBaton — intent-param injection", () => {
     sink = new CapturingSink();
   });
 
-  it("injects user_goal/expected_result as optional params on the advertised schema by default", async () => {
+  it("injects user_goal/expected_result by default, advertising only user_goal as required", async () => {
+    // The default moved from "optional" to "required" on 2026-09-15, so the
+    // advertised `required` gains `user_goal` (and only it). Enforcement is
+    // unchanged: see "intentParamMode 'required' does NOT refuse" below.
     const server = new McpServer({ name: "vendor", version: "1.0.0" });
     registerTools(server);
     withBaton(server, {
@@ -711,7 +714,7 @@ describe("withBaton — intent-param injection", () => {
 
     expect(echo.inputSchema.properties).toHaveProperty("user_goal");
     expect(echo.inputSchema.properties).toHaveProperty("expected_result");
-    expect(echo.inputSchema.required).toEqual(["text"]);
+    expect(echo.inputSchema.required).toEqual(["text", "user_goal"]);
   });
 
   it("does not add a schema to a tool registered with none (zero-arg tools are left alone)", async () => {
@@ -898,17 +901,13 @@ describe("withBaton — intent-param injection", () => {
     expect(echo.inputSchema.required).toContain("text");
   });
 
-  it("intentParamMode 'required' advertises exactly what 'optional' does, and that is structural", async () => {
-    // Python holds "advertised required" and "never enforced" apart by editing
-    // the rendered JSON Schema of a `tools/list` RESPONSE. This package has no
-    // `tools/list` hook, so there is no seam at which to advertise something
-    // the validator does not enforce — measured on both zod majors: in v4
-    // advertised-required and enforced are the same bit, and in v3 the
-    // advertisement is unreachable at all.
-    //
-    // So in TypeScript the two modes are indistinguishable. Pinned, because
-    // the alternative to writing it down is someone "fixing" it back into an
-    // enforcing field.
+  it("intentParamMode 'required' advertises user_goal as required, and nothing else changes", async () => {
+    // Flipped 2026-09-15. This test used to pin the opposite: that the two
+    // modes advertised the same schema, because this package had no
+    // `tools/list` hook and zod cannot advertise a field it does not enforce.
+    // The hook exists now (`installToolsListSeam` in withBaton.ts) and edits
+    // the RESPONSE, never the zod schema, which is why the test above this one
+    // still holds: the omitting call is served.
     const advertised = async (mode: "optional" | "required") => {
       const server = new McpServer({ name: "vendor", version: "1.0.0" });
       server.registerTool(
@@ -930,9 +929,24 @@ describe("withBaton — intent-param injection", () => {
 
     const asOptional = await advertised("optional");
     const asRequired = await advertised("required");
-    expect(asRequired).toEqual(asOptional);
-    expect(asRequired.required).toBeUndefined();
-    expect(asRequired.properties).toHaveProperty("user_goal");
+    expect(asOptional.required).toBeUndefined();
+    expect(asRequired.required).toEqual(["user_goal"]);
+
+    // Apart from `required`, the only difference is the label on user_goal's
+    // own description, which names the mode.
+    type Advertised = typeof asRequired;
+    const properties = (s: Advertised) => s.properties as Record<string, { description?: string }>;
+    expect(properties(asRequired).user_goal!.description).toMatch(/^REQUIRED\. /);
+    expect(properties(asOptional).user_goal!.description).toMatch(/^OPTIONAL\. /);
+    const unlabelled = (s: Advertised) => ({
+      ...s,
+      required: undefined,
+      properties: {
+        ...properties(s),
+        user_goal: { ...properties(s).user_goal, description: undefined },
+      },
+    });
+    expect(unlabelled(asRequired)).toEqual(unlabelled(asOptional));
   });
 
   it("intentParamMode 'off' disables injection entirely", async () => {
@@ -1043,7 +1057,8 @@ describe("withBaton — surface_snapshot", () => {
       injected_tools: ["vendor_annotate"],
       intent_param: {
         names: ["expected_result", "overall_task", "user_goal"],
-        mode: "optional",
+        // The default since 2026-09-15; this install sets no mode.
+        mode: "required",
       },
       instructions_suffix: true,
     });
