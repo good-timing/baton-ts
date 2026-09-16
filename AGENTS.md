@@ -6,7 +6,7 @@ This is the TypeScript counterpart to [`baton`](https://github.com/good-timing/b
 
 ## Status
 
-Phase 2 of the design note in `baton-internal` (private — read it before touching `src/integrations/mcp/`). `withBaton` wraps `@modelcontextprotocol/sdk` `McpServer` tool calls (`tool_call_*` events), injects server `instructions`, and registers the `<vendor>_annotate` tool (SPEC §5.1.1–§5.1.2) — ported byte-for-byte from Python's templates, verified against the Python SDK's actual rendered output. **Deliberately not built yet:** see README.md's "What's deferred".
+Phase 2 of the design note in `baton-internal` (private — read it before touching `src/integrations/mcp/`). `withBaton` wraps `@modelcontextprotocol/sdk` `McpServer` tool calls (`tool_call_*` events), injects server `instructions`, and registers the `<vendor>_annotate` tool (SPEC §5.1.1–§5.1.2) — ported byte-for-byte from Python's templates, verified against the Python SDK's actual rendered output. **Deliberately not built yet:** see README.md's "What is not here yet".
 
 **Known divergences from the Python SDK** — deliberate, and recorded here because a parity audit opens this file before it opens a docstring:
 

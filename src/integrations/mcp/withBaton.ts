@@ -30,7 +30,7 @@
  * `intent_source`), and captures a `surface_snapshot`
  * of the vendor-true surface. Every payload leaving here runs through the
  * configured scrubber, which defaults to the shipped ruleset (`src/scrub.ts`)
- * — see README "What's deferred" for what's still not here (the low-level
+ * — see README "What is not here yet" for what's still not here (the low-level
  * `Server` adapter).
  *
  * Interception mechanism: `McpServer` has no middleware API (unlike the
