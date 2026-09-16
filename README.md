@@ -12,7 +12,7 @@ MCP standardizes how agents discover and call your tools. It does not capture *w
 npm install @goodtiming/baton-sdk
 ```
 
-Node 20+. Both major versions of the official MCP TypeScript SDK are supported and both are **optional** peer dependencies — `@modelcontextprotocol/sdk` **1.30+** or `@modelcontextprotocol/server` 2.x — so you install whichever one your server already uses and nothing else. (The 1.x floor is `^1.30.0`; an older 1.x resolves with a peer warning.)
+Node 20+. Both major versions of the official MCP TypeScript SDK are supported and both are **optional** peer dependencies — `@modelcontextprotocol/sdk` **1.30+** or `@modelcontextprotocol/server` 2.x — so you install whichever one your server already uses and nothing else. (The 1.x floor is `^1.30.0` — an older 1.x will not satisfy the peer range.)
 
 ## Quickstart
 
@@ -39,7 +39,7 @@ That one string is the whole configuration. Copy it from **/account**, where it 
 
 For a hosted server, where the process starts from your own environment, set `BATON_DSN` and call `withBaton(server)` with no config. An explicit `dsn` wins over `BATON_DSN`, and both win over every other `BATON_*` variable — which matters when you **re-onboard** a server, so the new DSN beats the old install's leftover `.env` rather than filing your events under the previous server's name.
 
-Sending to your own collector instead, or trying the package before you have a key, means naming the parts rather than passing a DSN: [Without a DSN](https://goodtiming.ai/docs.html#without-dsn). That section's examples are Python: the field names are the same in camelCase, and `HttpSink` takes its options as an object — `new HttpSink(url, { apiKey })`.
+Sending to your own collector instead, or trying the package before you have a key, means naming the parts rather than passing a DSN: [Without a DSN](https://goodtiming.ai/docs.html#without-dsn). That section's examples are Python. The config field names carry over as camelCase, and `HttpSink` takes its options as an object — `new HttpSink(url, { apiKey })`. Its timeouts do **not** carry over: Python's `request_timeout_seconds` / `backoff_base_seconds` / `backoff_max_seconds` / `circuit_breaker_reset_seconds` are `requestTimeoutMs` / `backoffBaseMs` / `backoffMaxMs` / `circuitBreakerResetMs` here — milliseconds, not seconds — and there is no equivalent of `shutdown_flush_timeout_seconds`.
 
 ## PII scrubbing
 
@@ -51,7 +51,7 @@ Sending to your own collector instead, or trying the package before you have a k
 
 `BATON_DISABLED=1` in the environment of the process running the server, and the SDK installs nothing at all. The switch belongs to whoever RUNS the server. [The long version](https://goodtiming.ai/docs.html#off-switch).
 
-Checking it worked: `handle.sink` is still an object — a `DisabledSink` that accepts events and drops them — so finding a sink there is not a sign the switch failed.
+Checking it worked: `handle.sink` is still an object, so finding one there is not a sign the switch failed. It is the sink you passed if you passed one, and a `DisabledSink` otherwise. Either way nothing writes to it, because nothing is wrapped.
 
 ## What is not here yet
 
@@ -59,7 +59,7 @@ Stated so you find out now rather than later. None of it blocks the quickstart a
 
 - Only `StdoutSink` and `HttpSink`. `FileSink` and `MultiSink` are deferred; the Python package has all four.
 - Only the high-level `McpServer`. The low-level `Server` is not wrapped.
-- **Task-based tools emit nothing.** A 1.x tool registered with an object at `.handler` rather than a function is left untouched, so it produces no `tool_call_*` events at all — and nothing reports that. Tools on the same server registered the ordinary way are unaffected.
+- **Task-based tools are not wrapped, and are not left alone either.** A 1.x tool registered with an object at `.handler` rather than a function produces no `tool_call_*` events at all — and nothing reports that. It still gets the intent parameters added to its advertised schema, because injection runs before the wrap is skipped, and the strip only happens inside the wrapper. So `user_goal`, `expected_result` and `overall_task` can arrive in your own handler's arguments. Tools on the same server registered the ordinary way are unaffected.
 - Intent parameters need a Zod schema. On the 2.x SDK a tool registered with a non-Zod standard schema is still wrapped and still emits `tool_call_*`; it just advertises no intent parameters.
 - The per-request `createMcpHandler` deployment shape is unscoped.
 
