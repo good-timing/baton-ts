@@ -21,7 +21,7 @@ import { emit } from "./emit.js";
 import { type ResolvePrincipalHook, resolveCallPrincipalId } from "./principalResolution.js";
 import type { PrincipalIdMode } from "../../identity.js";
 import { buildAnnotationToolDescription, SIGNAL_TYPES } from "./llmText.js";
-import { extraEnvelope, extraMeta, type Extra } from "./mcpTypes.js";
+import { extraEnvelope, extraMeta, observeTransport, type Extra } from "./mcpTypes.js";
 import type { SupportedMcpServer } from "./withBaton.js";
 import type { ProactiveTracker } from "./proactiveTracker.js";
 import { detectAgentRuntime, UNKNOWN_AGENT_RUNTIME } from "./runtimeAdapter.js";
@@ -137,6 +137,7 @@ export function registerAnnotationTool(
           consent_token: options.consentToken,
           agent_runtime: runtime,
           principal_id: principalId,
+          transport_observed: observeTransport(extra),
           runtime_meta: scrubbedMeta,
           payload: {
             // Agent-facing names -> wire keys, as with `overall_task`

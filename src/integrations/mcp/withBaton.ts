@@ -109,7 +109,7 @@ import {
   OVERALL_TASK_PARAM_NAME,
   USER_GOAL_PARAM_NAME,
 } from "./llmText.js";
-import { extraEnvelope, extraMeta, type Extra } from "./mcpTypes.js";
+import { extraEnvelope, extraMeta, observeTransport, type Extra } from "./mcpTypes.js";
 import { ProactiveTracker } from "./proactiveTracker.js";
 import { detectAgentRuntime, UNKNOWN_AGENT_RUNTIME } from "./runtimeAdapter.js";
 import { resolveSessionId } from "./sessionResolution.js";
@@ -343,6 +343,10 @@ function batonWrap(nameRef: { current: string }, original: AnyHandler, ctx: Wrap
       // NOT among them: it describes the SERVER and is captured outside any
       // call, so there is no caller to name (register D5).
       principal_id: principalId,
+      // Same four stamps, same exclusion: a surface_snapshot describes the
+      // SERVER and is captured outside any call, so it has no caller's
+      // transport to name any more than it has a caller to name.
+      transport_observed: observeTransport(extra),
       runtime_meta: scrubbedMeta,
     };
 

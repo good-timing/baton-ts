@@ -160,6 +160,7 @@ const envelopeShape = {
   sdk_version: z.string().default(SDK_VERSION),
   agent_runtime: z.string().default("unknown"),
   principal_id: z.string().nullable().default(null),
+  transport_observed: z.string().nullable().default(null),
   call_id: z.string().nullable().default(null),
   runtime_meta: z.record(z.string(), z.unknown()).nullable().default(null),
 };

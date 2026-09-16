@@ -95,6 +95,20 @@ const ENVELOPE_ALLOWED_TO_DIFFER = new Set([
   // one property the field exists for, so the pairing and the nulls are
   // asserted directly below ("pairs the two legs of a tool call").
   "call_id",
+  // The VALUE is a property of how each side was driven, not of either SDK.
+  // Python's `generate.py` calls its tools programmatically with no live MCP
+  // request, so its adapter correctly reports `null` ("we did not look").
+  // This harness drives a real in-memory MCP session, so the same correct read
+  // reports `"no-http-request"`. Comparing the two compares HARNESSES — the
+  // same class of difference as `session_id` and `agent_runtime` above, and
+  // the reason this field exists is precisely that those two deployments are
+  // NOT the same thing.
+  //
+  // ⚠ The KEY is still compared (the key-set assertion below), which is the
+  // parity that matters: both SDKs must carry the field. And the values are
+  // asserted directly below ("observes the transport it was driven over"),
+  // so exempting the cross-vector comparison leaves nothing uncovered.
+  "transport_observed",
 ]);
 
 /**
@@ -170,12 +184,14 @@ async function runSpecScenario(): Promise<Event[]> {
     vendorId: "spec-vectors",
     vendorDisplayName: "Spec Vector Generator",
     consentToken: "ct_spec_vectors",
-    // Pinned to what `generate.py` ran with. The vectors are Python's
-    // default, `"optional"`, and this package's default is `"required"`
-    // since 2026-09-15; `seam_augmentations.intent_param.mode` is compared
-    // field for field, so the scenario states the generator's mode rather
-    // than inheriting a different default.
-    intentParamMode: "optional",
+    // Pinned to what `generate.py` ran with, which is now `"required"` on
+    // both sides. It was `"optional"` here until 2026-09-16: Python moved its
+    // default in 0.8.7 and this package followed, but the VECTORS had not been
+    // regenerated since, so they still carried the pre-0.8.7 value and this
+    // pin existed to match them. Regenerating for `transport_observed` caught
+    // them up and this line with them — which is the documented workflow, the
+    // vectors moving and this test failing until the scenario follows.
+    intentParamMode: "required",
     sink,
   });
 
@@ -465,6 +481,28 @@ describe("cross-SDK emitter conformance (Phase 3)", () => {
     for (const eventType of ["annotation", "surface_snapshot"] as const) {
       expect(events.find((e) => e.event_type === eventType)!.call_id).toBeNull();
     }
+  });
+
+  it("observes the transport it was driven over, and nulls it on the snapshot", () => {
+    // `ENVELOPE_ALLOWED_TO_DIFFER` exempts the VALUE from the vector
+    // comparison, because the two harnesses drive different transports; this
+    // is what holds the behaviour it exempts.
+    //
+    // This scenario runs over an in-memory transport, which has no HTTP
+    // request behind it — so every per-call event must say so POSITIVELY.
+    // `null` here would be the SDK failing to look, and `"http"` would be a
+    // false claim that one process might be serving many callers.
+    for (const event of events) {
+      if (event.event_type === "surface_snapshot") continue;
+      expect(event.transport_observed, event.event_type).toBe("no-http-request");
+    }
+
+    // Null on the snapshot: it describes the SERVER and is flushed outside any
+    // caller's context, so there is no transport of a caller's to name — the
+    // same reason it carries UNKNOWN_AGENT_RUNTIME and a null principal_id.
+    expect(
+      events.find((e) => e.event_type === "surface_snapshot")!.transport_observed,
+    ).toBeNull();
   });
 
   it("stamps a TS-prefixed sdk_version on every event", () => {

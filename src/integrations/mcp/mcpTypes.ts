@@ -42,14 +42,21 @@ export interface Extra {
   /** v2: HTTP transport info. `req` is the transport request and its
    * `headers` is a Web `Headers`.
    *
-   * ⚠ **`req` is MEASURED on `@modelcontextprotocol/server` 2.0.0, not
-   * declared.** That package's own `.d.ts` types `http` as `{ authInfo? }`
-   * only, while the runtime builds
-   * `http: { ...ctx.http, req: transportInfo?.request, closeSSE, ... }`. So
-   * reading the published type alone says v2 exposes no headers at all, which
-   * is what an earlier pass of this work concluded and it was wrong — the type
-   * is one layer above the answer. Do not "correct" this back on the strength
-   * of the `.d.ts`. */
+   * ⚠ **`req` IS declared — this comment said it was not, and that was wrong.**
+   * Corrected 2026-09-16 against the installed package. `ServerContext` declares
+   * `http?: { req?: globalThis.Request; closeSSE?: ... }`, documented "The
+   * original HTTP request", at
+   * `@modelcontextprotocol/server@2.0.0/dist/createMcpHandler-CLhGwQTn.d.mts:2212`.
+   * The `{ authInfo? }`-only shape the old text described is real but is
+   * `BaseContext.http` (`:2171`) — a DIFFERENT block, which `ServerContext`
+   * intersects, so the member carries both. Two declarations of one property
+   * name, and the earlier pass read the wrong one and generalised.
+   *
+   * The old text also warned "do not correct this back on the strength of the
+   * `.d.ts`", which is why the exact file and line are cited above rather than
+   * the claim repeated: the way past that warning is a narrower read, not a
+   * louder assertion. Measurement still backs it — 10 rows, both majors, every
+   * transport (v15 probe) — so this is now declared AND measured. */
   http?: { req?: { headers?: unknown } | undefined } | undefined;
 }
 
@@ -101,6 +108,39 @@ export function extraEnvelope(extra: Extra): Record<string, unknown> | null {
  * and the normal case. `null` means "no HTTP request", never "the client sent
  * no headers".
  */
+/** What we observed beneath this call, for the envelope's `transport_observed`.
+ *
+ * `"http"` when a transport request object is reachable — `requestInfo` on the
+ * 1.x peer, `http.req` on v2. `"no-http-request"` when neither is, which is
+ * stdio and in-memory. `"read-failed"` if reading the carrier throws.
+ *
+ * ⚠ **Keyed on the REQUEST OBJECT, never on {@link extraHeaders}.** That
+ * function ends in a bare `return null` and — by its own contract above —
+ * returns `null` both when no HTTP request is in flight AND when a header it
+ * was handed could not be appended (the HTTP/2 pseudo-header guard). So an
+ * HTTP call whose headers it declined reads there as no-HTTP. That fold is
+ * harmless for identity, which only loses a lookup, and NOT harmless here:
+ * `"no-http-request"` is a licence, not a label — SPEC §3.4 lets a consumer
+ * group a process-wide fallback `session_id` on it and only on it. Handing
+ * that out because a header was malformed merges two strangers.
+ *
+ * ⚠ The v15 probe measured ZERO folds across 10 rows, so this is not a bug we
+ * have seen — it is one the shape allows, and Python's equivalent helper has
+ * the same fold as a LIVE defect (register A6). Same rule on both SDKs, for the
+ * same reason, before either can bite.
+ *
+ * There is no `null` return. `null` on the envelope means the SDK did not look,
+ * which is the library path with no MCP transport at all; every caller here is
+ * inside a live MCP call and did look. */
+export function observeTransport(extra: Extra): string {
+  try {
+    const carrier = extra.http?.req ?? extra.requestInfo;
+    return carrier ? "http" : "no-http-request";
+  } catch {
+    return "read-failed";
+  }
+}
+
 export function extraHeaders(extra: Extra): Headers | null {
   const fromV2 = extra.http?.req?.headers as Headers | undefined;
   // Duck-typed rather than `instanceof Headers`. A `Headers` built in another
