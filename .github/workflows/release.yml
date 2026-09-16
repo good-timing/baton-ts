@@ -21,10 +21,14 @@
 #   refused. npm does not allow editing a trusted publisher: changing any of
 #   those four fields means deleting it and creating a new one.
 #
-# ⚠ STILL UNEXERCISED. `v0.2.0` was already pushed before this file existed,
-# so nothing has ever run these jobs — the next `v*` tag is their first
-# execution. If it fails, read WHERE: a failure at `publish` after `verify`
-# and `ci` pass is the npm config, not this workflow.
+# ✅ EXERCISED. This said "STILL UNEXERCISED, the next `v*` tag is their first
+# execution" through v0.3.6, seven tags after it was written. Every tag from
+# `v0.3.0` on has run these jobs green. If one fails, read WHERE: a failure at
+# `publish` after `verify` and `ci` pass is the npm config, not this workflow.
+#
+# ⚠ Run DURATION is not a signal. The `npm` environment below carries a 15-min
+# wait timer and a required reviewer, so a run sits in `publish` until someone
+# approves it — v0.3.4 took 4h22m and was green.
 
 name: Release
 

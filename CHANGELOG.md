@@ -1,5 +1,55 @@
 # Changelog
 
+## 0.3.7: the envelope says what was underneath the call
+
+- **Every event carries `transport_observed`, recording what the SDK saw
+  beneath the call.** An optional nullable string, `SPEC §11.4`: `"http"` when
+  a transport request object is reachable — `requestInfo` on the 1.x peer,
+  `http.req` on 2.x — `"no-http-request"` when neither is, which is stdio and
+  in-memory, and `"read-failed"` if reading the carrier throws. Emitted on both
+  majors.
+
+  It exists because `SPEC §3.4`'s session ladder ends in a process-wide
+  fallback id, and that terminus is correct on one deployment shape and wrong
+  on another — the two are identical on the wire. `no-http-request` is the only
+  value that licenses a consumer to group on that fallback.
+
+  **The value set is open**: tolerate an unregistered value rather than reject
+  the event, and key any grouping rule on `no-http-request` positively, never
+  on "not http". The value is read from the request object and never from
+  `extraHeaders`, which returns `null` both when no HTTP request is in flight
+  and when a header it was handed could not be appended — that fold would hand
+  out the grouping licence because a header was malformed, merging two
+  strangers.
+
+  This function never returns `null`. A `null` on the envelope means the SDK
+  did not look, which is the library path with no MCP transport at all; every
+  caller here is inside a live MCP call.
+
+  **Consumer consequence:** additive and optional, so nothing has to change. A
+  collector with a closed envelope schema must accept the field before
+  upgrading. The Python SDK emits the same field from 0.8.9, and additionally
+  emits nothing at all where a tool is called programmatically.
+
+- **Coordinates in `_meta` are rounded to 1 decimal before they reach
+  `runtime_meta`.** Any `latitude` or `longitude` key (case-insensitive, exact,
+  at any depth) holding a number or a plain decimal string is rounded in its
+  own type; other values are left alone. So ChatGPT's `openai/userLocation`
+  arrives at roughly 11 km instead of metres, with city, region, country and
+  timezone kept. This runs after runtime detection and before your scrubber, so
+  it applies with a custom scrubber too. Tool params and results are not
+  touched: a tool of yours that takes or returns coordinates is captured at
+  full precision. Mirrors Python's `round_meta_coordinates`, including the
+  half-to-even tie rule, so the two SDKs store the same digits.
+
+- **README thinned to the npm shape.** The page npm renders is now the short
+  version, with the reference material on
+  [goodtiming.ai/docs.html#typescript](https://goodtiming.ai/docs.html#typescript).
+  Four claims the review caught are corrected, and the gap list gained the one
+  that captures nothing: a 1.x task-based tool registered with an object at
+  `.handler` emits no `tool_call_*` events and still advertises the intent
+  parameters.
+
 ## 0.3.6: intent is asked for on every call, never enforced
 
 - **`intentParamMode: "required"` now advertises `user_goal` as required, and
