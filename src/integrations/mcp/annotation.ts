@@ -18,7 +18,7 @@ import { roundMetaCoordinates } from "../../metaCoordinates.js";
 import type { Sink } from "../../sinks.js";
 import { deriveAnnotationToolName } from "./annotationName.js";
 import { emit } from "./emit.js";
-import { type ResolvePrincipalHook, resolveCallPrincipalId } from "./principalResolution.js";
+import { type ResolvePrincipalHook, resolveCallPrincipal } from "./principalResolution.js";
 import type { PrincipalIdMode } from "../../identity.js";
 import { buildAnnotationToolDescription, SIGNAL_TYPES } from "./llmText.js";
 import { extraEnvelope, extraMeta, observeTransport, type Extra } from "./mcpTypes.js";
@@ -117,7 +117,7 @@ export function registerAnnotationTool(
       // other would put an annotation and the calls it describes under two
       // different actors, which is unjoinable downstream: the identical split
       // the runtime ladder above already carries a comment about.
-      const principalId = await resolveCallPrincipalId(
+      const principal = await resolveCallPrincipal(
         options.resolvePrincipal,
         { extra, toolName: name, arguments: args },
         {
@@ -136,7 +136,7 @@ export function registerAnnotationTool(
           captured_at: new Date().toISOString(),
           consent_token: options.consentToken,
           agent_runtime: runtime,
-          principal_id: principalId,
+          principal,
           transport_observed: observeTransport(extra),
           runtime_meta: scrubbedMeta,
           payload: {

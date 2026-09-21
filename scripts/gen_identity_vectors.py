@@ -25,7 +25,7 @@ from __future__ import annotations
 import json
 import pathlib
 
-from baton.identity import HASH_SCHEME, VENDOR_HASH_SCHEME, hash_principal_id
+from baton.identity import HASH_SCHEME, hash_principal_id
 
 TENANT = "tenant-parity"
 # Non-ASCII bytes in the key too, so a UTF-8 encoding mistake on either arm
@@ -36,7 +36,12 @@ KEY = b"parity-corpus-key-\xf0\x9f\x94\x91"
 #: trap case cannot be dropped silently.
 CASES: list[tuple[str, str, str | None, str]] = [
     ("plain ascii", "employee-4417", None, HASH_SCHEME),
-    ("vendor scheme", "employee-4417", None, VENDOR_HASH_SCHEME),
+    # The tag is NOT part of the HMAC message, so this case must produce the
+    # same hex as "plain ascii" under a different prefix. `h2` is the
+    # RESERVED key-generation tag, used here because it is the only other
+    # value the registered set admits — a rotation is the one event that
+    # moves a digest, and this pins that a relabel is not.
+    ("scheme is a label, not message bytes", "employee-4417", None, "h2"),
     ("issuer present", "employee-4417", "https://idp.example", HASH_SCHEME),
     ("issuer WHITESPACE-ONLY (paired defect)", "e-1", "   ", HASH_SCHEME),
     ("issuer empty string", "e-1", "", HASH_SCHEME),

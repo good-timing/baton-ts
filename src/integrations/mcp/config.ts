@@ -130,7 +130,8 @@ export interface BatonConfig {
    * regardless of this setting (see `schemaCompat.injectGoalParams`). */
   intentParamMode?: "optional" | "required" | "off";
   /** Per-request principal identity — the ASSERTED provenance behind the
-   * envelope's `principal_id` (SPEC §11.4 rung 0), tagged `v1:`.
+   * envelope's `principal` (SPEC §11.4 rung 0), which emits
+   * `source: "asserted"`. It is the only provenance this SDK has.
    *
    * Called on every captured tool call and on the annotation tool, with an
    * adapter-neutral {@link PrincipalResolutionContext}: headers folded to ONE
@@ -157,7 +158,7 @@ export interface BatonConfig {
   /** The HMAC secret for hashed mode. Resolved explicit →
    * `BATON_PRINCIPAL_ID_HMAC_KEY` → unset.
    *
-   * ⚠ **With none set, hashed mode DROPS `principal_id` rather than falling back to
+   * ⚠ **With none set, hashed mode DROPS the principal rather than falling back to
    * raw.** The fallback would be a residency breach that looks like success:
    * the field present, populated, and carrying the subject verbatim. */
   principalIdHmacKey?: string | Uint8Array;
@@ -189,11 +190,11 @@ export function resolveTenantId(explicit: string | undefined, vendorId: string):
 }
 
 /**
- * The HMAC secret for hashed `principal_id`: explicit → `BATON_PRINCIPAL_ID_HMAC_KEY` →
+ * The HMAC secret for a hashed principal: explicit → `BATON_PRINCIPAL_ID_HMAC_KEY` →
  * unset. Mirrors Python's `_resolve_principal_id_hmac_key`.
  *
  * `undefined` is a SUPPORTED state, not an error: it means hashed-mode
- * identity is off and events emit without `principal_id`. A string is kept as a
+ * identity is off and events emit without a principal. A string is kept as a
  * string and UTF-8 encoded at the HMAC, which is the same byte sequence
  * Python's env path produces — the env var has always carried text.
  *
@@ -329,7 +330,7 @@ export function resolveBatonConfig(config: BatonConfig, serverName?: string): Re
 
 /** Keys renamed in 0.3.5, REFUSED rather than ignored: a JavaScript caller gets
  * no compile error, and identity fails open, so an ignored `resolveUser` would
- * just stop producing `principal_id`. The renamed subset of what Python's
+ * just stop producing a principal. The renamed subset of what Python's
  * `TypeError` refuses, which is any unknown keyword. */
 const RENAMED_KEYS: Record<string, string> = {
   resolveUser: "resolvePrincipal",

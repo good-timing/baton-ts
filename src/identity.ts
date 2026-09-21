@@ -1,8 +1,8 @@
 /** Principal identity — resolve a raw principal, hash it at the edge.
  *
  * The TypeScript half of Python's `baton/identity.py`. Baton attaches the
- * resolved principal (`principal_id`) to every event so the Console can group
- * by `(tenant_id, vendor_id, principal_id)`, at whatever grain the vendor
+ * resolved principal to every event so the Console can group by
+ * `(tenant_id, vendor_id, principal.id)`, at whatever grain the vendor
  * resolved (SPEC §11.4).
  *
  * Residency contract: the Console DB is metadata-only and may only ever see
@@ -22,17 +22,36 @@ import { createHmac } from "node:crypto";
 
 import { capCodePoints } from "./_text.js";
 
-/** The ATTESTED derivation tag — a principal read off a verified token. */
+/** The HMAC KEY GENERATION, and nothing else.
+ *
+ * It is not a provenance marker and not a privacy classifier. Provenance is
+ * `PrincipalWire.source` and the classification is `PrincipalWire.form`, and
+ * both ride every mode — including `"raw"`, where no tag exists at all, which
+ * is the gap a tag can structurally never close. `h2:` is reserved for a key
+ * rotation. SPEC §11.4 and the §13 entry carry the full derivation.
+ *
+ * ⚠ **This value is a WIRE CONSTANT.** `test/identity.test.ts` pins it against
+ * Python's generated corpus by literal, not through this name — an assertion
+ * written as ``startsWith(`${HASH_SCHEME}:`)`` is self-referential and cannot
+ * see this constant change. */
 export const HASH_SCHEME = "h1";
 
-/** The ASSERTED derivation tag — a principal a vendor's own hook supplied.
+/** Where a principal came from. `"asserted"` is a vendor's own resolver,
+ * which nothing in the protocol checks.
  *
- * Deliberately outside the `h*` family: `h2:` is reserved for HMAC key
- * rotation, so a vendor assertion must never be mistakable for an
- * attestation (SPEC §11.4's registered-set rule). */
-export const VENDOR_HASH_SCHEME = "v1";
+ * ⚠ **This SDK emits no other value, and that is a property of the arm rather
+ * than of this constant.** SPEC §11.4 also registers `"attested"` — a
+ * principal read off a verified token — but TypeScript's `AuthInfo` carries no
+ * `claims`, so a subject's location here would be a guess. Asserted is not a
+ * degraded attested: on stdio it is the only identity mechanism there is. */
+export const PRINCIPAL_SOURCE_ASSERTED = "asserted";
 
-/** Ceiling on a RAW `principal_id`, mirroring Python's `RAW_PRINCIPAL_ID_MAX_LEN`.
+/** What the emitted value IS — the privacy classification, and the only thing
+ * SPEC §11.4 lets a consumer classify on. */
+export const PRINCIPAL_FORM_HASHED = "hashed";
+export const PRINCIPAL_FORM_RAW = "raw";
+
+/** Ceiling on a RAW principal id, mirroring Python's `RAW_PRINCIPAL_ID_MAX_LEN`.
  *
  * Raw mode copies vendor-supplied text onto EVERY event of a call — three
  * tool-call legs plus any annotation — so an unbounded value is unbounded
@@ -43,6 +62,16 @@ export const RAW_PRINCIPAL_ID_MAX_LEN = 128;
 export const PRINCIPAL_ID_MODE_HASHED = "hashed";
 export const PRINCIPAL_ID_MODE_RAW = "raw";
 export type PrincipalIdMode = typeof PRINCIPAL_ID_MODE_HASHED | typeof PRINCIPAL_ID_MODE_RAW;
+
+/** `principalIdMode` names a CONFIG choice; `form` names what the emitted
+ * value IS. The two vocabularies coincide today and are still two
+ * vocabularies — a mode added later need not name its form the same thing,
+ * and a consumer classifies on `form` alone. Python keeps the same map
+ * (`_FORM_BY_MODE`) for the same reason. */
+const FORM_BY_MODE: Record<PrincipalIdMode, string> = {
+  [PRINCIPAL_ID_MODE_HASHED]: PRINCIPAL_FORM_HASHED,
+  [PRINCIPAL_ID_MODE_RAW]: PRINCIPAL_FORM_RAW,
+};
 
 /** Codepoints Python's `str.strip()` removes, measured against CPython rather
  * than assumed — `\s` in JavaScript is the WRONG set in BOTH directions.
@@ -95,17 +124,17 @@ export interface Principal {
   issuer?: string | null | undefined;
 }
 
-/** HMAC-SHA256 a raw principal into a console-safe, per-tenant `principal_id`.
+/** HMAC-SHA256 a raw principal into a console-safe, per-tenant `principal.id`.
  *
  * `tenantId` is folded into the HMAC MESSAGE (not just the key) so the same
  * principal under two tenants can never collide or be cross-tenant-correlated.
  * Returns `"<scheme>:<hex>"`.
  *
- * `scheme` tags the DERIVATION and only the tag changes — the digest for a
- * given `(tenantId, principal, issuer)` is identical under every scheme,
- * because the tag is not part of the message. That is deliberate: the same
- * person reached by two provenances is meant to be recognisably the same hex
- * under two tags, not two unrelated values.
+ * `scheme` is NOT part of the HMAC message, so the digest for a given
+ * `(tenantId, principal, issuer)` is identical under every scheme and only the
+ * prefix moves. That is what lets the tag mean the KEY GENERATION and nothing
+ * else: a rotation to `h2:` is the one event that moves a digest, and a
+ * provenance never was.
  *
  * ⚠ **`issuer` null/undefined MUST hash byte-identically to the pre-issuer
  * form** — the append-only message layout is what guarantees it, and every
@@ -122,19 +151,13 @@ export function hashPrincipalId(
     // as one. Both spellings must mean "no issuer" or the two arms of that
     // caller hash differently.
     issuer?: string | null | undefined;
-    /** ⚠ **REQUIRED, and deliberately NOT defaulted the way Python's is.**
-     * Python defaults to `HASH_SCHEME` (`h1:`), which is right there because
-     * that arm emits both provenances. This arm emits ONLY `v1:` — it has no
-     * attested rung — so an `h1:` default would hand the documented
-     * "recompute the pseudonym to join your own records against Console data"
-     * use a value matching nothing we ever wrote, forever, with an equality
-     * join silently returning zero rows. The hex halves are identical under
-     * both tags, so it fails in the most confusing way available. Naming the
-     * provenance is one word and removes the whole failure. */
-    scheme: string;
+    /** The key generation, defaulting to the current one exactly as Python's
+     * does. A caller passes this only to reproduce a digest under a
+     * superseded key. */
+    scheme?: string;
   },
 ): string {
-  const { tenantId, key, issuer = null, scheme } = options;
+  const { tenantId, key, issuer = null, scheme = HASH_SCHEME } = options;
   let message = `${tenantId}\x00${canonicalize(rawPrincipal)}`;
   // `!== null` alone: the destructure above defaults an explicitly-passed
   // `undefined` to `null`, so only one of the two states survives it. The
@@ -199,7 +222,7 @@ export function normalizePrincipal(result: unknown): Principal | null {
   //
   // ⚠ **This DIVERGES from Python and the corpus structurally cannot pin it.**
   // There, `hash_principal_id` raises `UnicodeEncodeError` on the issuer and
-  // `_finish_principal` drops `principal_id` entirely; here the subject still
+  // `_finish_principal` drops the principal entirely; here the subject still
   // hashes, issuer-less — so the same input yields no field on one arm and a
   // digest on the other, one that collides with the same `sub` from a
   // different IdP. Recorded rather than aligned, because dropping a resolvable
@@ -210,41 +233,89 @@ export function normalizePrincipal(result: unknown): Principal | null {
   return { principalId: candidate.principalId, issuer };
 }
 
-/** The envelope's `principal_id` for one principal, or `null` to omit the field.
+/** The principal AS EMITTED — the finished envelope value (SPEC §11.4).
  *
- * `raw` mode is UNTAGGED and puts real identity in the collector's
- * database — the vendor's deliberate choice, and why SPEC §11.4 tells a
- * consumer never to treat this field as anonymous.
+ * ⚠ **Not `Principal`, and the two are easy to confuse.** That one is what a
+ * vendor's `resolvePrincipal` hook HANDS US: a raw subject and an optional
+ * issuer. This one is what we PUT ON THE WIRE after deriving it — the raw
+ * value is gone by the time this is built, and nothing here is ever the input
+ * to a hash. One is the question, this is the answer.
  *
- * ⚠ **Hashed mode with no key DROPS the field rather than falling back to
- * raw.** The fallback would be a residency breach that looks like success:
- * `principal_id` present, populated, and carrying the subject verbatim. Absent is
- * the safe direction — this is additive analytics and never a consent gate.
+ * **All three members are REQUIRED, and that is the guarantee the object
+ * exists to give.** A producer emits the whole thing or omits `principal`
+ * entirely; a partial object is malformed, not a degraded reading. So there is
+ * no conformant event carrying an `id` whose `form` a consumer has to guess,
+ * and none carrying a `source` for an identity nobody resolved. That binding
+ * is structural here precisely because its predecessor — a scheme prefix plus
+ * a paragraph of prose — was not.
  */
-export function principalIdFor(
+export interface PrincipalWire {
+  /** The value: an HMAC pseudonym in `"hashed"` mode, the principal verbatim
+   * in `"raw"` mode. Which one is `form`, and it is NEVER the value's shape —
+   * a real OIDC subject (`mailto:`, `acct:`, `urn:`, `https:`) reads as a
+   * scheme-tagged pseudonym to anything testing for "letters then a colon". */
+  id: string;
+  /** WHERE it came from. Always `"asserted"` on this arm — see
+   * `PRINCIPAL_SOURCE_ASSERTED`. */
+  source: string;
+  /** WHAT it is: `"hashed"` or `"raw"`. */
+  form: string;
+}
+
+/** Turn a resolved principal into the finished wire object, or `null`.
+ *
+ * **The edge-derivation chokepoint, and the single copy of it**, mirroring
+ * Python's `_finish_principal`. `raw` mode puts real identity in the
+ * collector's database — the vendor's deliberate choice, and why SPEC §11.4
+ * tells a consumer never to treat a principal as anonymous unless `form` says
+ * exactly `"hashed"`.
+ *
+ * ⚠ **Hashed mode with no key DROPS the principal rather than falling back to
+ * raw.** The fallback would be a residency breach that looks like success: the
+ * field present, populated, and carrying the subject verbatim. Absent is the
+ * safe direction — this is additive analytics and never a consent gate.
+ *
+ * **All three members or nothing**, and structurally so: there is exactly ONE
+ * object literal in this function, at the bottom, and every branch that cannot
+ * produce a value returns `null` before reaching it.
+ *
+ * ⚠ Python carries a fourth failure branch here — an unrecognised `mode`,
+ * which has no truthful `form`. It is unreachable on this arm:
+ * `validateConfig` (`integrations/mcp/config.ts`) refuses an unknown
+ * `principalIdMode` at install, so the mode reaching this function is always
+ * one of the two. Not porting it is therefore a fact about where the check
+ * lives, not a gap.
+ */
+export function principalFor(
   principal: Principal,
   options: {
     mode: PrincipalIdMode;
     tenantId: string;
     key?: Uint8Array | string | null | undefined;
   },
-): string | null {
-  // `capCodePoints`, not `.slice()`: a plain slice counts UTF-16 units, so an
-  // astral subject cut at the boundary ships a LONE SURROGATE — the very thing
-  // `normalizePrincipal` refuses on the way IN — and disagrees with Python's
-  // `principal_id[:128]`, which counts code points.
+): PrincipalWire | null {
+  let id: string;
   if (options.mode === PRINCIPAL_ID_MODE_RAW) {
-    return capCodePoints(principal.principalId, RAW_PRINCIPAL_ID_MAX_LEN);
+    // `capCodePoints`, not `.slice()`: a plain slice counts UTF-16 units, so
+    // an astral subject cut at the boundary ships a LONE SURROGATE — the very
+    // thing `normalizePrincipal` refuses on the way IN — and disagrees with
+    // Python's `principal_id[:128]`, which counts code points.
+    //
+    // ⚠ What raw mode NO LONGER forfeits is the provenance: `source` is a
+    // member now and rides every mode, so a consumer here is told a real
+    // identity AND which mechanism named it.
+    id = capCodePoints(principal.principalId, RAW_PRINCIPAL_ID_MAX_LEN);
+  } else {
+    if (options.key === null || options.key === undefined) return null;
+    id = hashPrincipalId(principal.principalId, {
+      tenantId: options.tenantId,
+      key: options.key,
+      issuer: principal.issuer ?? null,
+    });
   }
-  if (options.key === null || options.key === undefined) return null;
-  return hashPrincipalId(principal.principalId, {
-    tenantId: options.tenantId,
-    key: options.key,
-    issuer: principal.issuer ?? null,
-    // Unconditional: this arm has no attested rung, so every principal it
-    // hashes is vendor-ASSERTED. A `scheme` option here would be an argument
-    // no caller can vary — configurability for a rung the design says is not
-    // coming to this SDK.
-    scheme: VENDOR_HASH_SCHEME,
-  });
+  // Unconditional `source`: this arm has no attested rung, so every principal
+  // it derives is vendor-ASSERTED. An option here would be an argument no
+  // caller can vary — configurability for a rung the design says is not coming
+  // to this SDK. When one arrives, the parameter arrives with it.
+  return { id, source: PRINCIPAL_SOURCE_ASSERTED, form: FORM_BY_MODE[options.mode] };
 }

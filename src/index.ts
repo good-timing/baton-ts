@@ -81,7 +81,7 @@ export type { Principal, PrincipalIdMode } from "./identity.js";
 // `scheme` is required rather than defaulted — exporting the tag as a named,
 // inviting constant would put the identical zero-row-join trap one door over.
 // It stays defined in `identity.ts` for parity with Python.
-export { VENDOR_HASH_SCHEME, hashPrincipalId } from "./identity.js";
+export { HASH_SCHEME, PRINCIPAL_SOURCE_ASSERTED, hashPrincipalId } from "./identity.js";
 export type {
   ResolvePrincipalHook,
   PrincipalResolutionContext,

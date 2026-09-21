@@ -5,7 +5,16 @@
  * envelope since 0.3.0 and NOTHING could populate it, so a partition that
  * works on one of two SDKs is not a partition.
  *
- * **Hook only — there is deliberately no attested (`h1:`) rung here yet.**
+ * **Hook only — there is deliberately no ATTESTED rung here yet**, so every
+ * principal this SDK emits carries `source: "asserted"`.
+ *
+ * ⚠ **The missing rung is not named by the tag, and saying "no `h1:` rung"
+ * would now be false.** This SDK does emit `h1:` — that prefix is the HMAC KEY
+ * GENERATION and is the same on both provenances. What is missing is the
+ * `source: "attested"` value, and a consumer must read `source` to learn that,
+ * never the prefix. SPEC §11.4 forbids presenting an asserted principal as
+ * verified, and this arm has only asserted to present.
+ *
  * Python reads `claims["sub"]` off a verified access token; TypeScript's
  * `AuthInfo` has no `claims` field at all (it is
  * `{token, clientId, scopes, expiresAt?, resource?, extra?}`), so the nearest
@@ -18,9 +27,10 @@
 import {
   type Principal,
   type PrincipalIdMode,
+  type PrincipalWire,
   PRINCIPAL_ID_MODE_HASHED,
   normalizePrincipal,
-  principalIdFor,
+  principalFor,
 } from "../../identity.js";
 import { warn } from "./annotationName.js";
 import { type Extra, extraHeaders, extraMeta } from "./mcpTypes.js";
@@ -85,7 +95,7 @@ function buildPrincipalResolutionContext(
 /** Warn ONCE at install when identity is configured but cannot produce a value.
  *
  * ⚠ **The silent-success case is the one that needs a voice.** A vendor sets
- * `resolvePrincipal`, ships, and sees `principal_id: null` on every event forever —
+ * `resolvePrincipal`, ships, and sees `principal: null` on every event forever —
  * hashed mode with no key DROPS the field by design, and without this there is
  * no string anywhere in the process to grep for. Python spends a `warned` set
  * threaded through five call sites to say this; here all three inputs are
@@ -118,8 +128,8 @@ export function warnIfIdentityCannotResolve(config: {
       "BATON_PRINCIPAL_ID_HMAC_KEY in 0.3.5 and is no longer read. "
     : "";
   process.emitWarning(
-    "baton: resolvePrincipal is configured but no principal_id HMAC key is set, so " +
-      `principal_id is dropped from every event (events still emit). ${renamed}Set ` +
+    "baton: resolvePrincipal is configured but no principal HMAC key is set, so " +
+      `the principal is dropped from every event (events still emit). ${renamed}Set ` +
       "BATON_PRINCIPAL_ID_HMAC_KEY or BatonConfig.principalIdHmacKey, or pass " +
       'principalIdMode: "raw" if you intend to emit the subject verbatim.',
   );
@@ -136,14 +146,14 @@ function warnIfPreRenameShape(result: unknown): void {
   warnedPreRenameShape = true;
   warn(
     "baton: resolvePrincipal returned { userId }, which was renamed to { principalId } " +
-      "in 0.3.5, so principal_id is dropped from every event until the hook returns the new key.",
+      "in 0.3.5, so the principal is dropped from every event until the hook returns the new key.",
   );
 }
 
-/** Run a vendor's hook and turn its answer into the envelope's `principal_id`.
+/** Run a vendor's hook and turn its answer into the envelope's `principal`.
  *
  * ⚠ **Never throws.** A hook that raises, returns the wrong shape, or returns
- * `null` yields an anonymous call, not a failed one — `principal_id` is additive
+ * `null` yields an anonymous call, not a failed one — `principal` is additive
  * analytics and a vendor's own bug in their resolver may not fail their tool
  * call (SPEC §11.2 fail-open). The prior art converged on the identical rule.
  *
@@ -159,7 +169,7 @@ function warnIfPreRenameShape(result: unknown): void {
  * convention that no longer exists. A hook that blocks stalls this request.
  * Containment is a separate, larger change on this arm.
  */
-export async function resolveCallPrincipalId(
+export async function resolveCallPrincipal(
   hook: ResolvePrincipalHook | undefined,
   call: { extra: Extra; toolName: string; arguments: Record<string, unknown> },
   options: {
@@ -167,7 +177,7 @@ export async function resolveCallPrincipalId(
     tenantId: string;
     key?: Uint8Array | string | null | undefined;
   },
-): Promise<string | null> {
+): Promise<PrincipalWire | null> {
   // ⚠ **The context is built HERE — after the hook check, inside the try —
   // and the signature takes the raw call rather than a built context so a
   // caller CANNOT do it the other way.** Passing a context as an argument
@@ -195,7 +205,7 @@ export async function resolveCallPrincipalId(
     return null;
   }
   try {
-    return principalIdFor(principal, {
+    return principalFor(principal, {
       mode: options.mode,
       tenantId: options.tenantId,
       key: options.key,

@@ -125,8 +125,9 @@ export const DEFAULT_CONSENT_TOKEN = "customer-consented";
  * `consentToken` is REQUIRED — the Console rejects any event missing it.
  * `vendorId` is REQUIRED — the wrapped vendor identifier; the Console groups
  * friction by `(tenant_id, vendor_id)`.
- * `principalId` is the hashed resolved principal (HMAC-SHA256, hashed at the capture
- * edge — the raw principal is never transmitted); null when unresolved.
+ * `principal` is the resolved principal as emitted — `{id, source, form}`, all
+ * three required together, hashed at the capture edge in the default mode so
+ * the raw principal never leaves it; null when nobody was resolved.
  * `runtimeMeta` is the runtime-supplied MCP request `_meta` envelope, used
  * by the Console to derive turn/cycle boundaries more precise than
  * `session_id` alone.
@@ -148,7 +149,30 @@ export const DEFAULT_CONSENT_TOKEN = "customer-consented";
  * Minted as a bare opaque UUIDv7 in a local inside the scope that emits both
  * legs — per-call by construction and correct across processes. Never
  * derived from the JSON-RPC request id, which restarts at 1 per connection.
- * It says WHICH CALL, never WHO; the principal is `principal_id`. */
+ * It says WHICH CALL, never WHO; the principal is `principal.id`. */
+/** The principal as emitted — `{id, source, form}`, all three REQUIRED
+ * together (SPEC §11.4). The runtime shape of `identity.PrincipalWire`.
+ *
+ * `.strict()` mirrors Python's `extra="forbid"`: a member this producer does
+ * not know about is a malformed object, not a richer one.
+ *
+ * ⚠ **`source` and `form` are `z.string()`, not enums, on purpose** — the same
+ * decision `transport_observed` records and the collector's own columns make.
+ * A fourth `source` is already foreseen (alias-derived), and an enum would
+ * make this producer unable to emit a value SPEC registers later without a
+ * release. Worse, it would throw at the emit boundary, which SPEC §11.2
+ * requires to fail OPEN: an identity read may never cost a tool call. The
+ * safety lives in the consumer rules stated positively — trust only exactly
+ * `"attested"`, treat anything but exactly `"hashed"` as personal data — so an
+ * unregistered value fails safe without anything having to reject it. */
+export const PrincipalWireSchema = z
+  .object({
+    id: z.string(),
+    source: z.string(),
+    form: z.string(),
+  })
+  .strict();
+
 const envelopeShape = {
   event_id: z.uuid().default(() => uuidv7()),
   tenant_id: z.string(),
@@ -159,7 +183,7 @@ const envelopeShape = {
   consent_token: z.string(),
   sdk_version: z.string().default(SDK_VERSION),
   agent_runtime: z.string().default("unknown"),
-  principal_id: z.string().nullable().default(null),
+  principal: PrincipalWireSchema.nullable().default(null),
   transport_observed: z.string().nullable().default(null),
   call_id: z.string().nullable().default(null),
   runtime_meta: z.record(z.string(), z.unknown()).nullable().default(null),

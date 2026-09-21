@@ -1,9 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { VENDOR_HASH_SCHEME, hashPrincipalId } from "../../../src/identity.js";
+import {
+  PRINCIPAL_FORM_HASHED,
+  PRINCIPAL_SOURCE_ASSERTED,
+  type PrincipalWire,
+  hashPrincipalId,
+} from "../../../src/identity.js";
 import { extraHeaders } from "../../../src/integrations/mcp/mcpTypes.js";
 import {
-  resolveCallPrincipalId,
+  resolveCallPrincipal,
   type PrincipalResolutionContext,
   warnIfIdentityCannotResolve,
 } from "../../../src/integrations/mcp/principalResolution.js";
@@ -49,27 +54,27 @@ describe("one vendor hook across both SDK majors (register A8, applied prospecti
     // Assert the EXPECTED value, not merely that the two agree: two majors
     // broken identically — both `null`, which is the state before this change
     // — pass an agreement-only check. Python's parity file rule 1.
-    const expected = hashPrincipalId("employee-4417", {
-      tenantId: TENANT,
-      key: KEY,
-      scheme: VENDOR_HASH_SCHEME,
-    });
+    const expected = {
+      id: hashPrincipalId("employee-4417", { tenantId: TENANT, key: KEY }),
+      source: PRINCIPAL_SOURCE_ASSERTED,
+      form: PRINCIPAL_FORM_HASHED,
+    };
 
-    const resolved: Record<string, string | null> = {};
+    const resolved: Record<string, PrincipalWire | null> = {};
     for (const [major, extra] of [
       // 1.x delivers ASGI-style lowercased names; v2 delivers a Headers.
       ["1.x", extraV1({ "x-forwarded-user": "employee-4417" })],
       ["v2", extraV2({ "x-forwarded-user": "employee-4417" })],
     ] as const) {
-      resolved[major] = await resolveCallPrincipalId(
+      resolved[major] = await resolveCallPrincipal(
         vendorHook,
         { extra, toolName: "lookup", arguments: {} },
         { mode: "hashed", tenantId: TENANT, key: KEY },
       );
     }
 
-    expect(resolved["1.x"]).toBe(expected);
-    expect(resolved["v2"]).toBe(expected);
+    expect(resolved["1.x"]).toEqual(expected);
+    expect(resolved["v2"]).toEqual(expected);
   });
 
   it("folds case on both, so the canonical spelling is not a 1.x-only privilege", () => {
@@ -154,7 +159,7 @@ describe("one vendor hook across both SDK majors (register A8, applied prospecti
   });
 });
 
-describe("resolveCallPrincipalId fail-open", () => {
+describe("resolveCallPrincipal fail-open", () => {
   const call = {
     extra: extraV1({ "x-forwarded-user": "employee-4417" }),
     toolName: "lookup",
@@ -163,19 +168,19 @@ describe("resolveCallPrincipalId fail-open", () => {
   const opts = { mode: "hashed", tenantId: TENANT, key: KEY } as const;
 
   it("returns null when no hook is configured", async () => {
-    expect(await resolveCallPrincipalId(undefined, call, opts)).toBeNull();
+    expect(await resolveCallPrincipal(undefined, call, opts)).toBeNull();
   });
 
   it("treats a throwing hook as anonymous, never as a failed call", async () => {
     const boom = () => {
       throw new Error("vendor bug");
     };
-    await expect(resolveCallPrincipalId(boom, call, opts)).resolves.toBeNull();
+    await expect(resolveCallPrincipal(boom, call, opts)).resolves.toBeNull();
   });
 
   it("treats a rejecting async hook the same way", async () => {
     const boom = () => Promise.reject(new Error("vendor bug"));
-    await expect(resolveCallPrincipalId(boom, call, opts)).resolves.toBeNull();
+    await expect(resolveCallPrincipal(boom, call, opts)).resolves.toBeNull();
   });
 
   it("accepts a SYNC hook as well as an async one", async () => {
@@ -183,10 +188,10 @@ describe("resolveCallPrincipalId fail-open", () => {
     // value verbatim, so an `async` hook silently produced an anonymous event.
     const sync = () => ({ principalId: "employee-4417" });
     const async = () => Promise.resolve({ principalId: "employee-4417" });
-    expect(await resolveCallPrincipalId(sync, call, opts)).toBe(
-      await resolveCallPrincipalId(async, call, opts),
+    expect(await resolveCallPrincipal(sync, call, opts)).toEqual(
+      await resolveCallPrincipal(async, call, opts),
     );
-    expect(await resolveCallPrincipalId(sync, call, opts)).not.toBeNull();
+    expect(await resolveCallPrincipal(sync, call, opts)).not.toBeNull();
   });
 
   it("does not let the HASHING step throw into the vendor's tool call", async () => {
@@ -194,7 +199,7 @@ describe("resolveCallPrincipalId fail-open", () => {
     // validation refuses that now, but this function's docstring promises it
     // cannot raise, and a promise like that must not rest on an argument about
     // who calls it.
-    const resolved = await resolveCallPrincipalId(() => ({ principalId: "e-1" }), call, {
+    const resolved = await resolveCallPrincipal(() => ({ principalId: "e-1" }), call, {
       mode: "hashed",
       tenantId: TENANT,
       key: 12345 as unknown as string,
@@ -208,7 +213,7 @@ describe("resolveCallPrincipalId fail-open", () => {
     // reds two files for one cause. What is unique HERE is only that the
     // wrapper consults it at all — a snake_case key is the shape a vendor
     // reaches for first, and it must not duck-type through.
-    expect(await resolveCallPrincipalId(() => ({ principal_id: "e-1" }) as never, call, opts)).toBeNull();
+    expect(await resolveCallPrincipal(() => ({ principal_id: "e-1" }) as never, call, opts)).toBeNull();
   });
 
   it("warns once, without the value, when a hook still returns the pre-0.3.5 { userId }", async () => {
@@ -217,8 +222,8 @@ describe("resolveCallPrincipalId fail-open", () => {
     const warnings = spyWarnings();
     try {
       const old = () => ({ userId: "employee-4417" }) as never;
-      expect(await resolveCallPrincipalId(old, call, opts)).toBeNull();
-      expect(await resolveCallPrincipalId(old, call, opts)).toBeNull();
+      expect(await resolveCallPrincipal(old, call, opts)).toBeNull();
+      expect(await resolveCallPrincipal(old, call, opts)).toBeNull();
     } finally {
       warnings.restore();
     }
@@ -237,12 +242,12 @@ describe("resolveCallPrincipalId fail-open", () => {
       seenArgs.push(c.arguments);
       return { principalId: `user-of-${c.toolName}` };
     };
-    const a = await resolveCallPrincipalId(
+    const a = await resolveCallPrincipal(
       hook,
       { extra: {}, toolName: "lookup", arguments: { q: "one" } },
       opts,
     );
-    const b = await resolveCallPrincipalId(
+    const b = await resolveCallPrincipal(
       hook,
       { extra: {}, toolName: "acme_annotate", arguments: { q: "two" } },
       opts,

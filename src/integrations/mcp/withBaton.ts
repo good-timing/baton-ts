@@ -115,7 +115,7 @@ import { detectAgentRuntime, UNKNOWN_AGENT_RUNTIME } from "./runtimeAdapter.js";
 import { resolveSessionId } from "./sessionResolution.js";
 import {
   type ResolvePrincipalHook,
-  resolveCallPrincipalId,
+  resolveCallPrincipal,
   warnIfIdentityCannotResolve,
 } from "./principalResolution.js";
 import type { PrincipalIdMode } from "../../identity.js";
@@ -325,7 +325,7 @@ function batonWrap(nameRef: { current: string }, original: AnyHandler, ctx: Wrap
     // Resolved AFTER the intent-param strip, so the hook's `arguments` are
     // exactly what the vendor's own handler receives — Baton's injected
     // params are never a caller's input and must not look like one.
-    const principalId = await resolveCallPrincipalId(
+    const principal = await resolveCallPrincipal(
       ctx.resolvePrincipal,
       { extra, toolName, arguments: params },
       { mode: ctx.principalIdMode, tenantId: ctx.tenantId, key: ctx.principalIdHmacKey },
@@ -342,7 +342,7 @@ function batonWrap(nameRef: { current: string }, original: AnyHandler, ctx: Wrap
       // (`middleware.py` 481/524/562/606). `surface_snapshot` is deliberately
       // NOT among them: it describes the SERVER and is captured outside any
       // call, so there is no caller to name (register D5).
-      principal_id: principalId,
+      principal,
       // Same four stamps, same exclusion: a surface_snapshot describes the
       // SERVER and is captured outside any call, so it has no caller's
       // transport to name any more than it has a caller to name.

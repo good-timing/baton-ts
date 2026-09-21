@@ -2,11 +2,13 @@ import { describe, expect, it } from "vitest";
 
 import {
   HASH_SCHEME,
+  PRINCIPAL_FORM_HASHED,
+  PRINCIPAL_FORM_RAW,
+  PRINCIPAL_SOURCE_ASSERTED,
   RAW_PRINCIPAL_ID_MAX_LEN,
-  VENDOR_HASH_SCHEME,
   hashPrincipalId,
   normalizePrincipal,
-  principalIdFor,
+  principalFor,
 } from "../src/identity.js";
 import vectors from "./identityVectors.json" with { type: "json" };
 
@@ -34,6 +36,29 @@ describe("hashPrincipalId parity with the Python SDK", () => {
     });
   }
 
+  it("defaults to the key generation Python's corpus was generated under", () => {
+    // ⚠ **Pinned by LITERAL, and that is the point of this case.** Every other
+    // tag assertion in this file spells the prefix `${HASH_SCHEME}`, which is
+    // SELF-REFERENTIAL: change the constant and they all follow it, green. A
+    // mutation reviving the retired `v1:` as the value of HASH_SCHEME survived
+    // the entire suite for exactly that reason. The corpus's `expected`
+    // strings are Python's own output, so comparing the DEFAULT-scheme hash
+    // against one of them is the only assertion here that can see the constant
+    // move — and it is a wire constant, so a silent move is a split actor
+    // across the two SDKs.
+    const plain = vectors.cases.find((c) => c.name === "plain ascii");
+    expect(plain).toBeDefined();
+    expect(plain!.expected.startsWith("h1:")).toBe(true);
+    expect(
+      hashPrincipalId(plain!.principal, {
+        tenantId: vectors.tenant_id,
+        key: vectors.key_utf8,
+        issuer: plain!.issuer,
+      }),
+    ).toBe(plain!.expected);
+    expect(HASH_SCHEME).toBe("h1");
+  });
+
   it("covers the canonicalization traps on purpose", () => {
     // A guard on the corpus itself: these vectors are the reason the
     // canonicalizer cannot use `.trim()`, so losing them silently would let a
@@ -48,15 +73,18 @@ describe("hashPrincipalId parity with the Python SDK", () => {
 describe("hashPrincipalId properties", () => {
   const KEY = "unit-key";
 
-  it("tags the derivation without moving the digest", () => {
-    // Documented and load-bearing: the same person reached by two provenances
-    // is recognisably the same hex under two tags, so a consumer that wants to
-    // unify them downstream can, and one that must keep them apart still can.
-    const attested = hashPrincipalId("e-1", { tenantId: "t", key: KEY, scheme: HASH_SCHEME });
-    const asserted = hashPrincipalId("e-1", { tenantId: "t", key: KEY, scheme: VENDOR_HASH_SCHEME });
+  it("labels the KEY GENERATION without moving the digest", () => {
+    // Load-bearing, and the property that licensed retiring the provenance
+    // tag: the scheme is not part of the HMAC message, so relabelling moves
+    // the prefix and nothing else. A rotation to `h2:` is therefore the one
+    // event that can move a digest, and a change of provenance never was —
+    // which is why provenance is `source`, a member, instead.
+    const current = hashPrincipalId("e-1", { tenantId: "t", key: KEY });
+    const rotated = hashPrincipalId("e-1", { tenantId: "t", key: KEY, scheme: "h2" });
 
-    expect(attested).not.toBe(asserted);
-    expect(attested.split(":")[1]).toBe(asserted.split(":")[1]);
+    expect(current.startsWith(`${HASH_SCHEME}:`)).toBe(true);
+    expect(current).not.toBe(rotated);
+    expect(current.split(":")[1]).toBe(rotated.split(":")[1]);
   });
 
   it("folds the tenant into the MESSAGE, so one principal cannot correlate across tenants", () => {
@@ -161,15 +189,15 @@ describe("normalizePrincipal", () => {
   });
 });
 
-describe("principalIdFor", () => {
+describe("principalFor", () => {
   it("drops the field in hashed mode with no key, rather than falling back to raw", () => {
     // The fallback would be a residency breach that looks like success:
     // present, populated, and carrying the subject verbatim.
     expect(
-      principalIdFor({ principalId: "alice@acme.example" }, { mode: "hashed", tenantId: "t" }),
+      principalFor({ principalId: "alice@acme.example" }, { mode: "hashed", tenantId: "t" }),
     ).toBeNull();
     expect(
-      principalIdFor(
+      principalFor(
         { principalId: "alice@acme.example" },
         { mode: "hashed", tenantId: "t", key: null },
       ),
@@ -178,17 +206,17 @@ describe("principalIdFor", () => {
 
   it("returns the subject verbatim and UNTAGGED in raw mode", () => {
     expect(
-      principalIdFor({ principalId: "alice@acme.example" }, { mode: "raw", tenantId: "t" }),
+      principalFor({ principalId: "alice@acme.example" }, { mode: "raw", tenantId: "t" })?.id,
     ).toBe("alice@acme.example");
   });
 
-  it("caps a RAW principal_id at the same length Python does", () => {
+  it("caps a RAW principal id at the same length Python does", () => {
     // Raw mode copies vendor text onto EVERY event of a call — three tool-call
     // legs plus annotations — so unbounded is unbounded several times over. A
     // hook returning a JWT is the realistic shape.
     const long = "u".repeat(500);
-    const got = principalIdFor({ principalId: long }, { mode: "raw", tenantId: "t" });
-    expect(got).toHaveLength(RAW_PRINCIPAL_ID_MAX_LEN);
+    const got = principalFor({ principalId: long }, { mode: "raw", tenantId: "t" });
+    expect(got?.id).toHaveLength(RAW_PRINCIPAL_ID_MAX_LEN);
     expect(RAW_PRINCIPAL_ID_MAX_LEN).toBe(128);
 
     // ⚠ **The cap counts CODE POINTS**, because a plain `.slice()` counts
@@ -197,15 +225,30 @@ describe("principalIdFor", () => {
     // on the way IN, and disagreeing with Python's `principal_id[:128]`. The
     // all-ASCII case above cannot see it; that is why this one exists.
     const astral = `${"u".repeat(127)}😀tail`;
-    const capped = principalIdFor({ principalId: astral }, { mode: "raw", tenantId: "t" });
+    const capped = principalFor({ principalId: astral }, { mode: "raw", tenantId: "t" });
     expect(capped).not.toBeNull();
-    expect([...capped!]).toHaveLength(RAW_PRINCIPAL_ID_MAX_LEN);
-    expect(capped!.endsWith("😀")).toBe(true);
-    expect(/\p{Surrogate}/u.test(capped!)).toBe(false);
+    expect([...capped!.id]).toHaveLength(RAW_PRINCIPAL_ID_MAX_LEN);
+    expect(capped!.id.endsWith("😀")).toBe(true);
+    expect(/\p{Surrogate}/u.test(capped!.id)).toBe(false);
   });
 
-  it("tags a hook principal as ASSERTED by default", () => {
-    const got = principalIdFor({ principalId: "e-1" }, { mode: "hashed", tenantId: "t", key: "k" });
-    expect(got?.startsWith(`${VENDOR_HASH_SCHEME}:`)).toBe(true);
+  it("names a hook principal ASSERTED in its own member, not in the tag", () => {
+    // ⚠ **This test INVERTED, and the inversion is the point of the change.**
+    // It used to assert the digest carried a `v1:` prefix, because the tag was
+    // the only place provenance lived. Provenance is now `source`, which
+    // survives raw mode — where there is no tag at all — and the tag is the
+    // key generation for both rungs. The old shape could not hold this
+    // assertion: under it, "asserted" and "h1" were the same three bytes.
+    const hashed = principalFor({ principalId: "e-1" }, { mode: "hashed", tenantId: "t", key: "k" });
+    expect(hashed).toEqual({
+      id: expect.stringMatching(new RegExp(`^${HASH_SCHEME}:[0-9a-f]{64}$`)),
+      source: PRINCIPAL_SOURCE_ASSERTED,
+      form: PRINCIPAL_FORM_HASHED,
+    });
+
+    // The half a tag structurally cannot carry: raw mode emits an untagged
+    // value and STILL names its provenance.
+    const raw = principalFor({ principalId: "e-1" }, { mode: "raw", tenantId: "t" });
+    expect(raw).toEqual({ id: "e-1", source: PRINCIPAL_SOURCE_ASSERTED, form: PRINCIPAL_FORM_RAW });
   });
 });

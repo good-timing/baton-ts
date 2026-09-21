@@ -19,7 +19,12 @@ import type { BatonConfig } from "../../../src/integrations/mcp/config.js";
 import { identityScrub } from "../../../src/scrub.js";
 import type { Event } from "../../../src/events.js";
 import type { Sink } from "../../../src/sinks.js";
-import { VENDOR_HASH_SCHEME, hashPrincipalId } from "../../../src/identity.js";
+import {
+  PRINCIPAL_FORM_HASHED,
+  PRINCIPAL_FORM_RAW,
+  PRINCIPAL_SOURCE_ASSERTED,
+  hashPrincipalId,
+} from "../../../src/identity.js";
 import { CHATGPT_IPHONE_META } from "../../openaiMetaSamples.js";
 
 class CapturingSink implements Sink {
@@ -1614,7 +1619,16 @@ describe("withBaton principal_id", () => {
   it("is null on every event when no hook is configured", async () => {
     const events = await drive(new CapturingSink());
     expect(events.length).toBeGreaterThan(0);
-    for (const event of events) expect(event.principal_id).toBeNull();
+    for (const event of events) {
+      expect(event.principal).toBeNull();
+      // ⚠ The negative control, paired with every positive assertion in this
+      // block: the flat `principal_id` spelling is RETIRED, and a `z.object`
+      // default that survived a rename would put it back as a null beside the
+      // object — which the collector reads as a producer sending both
+      // spellings. Asserting on the serialized keys is the only way to see a
+      // field that is present-and-null.
+      expect(Object.keys(event)).not.toContain("principal_id");
+    }
   });
 
   it("reaches the tool-call legs AND the annotation tool from one hook", async () => {
@@ -1622,11 +1636,11 @@ describe("withBaton principal_id", () => {
     // call it describes is unjoinable downstream. Both paths, one hook, one
     // resolution — and asserted on the EXPECTED hash, so two paths that are
     // both broken to null cannot pass by agreeing.
-    const expected = hashPrincipalId("employee-4417", {
-      tenantId: TENANT,
-      key: KEY,
-      scheme: VENDOR_HASH_SCHEME,
-    });
+    const expected = {
+      id: hashPrincipalId("employee-4417", { tenantId: TENANT, key: KEY }),
+      source: PRINCIPAL_SOURCE_ASSERTED,
+      form: PRINCIPAL_FORM_HASHED,
+    };
     const events = await drive(new CapturingSink(), {
       resolvePrincipal: () => ({ principalId: "employee-4417" }),
       principalIdHmacKey: KEY,
@@ -1634,7 +1648,10 @@ describe("withBaton principal_id", () => {
 
     const carriers = events.filter((e) => e.event_type !== "surface_snapshot");
     expect(carriers.length).toBeGreaterThan(1);
-    for (const event of carriers) expect(event.principal_id).toBe(expected);
+    for (const event of carriers) {
+      expect(event.principal).toEqual(expected);
+      expect(Object.keys(event)).not.toContain("principal_id");
+    }
 
     const annotations = carriers.filter((e) => e.event_type === "annotation");
     expect(annotations.length).toBeGreaterThan(0);
@@ -1650,7 +1667,7 @@ describe("withBaton principal_id", () => {
     });
     // The call still succeeded and still emitted; identity is simply absent.
     expect(events.some((e) => e.event_type === "tool_call_end")).toBe(true);
-    for (const event of events) expect(event.principal_id).toBeNull();
+    for (const event of events) expect(event.principal).toBeNull();
   });
 
   it("drops the field in hashed mode with no key rather than emitting it raw", async () => {
@@ -1660,7 +1677,7 @@ describe("withBaton principal_id", () => {
       resolvePrincipal: () => ({ principalId: "alice@acme.example" }),
     });
     for (const event of events) {
-      expect(event.principal_id).toBeNull();
+      expect(event.principal).toBeNull();
       expect(JSON.stringify(event)).not.toContain("alice@acme.example");
     }
   });
@@ -1671,10 +1688,21 @@ describe("withBaton principal_id", () => {
       principalIdMode: "raw",
     });
     const carriers = events.filter((e) => e.event_type !== "surface_snapshot");
-    for (const event of carriers) expect(event.principal_id).toBe("alice@acme.example");
+    for (const event of carriers) {
+      // The half a scheme prefix structurally could not carry: raw mode emits
+      // an UNTAGGED value and still names both its provenance and its form,
+      // so a consumer here is told a real identity AND which mechanism named
+      // it. Under the retired shape this event was indistinguishable from an
+      // attested one.
+      expect(event.principal).toEqual({
+        id: "alice@acme.example",
+        source: PRINCIPAL_SOURCE_ASSERTED,
+        form: PRINCIPAL_FORM_RAW,
+      });
+    }
   });
 
-  it("never stamps principal_id on a surface_snapshot", async () => {
+  it("never stamps a principal on a surface_snapshot", async () => {
     // It describes the SERVER and is captured outside any call, so there is
     // no caller to name (Python register D5).
     const events = await drive(new CapturingSink(), {
@@ -1682,7 +1710,8 @@ describe("withBaton principal_id", () => {
       principalIdHmacKey: KEY,
     });
     for (const event of events.filter((e) => e.event_type === "surface_snapshot")) {
-      expect(event.principal_id).toBeNull();
+      expect(event.principal).toBeNull();
+      expect(Object.keys(event)).not.toContain("principal_id");
     }
   });
 });

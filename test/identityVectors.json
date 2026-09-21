@@ -11,11 +11,11 @@
       "expected": "h1:311e59dcfc8cf3abb267b85dec03bc3e924b2e3fa9d627209a9cfaf0f1164d47"
     },
     {
-      "name": "vendor scheme",
+      "name": "scheme is a label, not message bytes",
       "principal": "employee-4417",
       "issuer": null,
-      "scheme": "v1",
-      "expected": "v1:311e59dcfc8cf3abb267b85dec03bc3e924b2e3fa9d627209a9cfaf0f1164d47"
+      "scheme": "h2",
+      "expected": "h2:311e59dcfc8cf3abb267b85dec03bc3e924b2e3fa9d627209a9cfaf0f1164d47"
     },
     {
       "name": "issuer present",
