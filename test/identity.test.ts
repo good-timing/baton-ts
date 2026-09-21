@@ -10,6 +10,7 @@ import {
   normalizePrincipal,
   principalFor,
 } from "../src/identity.js";
+import { PrincipalWireSchema } from "../src/events.js";
 import vectors from "./identityVectors.json" with { type: "json" };
 
 /** The differential corpus. Every `expected` here was produced by Python's
@@ -111,6 +112,42 @@ describe("hashPrincipalId properties", () => {
     expect(hashPrincipalId("e-1", { tenantId: "t", key: "🔑", scheme: HASH_SCHEME })).toBe(
       hashPrincipalId("e-1", { tenantId: "t", key: new TextEncoder().encode("🔑"), scheme: HASH_SCHEME }),
     );
+  });
+});
+
+describe("the principal object's REQUIRED shape", () => {
+  it("names the provenance by the LITERAL the spec registers, not by our constant", () => {
+    // ⚠ **Pinned by literal for the same reason the tag is.** Every other
+    // assertion spells this `PRINCIPAL_SOURCE_ASSERTED` and therefore follows
+    // the constant wherever it goes — a mutation setting it to `"attested"`
+    // passed the whole suite. That mutant is the one that matters most: this
+    // SDK has NO attested rung (`AuthInfo` carries no `claims`), and SPEC
+    // §11.4 forbids a consumer presenting an asserted principal as verified.
+    // So the negative is the load-bearing half, not the positive.
+    expect(PRINCIPAL_SOURCE_ASSERTED).toBe("asserted");
+    expect(PRINCIPAL_SOURCE_ASSERTED).not.toBe("attested");
+    expect(PRINCIPAL_FORM_HASHED).toBe("hashed");
+    expect(PRINCIPAL_FORM_RAW).toBe("raw");
+
+    const emitted = principalFor({ principalId: "e-1" }, { mode: "hashed", tenantId: "t", key: "k" });
+    expect(emitted!.source).toBe("asserted");
+  });
+
+  it("refuses a PARTIAL object — all three members or nothing", () => {
+    // The whole guarantee the object exists to give, and nothing tested it:
+    // a schema that admitted a missing `source` or `form` would be the prose
+    // -shaped binding this change exists to replace, wearing an object's
+    // syntax. A mutation making `source` optional-with-a-default survived the
+    // suite before this case existed.
+    const whole = { id: "h1:abc", source: "asserted", form: "hashed" };
+    expect(PrincipalWireSchema.safeParse(whole).success).toBe(true);
+    for (const missing of ["id", "source", "form"] as const) {
+      const partial: Record<string, unknown> = { ...whole };
+      delete partial[missing];
+      expect(PrincipalWireSchema.safeParse(partial).success).toBe(false);
+    }
+    // And `extra="forbid"`'s half: an unknown member is malformed, not richer.
+    expect(PrincipalWireSchema.safeParse({ ...whole, scheme: "h1" }).success).toBe(false);
   });
 });
 
