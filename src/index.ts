@@ -76,7 +76,15 @@ export type { SupportedMcpServer } from "./integrations/mcp/index.js";
 // their own records against Console data) must get the identical value, and
 // re-implementing the HMAC message layout by hand is how that silently
 // diverges.
-export type { Principal, PrincipalForm, PrincipalIdMode, PrincipalWire } from "./identity.js";
+export type { Principal, PrincipalIdMode } from "./identity.js";
+// ⚠ `PrincipalWire` and `PrincipalForm` are NOT exported, for the same reason
+// `principalFor` is not: they are the PRODUCER's types, narrowed to the one
+// `source` and two `form`s this SDK emits. Nothing on the public surface can
+// produce one — `Event.principal` is inferred from `PrincipalWireSchema`,
+// whose members are deliberately open, so `event.principal` does not satisfy
+// the narrow type and a vendor naming it in a `Sink` signature gets TS2345.
+// A consumer wanting a name for the received shape uses
+// `z.infer<typeof PrincipalWireSchema>` or `Event["principal"]`.
 // `HASH_SCHEME` is exported because a vendor recomputing a pseudonym needs the
 // same prefix we wrote, and `hashPrincipalId` now defaults to it — so the
 // exported constant and the default cannot disagree.

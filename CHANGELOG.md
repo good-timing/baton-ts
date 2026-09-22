@@ -31,6 +31,15 @@
   **A vendor recomputing a pseudonym must stop passing `scheme`.** It now
   defaults to `HASH_SCHEME`, matching Python.
 
+  ⚠ **The digest did not move, but the JOIN KEY did — read this before
+  upgrading a live deployment.** `principal.id` is the whole string including
+  the tag, and the Console groups on it verbatim. So if you are on 0.3.5-0.3.7
+  with `resolvePrincipal` configured, you have been emitting `v1:<hex>` and
+  will now emit `h1:<hex>` for the same person: every one of your users becomes
+  TWO actors at the upgrade boundary, and history does not re-link itself. The
+  hex halves being identical is what makes a backfill possible, not what makes
+  the split not happen.
+
 - **This SDK still has no attested rung, and that is `source`'s job to say.**
   Every principal it emits carries `source: "asserted"`: `AuthInfo` exposes no
   `claims`, so a subject's location would be a guess. ⚠ Do not read the `h1:`
@@ -39,9 +48,8 @@
   verified.
 
 - `principalIdFor` is now `principalFor` and returns the wire object.
-  **Newly exported:** the `PrincipalWire` type, `PrincipalWireSchema`,
-  `PRINCIPAL_FORM_HASHED` / `PRINCIPAL_FORM_RAW`, `PRINCIPAL_SOURCE_ASSERTED`,
-  and `HASH_SCHEME` — which was previously withheld on purpose, because
+  **Newly exported:** `PrincipalWireSchema`, `PRINCIPAL_FORM_HASHED` /
+  `PRINCIPAL_FORM_RAW`, `PRINCIPAL_SOURCE_ASSERTED`, and `HASH_SCHEME` — which was previously withheld on purpose, because
   `hashPrincipalId`'s `scheme` had no default and naming the tag invited a
   vendor to pass the wrong one. It defaults correctly now, so the constant and
   the default cannot disagree. `principalFor` itself is **not** exported: it is
