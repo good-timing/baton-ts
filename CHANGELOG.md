@@ -1,5 +1,48 @@
 # Changelog
 
+## Unreleased: the principal stops being a string with a prefix on it
+
+- **BREAKING — `principal_id` becomes `principal: {id, source, form}`.** All
+  three members are required together, so a producer emits the whole object or
+  omits it, and no conformant event carries an id whose classification a
+  consumer has to guess. `source` is where the identity came from, `form` is
+  whether the value is a pseudonym or real text.
+
+  The scheme prefix had been carrying both facts in one string, and `"raw"`
+  mode — which emits no prefix at all — dropped both. A consumer could not
+  recover them, so this is a wire problem rather than a read-model one. Both
+  members now ride every mode.
+
+  **Read `form` to classify, never the value's shape.** A real OIDC subject
+  (`mailto:`, `acct:`, `urn:`, `https:`) reads as a scheme-tagged pseudonym to
+  anything testing for "letters then a colon". And per `SPEC §11.4`, trust a
+  principal as verified only where `source` is exactly `"attested"`, and treat
+  anything but `form: "hashed"` as personal data — stated that way round so an
+  unregistered value fails safe. Both value sets are open; tolerate an unknown
+  value rather than reject the event.
+
+- **`v1:` is retired; every hashed principal is tagged `h1:`.** The tag was
+  never part of the HMAC message, so it only ever differed from `h1:` by
+  label — the regenerated parity corpus proves it moved no digest, all sixteen
+  shared cases byte-identical. What the tag records now is the HMAC **key
+  generation** and nothing else; `h2:` remains reserved for a rotation, which
+  is the one event that can move a digest.
+
+  **A vendor recomputing a pseudonym must stop passing `scheme`.** It now
+  defaults to `HASH_SCHEME`, matching Python.
+
+- **This SDK still has no attested rung, and that is `source`'s job to say.**
+  Every principal it emits carries `source: "asserted"`: `AuthInfo` exposes no
+  `claims`, so a subject's location would be a guess. ⚠ Do not read the `h1:`
+  prefix as an attestation — it is the key generation and is identical on both
+  provenances, and `SPEC §11.4` forbids presenting an asserted principal as
+  verified.
+
+- `principalIdFor` is now `principalFor` and returns the wire object.
+  `PrincipalWire`, `PrincipalWireSchema` and the `PRINCIPAL_FORM_*` constants
+  are exported; `principalFor` itself is not, so the object has one
+  construction site.
+
 ## 0.3.7: the envelope says what was underneath the call
 
 - **Every event carries `transport_observed`, recording what the SDK saw

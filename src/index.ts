@@ -54,6 +54,7 @@ export {
   AnnotationPayloadSchema,
   SurfaceSnapshotEventSchema,
   SurfaceSnapshotPayloadSchema,
+  PrincipalWireSchema,
 } from "./events.js";
 
 export { Scrubber, identityScrub, DEPTH_LIMIT } from "./scrub.js";
@@ -75,13 +76,22 @@ export type { SupportedMcpServer } from "./integrations/mcp/index.js";
 // their own records against Console data) must get the identical value, and
 // re-implementing the HMAC message layout by hand is how that silently
 // diverges.
-export type { Principal, PrincipalIdMode } from "./identity.js";
-// ⚠ `HASH_SCHEME` ("h1") is deliberately NOT exported. This arm has no
-// attested rung and never emits it, which is the same reason `hashPrincipalId`'s
-// `scheme` is required rather than defaulted — exporting the tag as a named,
-// inviting constant would put the identical zero-row-join trap one door over.
-// It stays defined in `identity.ts` for parity with Python.
-export { HASH_SCHEME, PRINCIPAL_SOURCE_ASSERTED, hashPrincipalId } from "./identity.js";
+export type { Principal, PrincipalIdMode, PrincipalWire } from "./identity.js";
+// `HASH_SCHEME` is exported because a vendor recomputing a pseudonym needs the
+// same prefix we wrote, and `hashPrincipalId` now defaults to it — so the
+// exported constant and the default cannot disagree.
+//
+// `principalFor` is NOT exported, and that is the deliberate half: it is the
+// single construction site for the wire object, and handing it out invites a
+// vendor to assemble a `principal` by hand, which is exactly the "all three
+// members or nothing" guarantee this change exists to make structural.
+export {
+  HASH_SCHEME,
+  PRINCIPAL_FORM_HASHED,
+  PRINCIPAL_FORM_RAW,
+  PRINCIPAL_SOURCE_ASSERTED,
+  hashPrincipalId,
+} from "./identity.js";
 export type {
   ResolvePrincipalHook,
   PrincipalResolutionContext,

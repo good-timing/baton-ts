@@ -499,7 +499,7 @@ describe("cross-SDK emitter conformance (Phase 3)", () => {
 
     // Null on the snapshot: it describes the SERVER and is flushed outside any
     // caller's context, so there is no transport of a caller's to name — the
-    // same reason it carries UNKNOWN_AGENT_RUNTIME and a null principal_id.
+    // same reason it carries UNKNOWN_AGENT_RUNTIME and a null principal.
     expect(
       events.find((e) => e.event_type === "surface_snapshot")!.transport_observed,
     ).toBeNull();

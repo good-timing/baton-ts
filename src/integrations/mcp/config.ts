@@ -148,7 +148,8 @@ export interface BatonConfig {
    * anonymous call. ⚠ It is awaited INLINE with no timeout — a blocking hook
    * stalls its own request. */
   resolvePrincipal?: ResolvePrincipalHook;
-  /** `"hashed"` (default) emits a `v1:` per-tenant HMAC pseudonym; `"raw"`
+  /** `"hashed"` (default) emits a per-tenant HMAC pseudonym and
+   * `form: "hashed"`; `"raw"`
    * emits the subject VERBATIM.
    *
    * `"raw"` puts real identity in the collector's database and is the
