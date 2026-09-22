@@ -76,7 +76,7 @@ export type { SupportedMcpServer } from "./integrations/mcp/index.js";
 // their own records against Console data) must get the identical value, and
 // re-implementing the HMAC message layout by hand is how that silently
 // diverges.
-export type { Principal, PrincipalIdMode, PrincipalWire } from "./identity.js";
+export type { Principal, PrincipalForm, PrincipalIdMode, PrincipalWire } from "./identity.js";
 // `HASH_SCHEME` is exported because a vendor recomputing a pseudonym needs the
 // same prefix we wrote, and `hashPrincipalId` now defaults to it — so the
 // exported constant and the default cannot disagree.

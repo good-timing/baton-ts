@@ -232,14 +232,9 @@ function declaredOnConnection(options: RuntimeDetectionOptions): unknown {
  * IMMEDIATE MCP client, which behind a gateway is the gateway rather than
  * the agent. And it is self-asserted, never attested: a client picks its
  * own `clientInfo`. Identity is `principal`, a different field on a different
- * condition; keep the two claims apart.
- *
- * ⚠ **`principal` is not the attested counterweight to this paragraph, and on
- * THIS SDK it never is.** It carries its own provenance in `principal.source`,
- * which is always `"asserted"` here — `AuthInfo` exposes no `claims`, so there
- * is no attested rung to read. SPEC §11.4 forbids a consumer presenting an
- * asserted principal as verified, so "identity is attested" is exactly the
- * sentence not to write.
+ * condition; keep the two claims apart. ⚠ It is not the attested
+ * counterweight to this paragraph either — on this SDK it is self-asserted
+ * too (`principalResolution.ts`).
  */
 export function detectAgentRuntime(
   meta: Record<string, unknown> | null,

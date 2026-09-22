@@ -989,7 +989,7 @@ describe("withBaton — intent-param injection", () => {
 
   it("refuses the pre-0.3.5 identity keys rather than ignoring them", () => {
     // A JavaScript caller gets no compile error, and identity fails open, so an
-    // ignored key would silently stop producing principal_id.
+    // ignored key would silently stop producing a principal.
     for (const [was, now] of [
       ["resolveUser", "resolvePrincipal"],
       ["userIdMode", "principalIdMode"],
@@ -1571,13 +1571,13 @@ describe("withBaton — coordinates in runtime_meta", () => {
 });
 
 // ---------------------------------------------------------------------------
-// `principal_id` (register D6) — the field existed on this SDK's envelope since
+// `principal` (register D6) — the field existed on this SDK's envelope since
 // 0.3.0 with NOTHING able to populate it. These drive the real wrap so the
 // assertion is about what reaches the sink, not about the resolver in
 // isolation (that is `principalResolution.test.ts`).
 // ---------------------------------------------------------------------------
 
-describe("withBaton principal_id", () => {
+describe("withBaton principal", () => {
   const TENANT = "tenant-e2e";
   const KEY = "e2e-identity-key";
 

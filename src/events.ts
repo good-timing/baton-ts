@@ -16,6 +16,7 @@
 import { z } from "zod";
 import { v7 as uuidv7 } from "uuid";
 import { SDK_VERSION } from "./version.js";
+import type { PrincipalWire } from "./identity.js";
 
 // =============================================================================
 // Per-event-type payloads
@@ -143,6 +144,27 @@ export const PrincipalWireSchema = z
     form: z.string(),
   })
   .strict();
+
+// ⚠ **The producer type and this schema are two declarations of one wire
+// shape, and this is what makes them agree.** Every other wire type in this
+// file is projected with `z.infer`; this one cannot be, because the producer
+// side is deliberately NARROWER (literal `source`/`form`) than the parse side
+// (open `z.string()`) — see `identity.PrincipalWire`.
+//
+// Without the check below the drift is silent in the worst direction: add a
+// member to `PrincipalWire`, and `principalFor` compiles green while
+// `.strict()` rejects the object at the emit boundary, where `emit()` catches
+// the throw and DROPS the event. Capture loss with no error at the site of
+// the change. Asserting the KEY SETS match both ways turns that into a
+// compile error here.
+type _PrincipalKeysMatch =
+  [Exclude<keyof PrincipalWire, keyof z.infer<typeof PrincipalWireSchema>>] extends [never]
+    ? [Exclude<keyof z.infer<typeof PrincipalWireSchema>, keyof PrincipalWire>] extends [never]
+      ? true
+      : never
+    : never;
+const _principalKeysMatch: _PrincipalKeysMatch = true;
+void _principalKeysMatch;
 
 /** Fields every Baton event carries, per SPEC §11.4.
  *

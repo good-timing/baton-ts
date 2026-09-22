@@ -75,11 +75,9 @@ describe("hashPrincipalId properties", () => {
   const KEY = "unit-key";
 
   it("labels the KEY GENERATION without moving the digest", () => {
-    // Load-bearing, and the property that licensed retiring the provenance
-    // tag: the scheme is not part of the HMAC message, so relabelling moves
-    // the prefix and nothing else. A rotation to `h2:` is therefore the one
-    // event that can move a digest, and a change of provenance never was —
-    // which is why provenance is `source`, a member, instead.
+    // Pins the property `HASH_SCHEME` documents, and the one that licensed
+    // retiring the provenance tag: relabelling moves the prefix and nothing
+    // else.
     const current = hashPrincipalId("e-1", { tenantId: "t", key: KEY });
     const rotated = hashPrincipalId("e-1", { tenantId: "t", key: KEY, scheme: "h2" });
 
@@ -307,10 +305,9 @@ describe("principalFor", () => {
   it("names a hook principal ASSERTED in its own member, not in the tag", () => {
     // ⚠ **This test INVERTED, and the inversion is the point of the change.**
     // It used to assert the digest carried a `v1:` prefix, because the tag was
-    // the only place provenance lived. Provenance is now `source`, which
-    // survives raw mode — where there is no tag at all — and the tag is the
-    // key generation for both rungs. The old shape could not hold this
-    // assertion: under it, "asserted" and "h1" were the same three bytes.
+    // the only place provenance lived. The old shape could not hold this
+    // assertion at all: under it, "asserted" and the tag were the same three
+    // bytes.
     const hashed = principalFor({ principalId: "e-1" }, { mode: "hashed", tenantId: "t", key: "k" });
     expect(hashed).toEqual({
       id: expect.stringMatching(new RegExp(`^${HASH_SCHEME}:[0-9a-f]{64}$`)),

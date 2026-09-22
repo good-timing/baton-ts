@@ -10,7 +10,7 @@ Phase 2 of the design note in `baton-internal` (private — read it before touch
 
 **Known divergences from the Python SDK** — deliberate, and recorded here because a parity audit opens this file before it opens a docstring:
 
-1. **No attested identity SOURCE.** Every principal this SDK emits carries `source: "asserted"`; `BatonConfig.resolvePrincipal` is the only identity mechanism here. Python reads a principal off a verified access token's `claims["sub"]`; TypeScript's `AuthInfo` has no `claims` field, so the nearest carrier is the untyped `extra` bag and nothing specifies a subject lives there. ⚠ **Do not describe this as "no `h1:` rung" — that is now false in the dangerous direction.** This SDK does emit `h1:`: the prefix is the HMAC KEY GENERATION and is identical on both provenances. The missing thing is the `source` VALUE, and SPEC §11.4 requires a consumer to read `source` rather than the prefix, precisely so an asserted principal is never presented as verified.
+1. **No attested identity SOURCE.** Every principal this SDK emits carries `source: "asserted"`; `BatonConfig.resolvePrincipal` is the only identity mechanism here. ⚠ Do not phrase this as "no `h1:` rung" — the reason, and why that phrasing is wrong in the dangerous direction, is in `src/integrations/mcp/principalResolution.ts`.
 2. **Vendor hooks run INLINE with no timeout.** Python runs them off the event loop under a 5s budget (`integrations/_hooks.py`); a blocking hook here stalls its own request. Applies to `resolvePrincipal` and `scrubber`.
 3. **A malformed (lone-surrogate) `issuer` drops the issuer and still hashes**, where Python drops the principal entirely. The generated corpus cannot pin this — Python's generator cannot emit a vector for an input that raises.
 

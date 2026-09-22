@@ -7,6 +7,7 @@ import { parseDsn, selectDsn, VENDOR_ID_PATTERN } from "../../dsn.js";
 import { displayNameFromServer } from "./annotationName.js";
 import type { ResolvePrincipalHook } from "./principalResolution.js";
 import { DEFAULT_CONSENT_TOKEN } from "../../events.js";
+import { PRINCIPAL_ID_MODES, type PrincipalIdMode } from "../../identity.js";
 import { HttpSink, type Sink } from "../../sinks.js";
 
 // Vendor IDs are the annotation-tool-name prefix — same pattern Python
@@ -24,7 +25,12 @@ export { VENDOR_ID_PATTERN } from "../../dsn.js";
 // Per-tool intent-param injection modes (mirrors baton-proxy's
 // BATON_INTENT_PARAM and Python's VendorConfig.intent_param_mode).
 const INTENT_PARAM_MODES = new Set(["optional", "required", "off"]);
-const PRINCIPAL_ID_MODES = new Set(["hashed", "raw"]);
+// Imported, never restated: the registry is derived from `FORM_BY_MODE`, so a
+// mode cannot be accepted here without someone having chosen its `form`.
+// `principalFor` drops Python's unrecognised-mode branch on the strength of
+// exactly this check, so a second hand-written list would make that a
+// coincidence rather than a guarantee.
+const PRINCIPAL_ID_MODE_SET: ReadonlySet<string> = new Set(PRINCIPAL_ID_MODES);
 
 export interface BatonConfig {
   /** The packed connection string from /account — one value carrying the
@@ -151,13 +157,11 @@ export interface BatonConfig {
   /** `"hashed"` (default) emits a per-tenant HMAC pseudonym and
    * `form: "hashed"`; `"raw"` emits the subject VERBATIM and `form: "raw"`.
    *
-   * `"raw"` puts real identity in the collector's database and is the
-   * vendor's deliberate choice. ⚠ **A consumer classifies on `form`, never on
-   * this setting and never on the value's shape** — SPEC §11.4 states it the
-   * safe way round: treat anything but exactly `form: "hashed"` as personal
-   * data. Stating it mode-first would read as licensing the inverse for
-   * hashed mode. */
-  principalIdMode?: "hashed" | "raw";
+   * `"raw"` puts real identity in the collector's database and is the vendor's
+   * deliberate choice. ⚠ A consumer classifies on `form`, never on this
+   * setting — `PrincipalWireSchema` carries the rule and why it is stated that
+   * way round. */
+  principalIdMode?: PrincipalIdMode;
   /** The HMAC secret for hashed mode. Resolved explicit →
    * `BATON_PRINCIPAL_ID_HMAC_KEY` → unset.
    *
@@ -410,10 +414,10 @@ export function validateBatonConfig(config: BatonConfig): asserts config is Reso
     // cannot raise should not rest on an argument about who calls it.
     throw new Error("BatonConfig.principalIdHmacKey must be a string or a Uint8Array.");
   }
-  if (config.principalIdMode !== undefined && !PRINCIPAL_ID_MODES.has(config.principalIdMode)) {
+  if (config.principalIdMode !== undefined && !PRINCIPAL_ID_MODE_SET.has(config.principalIdMode)) {
     throw new Error(
       `BatonConfig.principalIdMode ${JSON.stringify(config.principalIdMode)} must be one of ` +
-        `${JSON.stringify([...PRINCIPAL_ID_MODES].sort())}.`,
+        `${JSON.stringify([...PRINCIPAL_ID_MODE_SET].sort())}.`,
     );
   }
 }

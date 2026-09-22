@@ -37,13 +37,9 @@ import { capCodePoints } from "./_text.js";
 export const HASH_SCHEME = "h1";
 
 /** Where a principal came from. `"asserted"` is a vendor's own resolver,
- * which nothing in the protocol checks.
- *
- * ⚠ **This SDK emits no other value, and that is a property of the arm rather
- * than of this constant.** SPEC §11.4 also registers `"attested"` — a
- * principal read off a verified token — but TypeScript's `AuthInfo` carries no
- * `claims`, so a subject's location here would be a guess. Asserted is not a
- * degraded attested: on stdio it is the only identity mechanism there is. */
+ * which nothing in the protocol checks, and is the only value this SDK
+ * emits — `integrations/mcp/principalResolution.ts` has the why, and the
+ * wording trap that comes with it. */
 export const PRINCIPAL_SOURCE_ASSERTED = "asserted";
 
 /** What the emitted value IS — the privacy classification, and the only thing
@@ -63,15 +59,36 @@ export const PRINCIPAL_ID_MODE_HASHED = "hashed";
 export const PRINCIPAL_ID_MODE_RAW = "raw";
 export type PrincipalIdMode = typeof PRINCIPAL_ID_MODE_HASHED | typeof PRINCIPAL_ID_MODE_RAW;
 
+export type PrincipalForm = typeof PRINCIPAL_FORM_HASHED | typeof PRINCIPAL_FORM_RAW;
+
 /** `principalIdMode` names a CONFIG choice; `form` names what the emitted
  * value IS. The two vocabularies coincide today and are still two
  * vocabularies — a mode added later need not name its form the same thing,
- * and a consumer classifies on `form` alone. Python keeps the same map
- * (`_FORM_BY_MODE`) for the same reason. */
-const FORM_BY_MODE: Record<PrincipalIdMode, string> = {
+ * and a consumer classifies on `form` alone.
+ *
+ * Written out rather than derived, so a third mode cannot silently become a
+ * third `form`: the `Record` makes it a COMPILE ERROR until someone chooses
+ * what the new mode means for a consumer's classification. That
+ * exhaustiveness is the payoff — `form: options.mode` would put an unexamined
+ * new mode name straight onto the wire. */
+const FORM_BY_MODE: Record<PrincipalIdMode, PrincipalForm> = {
   [PRINCIPAL_ID_MODE_HASHED]: PRINCIPAL_FORM_HASHED,
   [PRINCIPAL_ID_MODE_RAW]: PRINCIPAL_FORM_RAW,
 };
+
+/** The registered modes, DERIVED from the map above exactly as Python derives
+ * `PRINCIPAL_ID_MODES = frozenset(_FORM_BY_MODE)`.
+ *
+ * ⚠ **This closes the other direction, and `principalFor` depends on it.**
+ * That function drops Python's unrecognised-mode branch on the grounds that
+ * config validation refuses an unknown mode first. With a second hand-written
+ * list the guarantee would be only "two lists happen to agree" — the
+ * prose-shaped binding this whole change exists to replace. Derived, a mode
+ * cannot be accepted by the validator without someone having chosen its
+ * `form`. */
+export const PRINCIPAL_ID_MODES: readonly PrincipalIdMode[] = Object.keys(
+  FORM_BY_MODE,
+) as PrincipalIdMode[];
 
 /** Codepoints Python's `str.strip()` removes, measured against CPython rather
  * than assumed — `\s` in JavaScript is the WRONG set in BOTH directions.
@@ -130,11 +147,9 @@ export interface Principal {
  * principal under two tenants can never collide or be cross-tenant-correlated.
  * Returns `"<scheme>:<hex>"`.
  *
- * `scheme` is NOT part of the HMAC message, so the digest for a given
+ * `scheme` is NOT part of the HMAC message: the digest for a given
  * `(tenantId, principal, issuer)` is identical under every scheme and only the
- * prefix moves. That is what lets the tag mean the KEY GENERATION and nothing
- * else: a rotation to `h2:` is the one event that moves a digest, and a
- * provenance never was.
+ * prefix moves. What that buys is in `HASH_SCHEME`.
  *
  * ⚠ **`issuer` null/undefined MUST hash byte-identically to the pre-issuer
  * form** — the append-only message layout is what guarantees it, and every
@@ -263,12 +278,20 @@ export interface PrincipalWire {
    * a real OIDC subject (`mailto:`, `acct:`, `urn:`, `https:`) reads as a
    * scheme-tagged pseudonym to anything testing for "letters then a colon". */
   id: string;
-  /** WHERE it came from. Always `"asserted"` on this arm — see
-   * `PRINCIPAL_SOURCE_ASSERTED`. */
-  source: string;
-  /** WHAT it is: `"hashed"` or `"raw"`. */
-  form: string;
+  /** WHERE it came from. Always `"asserted"` here — `principalResolution.ts`
+   * has the why and the wording trap. */
+  source: typeof PRINCIPAL_SOURCE_ASSERTED;
+  /** WHAT it is. */
+  form: PrincipalForm;
 }
+
+// ⚠ **Literal types here, `z.string()` on `PrincipalWireSchema` — and the
+// asymmetry is deliberate.** That schema is the PARSE boundary and must
+// tolerate a value SPEC registers later; this is the PRODUCER type, and this
+// SDK emits exactly one `source` and two `form`s. Widening it would inherit
+// the schema's justification without its reason, and would let whoever adds
+// the attested rung pass a stray string. Typed this way, that addition is a
+// compile error in one place — here, where the registry is.
 
 /** Turn a resolved principal into the finished wire object, or `null`.
  *
@@ -321,9 +344,9 @@ export function principalFor(
       issuer: principal.issuer ?? null,
     });
   }
-  // Unconditional `source`: this arm has no attested rung, so every principal
-  // it derives is vendor-ASSERTED. An option here would be an argument no
-  // caller can vary — configurability for a rung the design says is not coming
-  // to this SDK. When one arrives, the parameter arrives with it.
+  // Unconditional `source`: an option here would be an argument no caller can
+  // vary, because this arm has one rung (`principalResolution.ts`). When a
+  // second arrives, the parameter arrives with it — and the literal type on
+  // `PrincipalWire.source` makes that a compile error rather than a choice.
   return { id, source: PRINCIPAL_SOURCE_ASSERTED, form: FORM_BY_MODE[options.mode] };
 }
