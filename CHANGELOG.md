@@ -31,14 +31,12 @@
   **A vendor recomputing a pseudonym must stop passing `scheme`.** It now
   defaults to `HASH_SCHEME`, matching Python.
 
-  ⚠ **The digest did not move, but the JOIN KEY did — read this before
-  upgrading a live deployment.** `principal.id` is the whole string including
-  the tag, and the Console groups on it verbatim. So if you are on 0.3.5-0.3.7
-  with `resolvePrincipal` configured, you have been emitting `v1:<hex>` and
-  will now emit `h1:<hex>` for the same person: every one of your users becomes
-  TWO actors at the upgrade boundary, and history does not re-link itself. The
-  hex halves being identical is what makes a backfill possible, not what makes
-  the split not happen.
+  Note that `principal.id` is the whole string including the tag, so the
+  emitted id for a given person does change (`v1:<hex>` to `h1:<hex>`) even
+  though the hex does not. Nothing needs migrating: the only thing that ever
+  produced a `v1:` value on this SDK was a configured `resolvePrincipal` hook,
+  and no install has one — the onboarding recipe ships neither a hook nor an
+  HMAC key, so every install to date emits `principal: null`.
 
 - **This SDK still has no attested rung, and that is `source`'s job to say.**
   Every principal it emits carries `source: "asserted"`: `AuthInfo` exposes no
