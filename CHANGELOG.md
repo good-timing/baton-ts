@@ -39,9 +39,14 @@
   verified.
 
 - `principalIdFor` is now `principalFor` and returns the wire object.
-  `PrincipalWire`, `PrincipalWireSchema` and the `PRINCIPAL_FORM_*` constants
-  are exported; `principalFor` itself is not, so the object has one
-  construction site.
+  **Newly exported:** the `PrincipalWire` type, `PrincipalWireSchema`,
+  `PRINCIPAL_FORM_HASHED` / `PRINCIPAL_FORM_RAW`, `PRINCIPAL_SOURCE_ASSERTED`,
+  and `HASH_SCHEME` — which was previously withheld on purpose, because
+  `hashPrincipalId`'s `scheme` had no default and naming the tag invited a
+  vendor to pass the wrong one. It defaults correctly now, so the constant and
+  the default cannot disagree. `principalFor` itself is **not** exported: it is
+  the single construction site for the wire object, and handing it out would
+  let a caller assemble a partial `principal` by hand.
 
 ## 0.3.7: the envelope says what was underneath the call
 

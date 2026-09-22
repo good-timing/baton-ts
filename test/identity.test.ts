@@ -269,6 +269,41 @@ describe("principalFor", () => {
     expect(/\p{Surrogate}/u.test(capped!.id)).toBe(false);
   });
 
+  it("folds the hook's ISSUER into the digest — two IdPs, one `sub`, two actors", () => {
+    // ⚠ **The one member of this chokepoint no test reached.** Deleting
+    // `issuer: principal.issuer ?? null` from `principalFor`'s hash call left
+    // the whole suite green: `hashPrincipalId` is covered for issuer by the
+    // corpus, but the WIRING between what `normalizePrincipal` returns and
+    // what gets hashed was not.
+    //
+    // What that mutant ships is the actor merge this module exists to
+    // prevent, and it diverges from Python, which does fold it: two different
+    // people behind two identity providers who happen to share a `sub`
+    // collapse into one `principal.id` on the wire.
+    const a = principalFor(
+      { principalId: "sub-7", issuer: "https://a.example" },
+      { mode: "hashed", tenantId: "t", key: "k" },
+    );
+    const b = principalFor(
+      { principalId: "sub-7", issuer: "https://b.example" },
+      { mode: "hashed", tenantId: "t", key: "k" },
+    );
+    const none = principalFor({ principalId: "sub-7" }, { mode: "hashed", tenantId: "t", key: "k" });
+
+    expect(a!.id).not.toBe(b!.id);
+    expect(a!.id).not.toBe(none!.id);
+    // And the digest is the one Python produces for the same triple — so this
+    // pins the wiring against the OTHER arm, not merely against itself.
+    expect(a!.id).toBe(
+      hashPrincipalId("sub-7", { tenantId: "t", key: "k", issuer: "https://a.example" }),
+    );
+    // Raw mode deliberately folds NO issuer: the value is meant to be read by
+    // a human, so it accepts that collision by construction.
+    expect(principalFor({ principalId: "sub-7", issuer: "https://a.example" }, { mode: "raw", tenantId: "t" })!.id).toBe(
+      "sub-7",
+    );
+  });
+
   it("names a hook principal ASSERTED in its own member, not in the tag", () => {
     // ⚠ **This test INVERTED, and the inversion is the point of the change.**
     // It used to assert the digest carried a `v1:` prefix, because the tag was

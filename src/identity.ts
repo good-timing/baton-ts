@@ -153,8 +153,16 @@ export function hashPrincipalId(
     issuer?: string | null | undefined;
     /** The key generation, defaulting to the current one exactly as Python's
      * does. A caller passes this only to reproduce a digest under a
-     * superseded key. */
-    scheme?: string;
+     * superseded key.
+     *
+     * `| undefined` explicitly, for the same `exactOptionalPropertyTypes`
+     * reason `issuer` carries above — and it bites HARDER here, because this
+     * option exists precisely to be omittable. Without it the natural vendor
+     * shape, forwarding an optional off their own config
+     * (`scheme: cfg.scheme` where `cfg.scheme: string | undefined`), is a
+     * compile error on the published types. No in-repo caller can see that:
+     * they either omit it or pass a concrete string from the corpus. */
+    scheme?: string | undefined;
   },
 ): string {
   const { tenantId, key, issuer = null, scheme = HASH_SCHEME } = options;

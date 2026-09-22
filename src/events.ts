@@ -120,6 +120,30 @@ export type SurfaceSnapshotPayload = z.infer<typeof SurfaceSnapshotPayloadSchema
  */
 export const DEFAULT_CONSENT_TOKEN = "customer-consented";
 
+/** The principal as emitted — `{id, source, form}`, all three REQUIRED
+ * together (SPEC §11.4). The runtime shape of `identity.PrincipalWire`.
+ *
+ * `.strict()` mirrors Python's `extra="forbid"`: a member this producer does
+ * not know about is a malformed object, not a richer one.
+ *
+ * ⚠ **`source` and `form` are `z.string()`, not enums, on purpose** — the same
+ * decision `transport_observed` records and the collector's own columns make.
+ * A fourth `source` is already foreseen (alias-derived), and an enum would
+ * make this producer unable to emit a value SPEC registers later without a
+ * release. Worse, it would throw at the emit boundary — `emit()` catches that
+ * and DROPS the event, so the tool call survives and the capture does not,
+ * which is still the wrong trade for a value SPEC may register later. The
+ * safety lives in the consumer rules stated positively — trust only exactly
+ * `"attested"`, treat anything but exactly `"hashed"` as personal data — so an
+ * unregistered value fails safe without anything having to reject it. */
+export const PrincipalWireSchema = z
+  .object({
+    id: z.string(),
+    source: z.string(),
+    form: z.string(),
+  })
+  .strict();
+
 /** Fields every Baton event carries, per SPEC §11.4.
  *
  * `consentToken` is REQUIRED — the Console rejects any event missing it.
@@ -150,29 +174,6 @@ export const DEFAULT_CONSENT_TOKEN = "customer-consented";
  * legs — per-call by construction and correct across processes. Never
  * derived from the JSON-RPC request id, which restarts at 1 per connection.
  * It says WHICH CALL, never WHO; the principal is `principal.id`. */
-/** The principal as emitted — `{id, source, form}`, all three REQUIRED
- * together (SPEC §11.4). The runtime shape of `identity.PrincipalWire`.
- *
- * `.strict()` mirrors Python's `extra="forbid"`: a member this producer does
- * not know about is a malformed object, not a richer one.
- *
- * ⚠ **`source` and `form` are `z.string()`, not enums, on purpose** — the same
- * decision `transport_observed` records and the collector's own columns make.
- * A fourth `source` is already foreseen (alias-derived), and an enum would
- * make this producer unable to emit a value SPEC registers later without a
- * release. Worse, it would throw at the emit boundary, which SPEC §11.2
- * requires to fail OPEN: an identity read may never cost a tool call. The
- * safety lives in the consumer rules stated positively — trust only exactly
- * `"attested"`, treat anything but exactly `"hashed"` as personal data — so an
- * unregistered value fails safe without anything having to reject it. */
-export const PrincipalWireSchema = z
-  .object({
-    id: z.string(),
-    source: z.string(),
-    form: z.string(),
-  })
-  .strict();
-
 const envelopeShape = {
   event_id: z.uuid().default(() => uuidv7()),
   tenant_id: z.string(),

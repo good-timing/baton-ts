@@ -149,12 +149,14 @@ export interface BatonConfig {
    * stalls its own request. */
   resolvePrincipal?: ResolvePrincipalHook;
   /** `"hashed"` (default) emits a per-tenant HMAC pseudonym and
-   * `form: "hashed"`; `"raw"`
-   * emits the subject VERBATIM.
+   * `form: "hashed"`; `"raw"` emits the subject VERBATIM and `form: "raw"`.
    *
    * `"raw"` puts real identity in the collector's database and is the
-   * vendor's deliberate choice — which is why SPEC §11.4 tells a consumer
-   * never to treat this field as anonymous. */
+   * vendor's deliberate choice. ⚠ **A consumer classifies on `form`, never on
+   * this setting and never on the value's shape** — SPEC §11.4 states it the
+   * safe way round: treat anything but exactly `form: "hashed"` as personal
+   * data. Stating it mode-first would read as licensing the inverse for
+   * hashed mode. */
   principalIdMode?: "hashed" | "raw";
   /** The HMAC secret for hashed mode. Resolved explicit →
    * `BATON_PRINCIPAL_ID_HMAC_KEY` → unset.
