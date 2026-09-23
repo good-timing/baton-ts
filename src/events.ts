@@ -55,15 +55,48 @@ export const ToolCallEndPayloadSchema = z
   .strict();
 export type ToolCallEndPayload = z.infer<typeof ToolCallEndPayloadSchema>;
 
-/** Emitted when the vendor handler throws. `error_type` is the error's
- * constructor name; `error_body` is the message (PII-scrubbed, capped at
- * 2000 chars per the design note). */
+/** Emitted when the call FAILED, which MCP expresses two ways (SPEC §11.4.3):
+ * the vendor handler throws, or it returns a result carrying MCP's error flag
+ * on a 200. `error_type` is the error's constructor name for a throw and the
+ * registered value `"tool_error"` for a returned flag; `error_body` is the
+ * message or the unwrapped reason (PII-scrubbed, capped at 2000 chars per the
+ * design note).
+ *
+ * ⚠ This schema ACCEPTS `result` but this producer does not yet EMIT it, and
+ * the split is deliberate. Unlike `baton-console`'s ingest — which forbids
+ * unknown keys on the envelope only, leaving `payload` an opaque dict — this
+ * schema is `.strict()` down to the payload, and `test/conformance.test.ts`
+ * parses every `baton-spec` vector through it. So a `baton-spec` bump carrying
+ * the field reds this suite on BOTH error vectors, the throw-shape one
+ * included, because it now carries `result: null`. Accepting first is what
+ * makes that bump safe; emitting is the separate change.
+ *
+ * `result` carries the full result envelope on the returned shape and is null
+ * on a throw, where no result object exists. It is deliberately NOT unwrapped
+ * the way `tool_call_end.result` unwraps to the developer's return: on a
+ * failure the envelope is what holds the flag and the reason. */
 export const ToolCallErrorPayloadSchema = z
   .object({
     tool_name: z.string(),
     error_type: z.string(),
     error_body: z.string(),
     duration_ms: z.number().int().nullable().default(null),
+    // ⚠ `.optional()`, NOT `.default(null)` like the sibling fields — and the
+    // difference is the whole reason this lands as its own change.
+    //
+    // A default makes the schema an EMITTER: parsing a payload without the key
+    // ADDS it. This repo's submodule still pins a `baton-spec` whose
+    // `events.schema.json` is `additionalProperties: false`, and three tests
+    // check the TS side against that pin — a byte-identical vector round-trip,
+    // an ajv validation of TS-built events, and a field-for-field payload
+    // comparison. All three reddened on `.default(null)`, because the schema
+    // started inventing a key the pinned spec forbids.
+    //
+    // `.optional()` accepts the field when a newer vector carries it and stays
+    // silent when it does not, so this file is correct against BOTH spec pins
+    // and the bump is decoupled from it. Revisit only if this producer starts
+    // emitting the field, which is a separate change.
+    result: z.unknown().nullable().optional(),
   })
   .strict();
 export type ToolCallErrorPayload = z.infer<typeof ToolCallErrorPayloadSchema>;
