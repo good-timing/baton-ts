@@ -42,8 +42,20 @@ export const TOOL_ERROR_TYPE = "tool_error";
  * miss a failure its caller can see, which is the one thing it may not do.
  *
  * So the invariant is stronger and simpler than Python's, and
- * `errorResult.test.ts` asserts it directly: **this predicate agrees with what
- * the client received.**
+ * `errorResult.test.ts` asserts it directly: **for a failure the handler
+ * itself reports, this predicate agrees with what the client received.**
+ *
+ * ⚠ **That scope is load-bearing, because a failure the SDK manufactures
+ * ABOVE this wrap point is invisible here.** Measured 2026-09-24 on both
+ * majors: a tool registered with an `outputSchema` whose handler returns
+ * `content` and no `structuredContent` returns a success-shaped object, so
+ * this predicate correctly answers false — and then the SDK's own output
+ * validation, which runs after the executor, sends the client
+ * `{isError: true, content: [{text: "Output validation error: …"}]}`. Baton
+ * files `tool_call_end`. Nothing at the handler's vantage point can see it;
+ * closing it needs a wrap above the request handler, or a sensor on the wire
+ * — which is what `baton-proxy` is, and why the wire probe recorded that the
+ * floor an SDK cannot see, the proxy can.
  *
  * Guarded end to end — this runs on the vendor's tool-call path (SPEC §11.2:
  * never block the call), so it fails to False.

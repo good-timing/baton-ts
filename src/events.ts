@@ -72,9 +72,17 @@ export type ToolCallEndPayload = z.infer<typeof ToolCallEndPayloadSchema>;
  * `result: null`. Accepting first is what made that bump safe.
  *
  * `result` carries the full result envelope on the returned shape and is null
- * on a throw, where no result object exists. It is deliberately NOT unwrapped
- * the way `tool_call_end.result` unwraps to the developer's return: on a
- * failure the envelope is what holds the flag and the reason. */
+ * on a throw, where no result object exists.
+ *
+ * ⚠ The sentence that stood here said it is "deliberately NOT unwrapped the
+ * way `tool_call_end.result` unwraps to the developer's return". That is
+ * Python's contrast, carried over with the rest of the port, and it is FALSE
+ * of this producer: the TS handler contract returns `{content, isError?}` and
+ * neither major converts it, so both events record the same literal object.
+ * SPEC §11.4.3's requirement still binds — whatever is recorded must keep the
+ * flag and the reason, which the literal does — but a consumer must not read
+ * a TS-sourced `tool_call_end.result` as the bare content array Python's
+ * vector shows. */
 export const ToolCallErrorPayloadSchema = z
   .object({
     tool_name: z.string(),

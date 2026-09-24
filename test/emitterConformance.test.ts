@@ -187,6 +187,15 @@ const PAYLOAD_ALLOWED_TO_DIFFER: Record<string, ReadonlySet<string>> = {
   ]),
 };
 
+/** By NAME, never by index — `CASES` is a list whose order is a reading
+ * convenience, and an anchor on its position would follow a reorder silently
+ * onto the other error shape. */
+function caseNamed(name: string): (typeof CASES)[number] {
+  const found = CASES.find((c) => c.name === name);
+  if (!found) throw new Error(`no vector case named ${name}`);
+  return found;
+}
+
 class CapturingSink implements Sink {
   readonly events: Event[] = [];
   async write(event: Event): Promise<void> {
@@ -342,8 +351,8 @@ describe("cross-SDK emitter conformance (Phase 3)", () => {
     // The exemptions above are the only place a real divergence could hide,
     // so each one still gets a shape assertion.
     const end = events.find((e) => e.event_type === "tool_call_end")!;
-    const error = events.find(CASES[4]!.pick)!;
-    const returned = events.find(CASES[5]!.pick)!;
+    const error = events.find(caseNamed("tool_call_error").pick)!;
+    const returned = events.find(caseNamed("tool_call_error.returned").pick)!;
     const snapshot = events.find((e) => e.event_type === "surface_snapshot")!;
 
     if (end.event_type === "tool_call_end") {

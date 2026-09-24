@@ -446,9 +446,15 @@ function batonWrap(nameRef: { current: string }, original: AnyHandler, ctx: Wrap
             // the boundary would otherwise reach the scrubber as a fragment.
             error_body: String(ctx.scrubber(errorText(result))).slice(0, 2000),
             duration_ms: durationMs,
-            // The ENVELOPE, not the unwrapped developer return that
-            // `tool_call_end` records: the flag and the reason both live on
-            // the envelope, and unwrapping is what drops them.
+            // The whole envelope — which in THIS package is the same shape
+            // `tool_call_end.result` records, because the TS handler contract
+            // returns `{content, isError?}` and neither major converts it, so
+            // there is nothing here to unwrap. ⚠ Do not read Python's
+            // contrast into this field: there `tool_call_end.result` is the
+            // unwrapped content list and the error envelope is deliberately a
+            // different shape (SPEC §11.4.3 keeps it era-native). A consumer
+            // that parses a TS-sourced `result` as a bare content array is
+            // wrong on both events.
             result: ctx.scrubber(result),
           },
         }),

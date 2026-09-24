@@ -68,10 +68,16 @@
 
 - **`tool_call_error.result` is now EMITTED, not merely accepted.** `67453eb`
   landed the schema half; this is the producer half. On a returned flag it
-  carries the full envelope — deliberately NOT unwrapped the way
-  `tool_call_end.result` unwraps to the developer's return, because on a
-  failure the flag and the reason both live on the envelope. On a throw it is
-  explicitly `null`, which is the shape Python's vector carries.
+  carries the whole result envelope, which keeps the flag and the reason that
+  a flat `error_body` string would lose. On a throw it is explicitly `null`,
+  which is the shape Python's vector carries.
+
+  ⚠ **On this SDK, `tool_call_error.result` and `tool_call_end.result` are the
+  same shape** — the object the vendor's handler returned, `{content,
+  isError?}`, which neither major converts. Python's two differ (there
+  `tool_call_end.result` is the unwrapped content list), and SPEC §11.4.3 keeps
+  the envelope era-native on purpose, so a consumer must read the producer's
+  shape rather than assume Python's.
 
   `error_type` is the registered literal `"tool_error"` for the returned shape
   and stays the error's constructor name for a throw. The literal is the same
@@ -90,6 +96,15 @@
   deliberately not ported: a tool returning `{isError: true, rows: 0}` — no
   content at all — reaches the client as `{content: [], isError: true}`. The
   guard would make this sensor miss a failure its own caller can see.
+
+- ⚠ **Not closed: a failure the SDK manufactures above the handler.** Measured
+  on both majors — a tool registered with an `outputSchema` whose handler
+  returns `content` and no `structuredContent` hands this wrapper a
+  success-shaped object, and the SDK's own output validation, which runs after
+  the executor, then sends the client `isError: true`. This package still
+  emits `tool_call_end` for it. A handler-level wrap cannot see that class at
+  all; a wire sensor can. The scope is stated on `isErrorResult` and pinned by
+  a test, so the day it changes is visible.
 
 - **`baton-spec` moves to `f1e0280`**, which carries `result` on
   `ToolCallErrorPayload` and a second `tool_call_error` vector for the returned

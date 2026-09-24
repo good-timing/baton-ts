@@ -23,6 +23,30 @@ import { errorText, isErrorResult } from "../../../src/integrations/mcp/errorRes
 import { MAJORS, CapturingSink } from "./_majors.js";
 import type { Event } from "../../../src/events.js";
 
+/* eslint-disable @typescript-eslint/no-explicit-any */
+
+/** A tool whose `outputSchema` its handler does not satisfy. Not on `Major`:
+ * output schemas are the only place the two majors' `registerTool` shapes
+ * diverge beyond what that helper already covers, and only this one test
+ * needs them. */
+function registerValidated(major: (typeof MAJORS)[number], server: any): void {
+  const handler = () => ({ content: [{ type: "text" as const, text: "ok" }] });
+  const shape = { rows: z.number() };
+  if (major.label.includes("server 2.x")) {
+    server.registerTool(
+      "validated",
+      { inputSchema: z.object({ name: z.string() }), outputSchema: z.object(shape) },
+      handler,
+    );
+  } else {
+    server.registerTool(
+      "validated",
+      { inputSchema: { name: z.string() }, outputSchema: shape },
+      handler,
+    );
+  }
+}
+
 /** The terminal event of the (single) call, with its type pinned first. */
 function terminal(sink: CapturingSink, expected: Event["event_type"]): Event {
   const event = sink.events[sink.events.length - 1]!;
@@ -146,6 +170,35 @@ describe.each(MAJORS)("returned isError — $label", (major) => {
     expect(event.payload.result).toEqual({ isError: true, rows: 0 });
   });
 
+  it("⚠ does NOT see a failure the SDK manufactures above the handler", async () => {
+    // The scope on `isErrorResult`'s invariant, pinned as a test rather than
+    // left as a sentence — measured on both majors, and the one hole this
+    // change does not close.
+    //
+    // Output validation runs AFTER the executor, so a handler that returns a
+    // success-shaped object against an `outputSchema` it does not satisfy
+    // hands this wrapper a success — correctly classified — and the SDK then
+    // sends the CLIENT an error. Nothing at the handler's vantage point can
+    // see it; a wire sensor (`baton-proxy`) can.
+    //
+    // ⚠ This test asserts the CURRENT limit, not a desired behaviour. If it
+    // starts failing because `tool_call_error` is emitted, the gap closed and
+    // this should become the positive assertion.
+    const sink = new CapturingSink();
+    const server = major.make();
+    registerValidated(major, server);
+    install(server, sink);
+    const client = await major.connect(server);
+    const wire = (await client.callTool({
+      name: "validated",
+      arguments: { name: "p1" },
+    })) as { isError?: boolean; content: { text: string }[] };
+
+    expect(wire.isError).toBe(true);
+    expect(wire.content[0]!.text).toContain("Output validation error");
+    terminal(sink, "tool_call_end");
+  });
+
   it("still files a THROW under its constructor name, with a null result", async () => {
     // The shape that already worked. It must keep working, and it must keep
     // saying `result: null` — Python's throw vector carries the key.
@@ -166,13 +219,44 @@ describe.each(MAJORS)("returned isError — $label", (major) => {
     expect(Object.keys(event.payload)).toContain("result");
   });
 
-  it("scrubs the reason BEFORE truncating it, and scrubs the envelope too", async () => {
+  it("scrubs the reason and the envelope at all", async () => {
+    // The control for the straddle case below, which can only assert that a
+    // fragment is ABSENT — and absence is also what truncating the whole
+    // thing away would produce. This one is short enough that nothing is cut,
+    // so it says the scrubber is wired into this leg in the first place.
+    const sink = new CapturingSink();
+    const server = major.make();
+    major.tool(server, "leaky", { name: z.string() }, () => ({
+      content: [{ type: "text" as const, text: "no account for alice@example.com" }],
+      isError: true,
+    }));
+    install(server, sink);
+    const client = await major.connect(server);
+    await client.callTool({ name: "leaky", arguments: { name: "p1" } });
+
+    const event = terminal(sink, "tool_call_error");
+    if (event.event_type !== "tool_call_error") throw new Error("unreachable");
+    expect(event.payload.error_body).toBe("no account for [REDACTED:email]");
+    // The envelope is scrubbed too, and it is NOT truncated.
+    expect(JSON.stringify(event.payload.result)).not.toContain("alice@example.com");
+    expect(JSON.stringify(event.payload.result)).toContain("[REDACTED:email]");
+  });
+
+  it("scrubs the reason BEFORE truncating it", async () => {
     // The PII bug `/code-review` found in the Python change, pinned here so
-    // it cannot be ported in later. An address straddling the 2000-char cut
-    // reaches the scrubber whole; cutting first would hand the scrubber a
-    // fragment its pattern cannot match and ship the surviving half.
-    const email = "alice@example.com";
-    const reason = "x".repeat(2000 - "alice@examp".length) + email + " trailing";
+    // it cannot be ported in later. The address is positioned to STRADDLE the
+    // 2000-char boundary: cut first and the scrubber is handed `alice@exam`,
+    // which has no TLD and matches no pattern, so the surviving half ships
+    // unredacted. Scrub first and there is no address left to straddle.
+    //
+    // The assertion is the fragment's ABSENCE, not a redaction token's
+    // presence: scrubbing first shortens the string enough that the cut lands
+    // inside `[REDACTED:email]` itself. The test above is what rules out
+    // "absent because everything was truncated away".
+    const padding = "x".repeat(1989);
+    const reason = `${padding} alice@example.com trailing`;
+    expect(reason.slice(0, 2000).endsWith("alice@exam")).toBe(true);
+
     const sink = new CapturingSink();
     const server = major.make();
     major.tool(server, "leaky", { name: z.string() }, () => ({
@@ -186,10 +270,9 @@ describe.each(MAJORS)("returned isError — $label", (major) => {
     const event = terminal(sink, "tool_call_error");
     if (event.event_type !== "tool_call_error") throw new Error("unreachable");
     expect(event.payload.error_body.length).toBeLessThanOrEqual(2000);
-    expect(event.payload.error_body).not.toContain("alice@examp");
-    expect(event.payload.error_body).toContain("[REDACTED:email]");
-    // And the envelope, which is NOT truncated, is scrubbed as well.
-    expect(JSON.stringify(event.payload.result)).not.toContain(email);
+    expect(event.payload.error_body).not.toContain("alice@exam");
+    // And the envelope, which is never truncated, keeps nothing either.
+    expect(JSON.stringify(event.payload.result)).not.toContain("alice@exam");
   });
 });
 
