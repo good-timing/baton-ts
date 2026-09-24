@@ -97,8 +97,9 @@
   `@modelcontextprotocol/server` 2.x alike.
 
   Python's helper also requires a list-valued `content`, to exclude an object
-  that merely carries the attribute. That guard is wrong here and is
-  deliberately not ported: a tool returning `{isError: true, rows: 0}` — no
+  that merely carries the attribute. SPEC §11.4.3 required that of every
+  producer until 2026-09-24 and now scopes it to the converted-result vantage
+  point, because the guard is wrong at this one: a tool returning `{isError: true, rows: 0}` — no
   content at all — reaches the client as `{content: [], isError: true}`. The
   guard would make this sensor miss a failure its own caller can see.
 

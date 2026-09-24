@@ -32,8 +32,10 @@ export const ERROR_BODY_MAX_CODE_POINTS = 2000;
 /**
  * True if `value` is a tool result carrying MCP's error flag.
  *
- * ⚠ **No `content`-must-be-a-list guard, and that is a deliberate deviation
- * from the Python helper** — because the two sit at different vantage points.
+ * ⚠ **No `content`-must-be-a-list guard, and SPEC §11.4.3 now scopes that
+ * rule by VANTAGE POINT rather than requiring it of every producer** — the
+ * section said "MUST" unconditionally until 2026-09-24, and this package is
+ * why it moved.
  * Python's adapter receives a result the library has already converted, so an
  * object carrying an `isError` attribute for its own reasons could reach it
  * and must be excluded. This package wraps the vendor's own executor, so what
