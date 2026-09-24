@@ -74,15 +74,21 @@ export type ToolCallEndPayload = z.infer<typeof ToolCallEndPayloadSchema>;
  * `result` carries the full result envelope on the returned shape and is null
  * on a throw, where no result object exists.
  *
- * ⚠ The sentence that stood here said it is "deliberately NOT unwrapped the
- * way `tool_call_end.result` unwraps to the developer's return". That is
- * Python's contrast, carried over with the rest of the port, and it is FALSE
- * of this producer: the TS handler contract returns `{content, isError?}` and
- * neither major converts it, so both events record the same literal object.
+ * ⚠ **THE shape claim for this field lives here; everywhere else points at
+ * this paragraph.** On THIS producer `tool_call_error.result` and
+ * `tool_call_end.result` are the SAME shape — the object the vendor's handler
+ * returned, `{content, isError?}`, which neither major converts. The sentence
+ * that stood here said `result` is "deliberately NOT unwrapped the way
+ * `tool_call_end.result` unwraps to the developer's return"; that is Python's
+ * contrast, carried over with the rest of the port, and it is FALSE here.
  * SPEC §11.4.3's requirement still binds — whatever is recorded must keep the
  * flag and the reason, which the literal does — but a consumer must not read
  * a TS-sourced `tool_call_end.result` as the bare content array Python's
- * vector shows. */
+ * vector shows.
+ *
+ * Enforced by `emitterConformance.test.ts`'s
+ * `PAYLOAD_ALLOWED_TO_DIFFER["tool_call_error.returned"]` and the two shape
+ * assertions beside it: the claim stops being true the day that test reds. */
 export const ToolCallErrorPayloadSchema = z
   .object({
     tool_name: z.string(),

@@ -43,7 +43,7 @@
  * thread rather than done here.
  */
 
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -73,20 +73,29 @@ function vector(name: string): Record<string, unknown> {
  * `result` exactly as `generate.py` tells them apart when naming the files —
  * a raise leaves it null, a returned flag populates it.
  */
+const isThrownError = (e: Event) =>
+  e.event_type === "tool_call_error" && e.payload.result === null;
+const isReturnedError = (e: Event) =>
+  e.event_type === "tool_call_error" && e.payload.result != null;
+
 const CASES: ReadonlyArray<{ name: string; pick: (e: Event) => boolean }> = [
   { name: "annotation", pick: (e) => e.event_type === "annotation" },
   { name: "surface_snapshot", pick: (e) => e.event_type === "surface_snapshot" },
   { name: "tool_call_start", pick: (e) => e.event_type === "tool_call_start" },
   { name: "tool_call_end", pick: (e) => e.event_type === "tool_call_end" },
-  {
-    name: "tool_call_error",
-    pick: (e) => e.event_type === "tool_call_error" && e.payload.result === null,
-  },
-  {
-    name: "tool_call_error.returned",
-    pick: (e) => e.event_type === "tool_call_error" && e.payload.result != null,
-  },
+  { name: "tool_call_error", pick: isThrownError },
+  { name: "tool_call_error.returned", pick: isReturnedError },
 ];
+
+// ⚠ `CASES` is hand-maintained and `baton-spec` owns the vector files, so a
+// bump that adds one would otherwise land here silently unchecked — which is
+// exactly what happened one bump ago, when `tool_call_error.returned.json`
+// arrived and this list had to be edited by hand to see it. `conformance.test.ts`
+// discovers the directory; this ties that directory back to this list.
+const VECTORS_ON_DISK = readdirSync(vectorsDir)
+  .filter((f) => f.endsWith(".json"))
+  .map((f) => f.slice(0, -".json".length))
+  .sort();
 
 /**
  * Envelope fields allowed to differ from the Python vector, each for a
@@ -168,8 +177,10 @@ const PAYLOAD_ALLOWED_TO_DIFFER: Record<string, ReadonlySet<string>> = {
     // `result` is, for the reason `tool_call_end.result` is: the envelope is
     // era-native by design (SPEC §11.4.3), so Python records its library's
     // pydantic dump — `is_error`, `structured_content`, `result_type` — while
-    // this package records the vendor's literal return, which is what both TS
-    // majors put on the wire. The shape is asserted separately below.
+    // this package records the vendor's literal return. This exemption plus
+    // the shape assertion below are what ENFORCE the claim in
+    // `events.ts`'s `ToolCallErrorPayloadSchema`; if that claim stops holding,
+    // this is the test that says so.
     "result",
     "duration_ms", // timing
   ]),
@@ -186,15 +197,6 @@ const PAYLOAD_ALLOWED_TO_DIFFER: Record<string, ReadonlySet<string>> = {
     "tools",
   ]),
 };
-
-/** By NAME, never by index — `CASES` is a list whose order is a reading
- * convenience, and an anchor on its position would follow a reorder silently
- * onto the other error shape. */
-function caseNamed(name: string): (typeof CASES)[number] {
-  const found = CASES.find((c) => c.name === name);
-  if (!found) throw new Error(`no vector case named ${name}`);
-  return found;
-}
 
 class CapturingSink implements Sink {
   readonly events: Event[] = [];
@@ -280,6 +282,10 @@ describe("cross-SDK emitter conformance (Phase 3)", () => {
     events = await runSpecScenario();
   });
 
+  it("covers every vector `baton-spec` ships", () => {
+    expect(CASES.map((c) => c.name).sort()).toEqual(VECTORS_ON_DISK);
+  });
+
   it("emits the same event types, in the same order, as the Python reference run", () => {
     // generate.py's run produced exactly this sequence: the annotate call
     // emits `annotation`; the first wrapped tool call lazily flushes
@@ -350,10 +356,11 @@ describe("cross-SDK emitter conformance (Phase 3)", () => {
   it("populates the exempt payload fields with the right shape, not just any value", () => {
     // The exemptions above are the only place a real divergence could hide,
     // so each one still gets a shape assertion.
-    const end = events.find((e) => e.event_type === "tool_call_end")!;
-    const error = events.find(caseNamed("tool_call_error").pick)!;
-    const returned = events.find(caseNamed("tool_call_error.returned").pick)!;
-    const snapshot = events.find((e) => e.event_type === "surface_snapshot")!;
+    const pick = (name: string) => events.find(CASES.find((c) => c.name === name)!.pick)!;
+    const end = pick("tool_call_end");
+    const error = pick("tool_call_error");
+    const returned = pick("tool_call_error.returned");
+    const snapshot = pick("surface_snapshot");
 
     if (end.event_type === "tool_call_end") {
       expect(end.payload.result).not.toBeNull();

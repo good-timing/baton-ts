@@ -19,39 +19,26 @@
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { withBaton } from "../../../src/integrations/mcp/withBaton.js";
-import { errorText, isErrorResult } from "../../../src/integrations/mcp/errorResult.js";
+import {
+  ERROR_BODY_MAX_CODE_POINTS,
+  errorText,
+  isErrorResult,
+} from "../../../src/integrations/mcp/errorResult.js";
 import { MAJORS, CapturingSink } from "./_majors.js";
 import type { Event } from "../../../src/events.js";
 
-/* eslint-disable @typescript-eslint/no-explicit-any */
-
-/** A tool whose `outputSchema` its handler does not satisfy. Not on `Major`:
- * output schemas are the only place the two majors' `registerTool` shapes
- * diverge beyond what that helper already covers, and only this one test
- * needs them. */
-function registerValidated(major: (typeof MAJORS)[number], server: any): void {
-  const handler = () => ({ content: [{ type: "text" as const, text: "ok" }] });
-  const shape = { rows: z.number() };
-  if (major.label.includes("server 2.x")) {
-    server.registerTool(
-      "validated",
-      { inputSchema: z.object({ name: z.string() }), outputSchema: z.object(shape) },
-      handler,
-    );
-  } else {
-    server.registerTool(
-      "validated",
-      { inputSchema: { name: z.string() }, outputSchema: shape },
-      handler,
-    );
-  }
-}
-
-/** The terminal event of the (single) call, with its type pinned first. */
-function terminal(sink: CapturingSink, expected: Event["event_type"]): Event {
+/** The terminal event of the (single) call, with its type pinned first — and
+ * NARROWED to it, so a caller reads the payload without restating the literal
+ * in a hand-written guard. Two copies of the same literal per call site could
+ * drift apart, and when they did the test would die on the guard instead of
+ * on a readable expectation. */
+function terminal<T extends Event["event_type"]>(
+  sink: CapturingSink,
+  expected: T,
+): Extract<Event, { event_type: T }> {
   const event = sink.events[sink.events.length - 1]!;
   expect(event.event_type).toBe(expected);
-  return event;
+  return event as Extract<Event, { event_type: T }>;
 }
 
 describe.each(MAJORS)("returned isError — $label", (major) => {
@@ -83,7 +70,6 @@ describe.each(MAJORS)("returned isError — $label", (major) => {
       "tool_call_start",
       "tool_call_error",
     ]);
-    if (event.event_type !== "tool_call_error") throw new Error("unreachable");
     expect(event.payload.tool_name).toBe("soft_fail");
     // The registered literal, not a constructor name — same value Python and
     // `baton-extmcp` use, which is what makes the three sensors comparable.
@@ -117,7 +103,6 @@ describe.each(MAJORS)("returned isError — $label", (major) => {
     await client.callTool({ name: "ok", arguments: { name: "p1" } });
 
     const event = terminal(sink, "tool_call_end");
-    if (event.event_type !== "tool_call_end") throw new Error("unreachable");
     expect(event.payload.result).toEqual({
       content: [{ type: "text", text: "fine" }],
       isError: false,
@@ -163,7 +148,6 @@ describe.each(MAJORS)("returned isError — $label", (major) => {
 
     expect(wire.isError).toBe(true);
     const event = terminal(sink, "tool_call_error");
-    if (event.event_type !== "tool_call_error") throw new Error("unreachable");
     // No content, so no reason. "" says "no reason given", which the Console
     // already renders as such — not `[object Object]`.
     expect(event.payload.error_body).toBe("");
@@ -172,21 +156,23 @@ describe.each(MAJORS)("returned isError — $label", (major) => {
 
   it("⚠ does NOT see a failure the SDK manufactures above the handler", async () => {
     // The scope on `isErrorResult`'s invariant, pinned as a test rather than
-    // left as a sentence — measured on both majors, and the one hole this
-    // change does not close.
+    // left as a sentence. `errorResult.ts` holds the explanation and the
+    // measurement; this is its enforcer.
     //
-    // Output validation runs AFTER the executor, so a handler that returns a
-    // success-shaped object against an `outputSchema` it does not satisfy
-    // hands this wrapper a success — correctly classified — and the SDK then
-    // sends the CLIENT an error. Nothing at the handler's vantage point can
-    // see it; a wire sensor (`baton-proxy`) can.
-    //
-    // ⚠ This test asserts the CURRENT limit, not a desired behaviour. If it
-    // starts failing because `tool_call_error` is emitted, the gap closed and
-    // this should become the positive assertion.
+    // ⚠ This asserts the CURRENT limit, not a desired behaviour. If it starts
+    // failing because `tool_call_error` is emitted, the gap closed and this
+    // should become the positive assertion.
     const sink = new CapturingSink();
     const server = major.make();
-    registerValidated(major, server);
+    major.tool(
+      server,
+      "validated",
+      { name: z.string() },
+      () => ({ content: [{ type: "text" as const, text: "ok" }] }),
+      // The output schema the handler does not satisfy: it returns `content`
+      // and no `structuredContent`.
+      { rows: z.number() },
+    );
     install(server, sink);
     const client = await major.connect(server);
     const wire = (await client.callTool({
@@ -197,6 +183,30 @@ describe.each(MAJORS)("returned isError — $label", (major) => {
     expect(wire.isError).toBe(true);
     expect(wire.content[0]!.text).toContain("Output validation error");
     terminal(sink, "tool_call_end");
+  });
+
+  it("cuts `error_body` by code point, never through a surrogate pair", async () => {
+    // Why the cut is `capCodePoints` and not `.slice()`: a boundary landing
+    // inside a surrogate pair ships a LONE SURROGATE, which survives
+    // `JSON.stringify` and then raises `UnicodeEncodeError` in the first
+    // Python consumer that re-encodes it. `src/_text.ts` carries the full
+    // reasoning; this is the first failure-path value to inherit it.
+    const reason = "x".repeat(ERROR_BODY_MAX_CODE_POINTS - 1) + "\u{1F600}" + "tail";
+    const sink = new CapturingSink();
+    const server = major.make();
+    major.tool(server, "wide", { name: z.string() }, () => ({
+      content: [{ type: "text" as const, text: reason }],
+      isError: true,
+    }));
+    install(server, sink);
+    const client = await major.connect(server);
+    await client.callTool({ name: "wide", arguments: { name: "p1" } });
+
+    const event = terminal(sink, "tool_call_error");
+    expect([...event.payload.error_body]).toHaveLength(ERROR_BODY_MAX_CODE_POINTS);
+    // The emoji survived whole rather than being halved.
+    expect(event.payload.error_body.endsWith("\u{1F600}")).toBe(true);
+    expect(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/.test(event.payload.error_body)).toBe(false);
   });
 
   it("still files a THROW under its constructor name, with a null result", async () => {
@@ -212,7 +222,6 @@ describe.each(MAJORS)("returned isError — $label", (major) => {
     await client.callTool({ name: "boom", arguments: { name: "p1" } });
 
     const event = terminal(sink, "tool_call_error");
-    if (event.event_type !== "tool_call_error") throw new Error("unreachable");
     expect(event.payload.error_type).toBe("TypeError");
     expect(event.payload.error_body).toBe("simulated failure");
     expect(event.payload.result).toBeNull();
@@ -235,7 +244,6 @@ describe.each(MAJORS)("returned isError — $label", (major) => {
     await client.callTool({ name: "leaky", arguments: { name: "p1" } });
 
     const event = terminal(sink, "tool_call_error");
-    if (event.event_type !== "tool_call_error") throw new Error("unreachable");
     expect(event.payload.error_body).toBe("no account for [REDACTED:email]");
     // The envelope is scrubbed too, and it is NOT truncated.
     expect(JSON.stringify(event.payload.result)).not.toContain("alice@example.com");
@@ -268,7 +276,6 @@ describe.each(MAJORS)("returned isError — $label", (major) => {
     await client.callTool({ name: "leaky", arguments: { name: "p1" } });
 
     const event = terminal(sink, "tool_call_error");
-    if (event.event_type !== "tool_call_error") throw new Error("unreachable");
     expect(event.payload.error_body.length).toBeLessThanOrEqual(2000);
     expect(event.payload.error_body).not.toContain("alice@exam");
     // And the envelope, which is never truncated, keeps nothing either.
@@ -298,6 +305,19 @@ describe("errorResult helpers", () => {
       },
     });
     expect(isErrorResult(hostile)).toBe(false);
+  });
+
+  it("errorText fails to empty rather than throwing on the vendor's call path", () => {
+    // The sibling of `isErrorResult`'s guard, and reachable for the same
+    // reason: `content` is a property read, and a property read is what
+    // throws. SPEC §11.2 — a sensor never blocks the call.
+    const hostile = {} as { content?: unknown };
+    Object.defineProperty(hostile, "content", {
+      get() {
+        throw new Error("nope");
+      },
+    });
+    expect(errorText(hostile)).toBe("");
   });
 
   it("errorText joins the text parts and says nothing when there are none", () => {

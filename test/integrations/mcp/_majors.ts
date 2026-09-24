@@ -34,11 +34,17 @@ export interface Major {
   /** `eagerTools` declares the tools capability at construction, which on v2
    * makes the SDK install its `tools/list` handler before any tool exists. */
   make(options?: { eagerTools?: boolean }): any;
+  /** `outputSchema` takes the same per-major shape rule as `inputSchema`,
+   * which is the whole reason it belongs here rather than in a caller: a test
+   * that re-derived the rule would have to branch on something, and the only
+   * thing to branch on is `label` — a string whose job is rendering
+   * `describe.each` titles. */
   tool(
     server: any,
     name: string,
     shape: Record<string, z.ZodType>,
     handler: (args: any) => unknown,
+    outputShape?: Record<string, z.ZodType>,
   ): void;
   connect(server: any): Promise<any>;
 }
@@ -50,8 +56,12 @@ const V1: Major = {
       { name: "vendor", version: "1.0.0" },
       options?.eagerTools ? { capabilities: { tools: {} } } : undefined,
     ),
-  tool: (server, name, shape, handler) => {
-    server.registerTool(name, { inputSchema: shape }, handler);
+  tool: (server, name, shape, handler, outputShape) => {
+    server.registerTool(
+      name,
+      outputShape ? { inputSchema: shape, outputSchema: outputShape } : { inputSchema: shape },
+      handler,
+    );
   },
   connect: async (server) => {
     const [clientTransport, serverTransport] = TransportV1.createLinkedPair();
@@ -68,8 +78,14 @@ const V2: Major = {
       { name: "vendor", version: "1.0.0" },
       options?.eagerTools ? { capabilities: { tools: {} } } : undefined,
     ),
-  tool: (server, name, shape, handler) => {
-    server.registerTool(name, { inputSchema: z.object(shape) }, handler);
+  tool: (server, name, shape, handler, outputShape) => {
+    server.registerTool(
+      name,
+      outputShape
+        ? { inputSchema: z.object(shape), outputSchema: z.object(outputShape) }
+        : { inputSchema: z.object(shape) },
+      handler,
+    );
   },
   connect: async (server) => {
     const [clientTransport, serverTransport] = TransportV2.createLinkedPair();

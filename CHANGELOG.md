@@ -72,6 +72,11 @@
   a flat `error_body` string would lose. On a throw it is explicitly `null`,
   which is the shape Python's vector carries.
 
+  ⚠ **`error_body` is capped at 2000 CODE POINTS, not UTF-16 units**, which
+  is what Python's `[:2000]` counts — so the two producers agree on what the
+  cap means, and a reason whose boundary falls inside a surrogate pair no
+  longer ships a lone surrogate. Both failure legs share one cap.
+
   ⚠ **On this SDK, `tool_call_error.result` and `tool_call_end.result` are the
   same shape** — the object the vendor's handler returned, `{content,
   isError?}`, which neither major converts. Python's two differ (there

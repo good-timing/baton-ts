@@ -103,8 +103,14 @@ import {
   type BatonConfig,
 } from "./config.js";
 import { captureDisabled, DisabledSink, logDisabled } from "../../optout.js";
+import { capCodePoints } from "../../_text.js";
 import { emit } from "./emit.js";
-import { errorText, isErrorResult, TOOL_ERROR_TYPE } from "./errorResult.js";
+import {
+  ERROR_BODY_MAX_CODE_POINTS,
+  errorText,
+  isErrorResult,
+  TOOL_ERROR_TYPE,
+} from "./errorResult.js";
 import { BatonHandle } from "./handle.js";
 import { resolveAnnotationToolName, usableServerName } from "./annotationName.js";
 import { buildServerInstructions } from "./llmText.js";
@@ -265,6 +271,22 @@ class SurfaceState {
  * keep emitting events under the old `tool_name` and keep missing its own
  * param-registry entry — which downgrades the strip to the cold-registry
  * path and puts a warning on the vendor's stderr for every call. */
+/**
+ * `error_body` for either failure shape (SPEC §11.4.3), so the two legs cannot
+ * drift apart on the one rule they share.
+ *
+ * ⚠ **Scrub, THEN cut.** A PII value straddling the boundary must reach the
+ * scrubber whole; cutting first hands it a fragment no pattern matches, and
+ * the surviving half ships unredacted. ⚠ **Cut by CODE POINT** —
+ * `capCodePoints` carries that reasoning, and Python's `[:2000]` counts code
+ * points, so this is also what makes the two producers agree on what the cap
+ * means in the one payload `emitterConformance.test.ts` compares
+ * field-for-field.
+ */
+function errorBody(ctx: WrapContext, text: string): string {
+  return capCodePoints(String(ctx.scrubber(text)), ERROR_BODY_MAX_CODE_POINTS);
+}
+
 function batonWrap(nameRef: { current: string }, original: AnyHandler, ctx: WrapContext): AnyHandler {
   return async (...callArgs: AnyArgs): Promise<unknown> => {
     const toolName = nameRef.current;
@@ -342,11 +364,13 @@ function batonWrap(nameRef: { current: string }, original: AnyHandler, ctx: Wrap
       session_id: sessionId,
       consent_token: ctx.consentToken,
       agent_runtime: runtime,
-      // The four `...common` sites below are the tool-call legs and the
-      // proactive annotation — the same four Python stamps
-      // (`middleware.py` 481/524/562/606). `surface_snapshot` is deliberately
-      // NOT among them: it describes the SERVER and is captured outside any
-      // call, so there is no caller to name (register D5).
+      // The five `...common` sites below are the tool-call legs — start, end,
+      // and BOTH failure shapes (SPEC §11.4.3) — plus the proactive
+      // annotation, the same five Python stamps (`middleware.py`
+      // 503/547/586/644/674; it was four until the returned shape landed
+      // there too). `surface_snapshot` is deliberately NOT among them: it
+      // describes the SERVER and is captured outside any call, so there is no
+      // caller to name (register D5).
       principal,
       // Same four stamps, same exclusion: a surface_snapshot describes the
       // SERVER and is captured outside any call, so it has no caller's
@@ -409,7 +433,7 @@ function batonWrap(nameRef: { current: string }, original: AnyHandler, ctx: Wrap
           payload: {
             tool_name: toolName,
             error_type: err instanceof Error ? err.constructor.name : "Error",
-            error_body: String(ctx.scrubber(message)).slice(0, 2000),
+            error_body: errorBody(ctx, message),
             duration_ms: durationMs,
             // Explicit, though the field is `.optional()` and this is its
             // absent value. The schema is deliberately not an emitter (see
@@ -442,19 +466,12 @@ function batonWrap(nameRef: { current: string }, original: AnyHandler, ctx: Wrap
           payload: {
             tool_name: toolName,
             error_type: TOOL_ERROR_TYPE,
-            // Scrub, THEN cut — see `errorText`'s note. A value straddling
-            // the boundary would otherwise reach the scrubber as a fragment.
-            error_body: String(ctx.scrubber(errorText(result))).slice(0, 2000),
+            error_body: errorBody(ctx, errorText(result)),
             duration_ms: durationMs,
-            // The whole envelope — which in THIS package is the same shape
-            // `tool_call_end.result` records, because the TS handler contract
-            // returns `{content, isError?}` and neither major converts it, so
-            // there is nothing here to unwrap. ⚠ Do not read Python's
-            // contrast into this field: there `tool_call_end.result` is the
-            // unwrapped content list and the error envelope is deliberately a
-            // different shape (SPEC §11.4.3 keeps it era-native). A consumer
-            // that parses a TS-sourced `result` as a bare content array is
-            // wrong on both events.
+            // The whole envelope. ⚠ On this producer that is the same shape
+            // `tool_call_end.result` records, which is NOT what Python's
+            // contrast says — `ToolCallErrorPayloadSchema` in `events.ts`
+            // holds that claim and names the test that enforces it.
             result: ctx.scrubber(result),
           },
         }),

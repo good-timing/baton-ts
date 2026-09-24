@@ -22,6 +22,13 @@
  * `baton-extmcp`'s — sensor parity is the point. */
 export const TOOL_ERROR_TYPE = "tool_error";
 
+/** The `error_body` cap, in CODE POINTS, shared by both failure legs (SPEC
+ * §11.4.3's two shapes) so a change to the limit cannot move one and leave
+ * the other. Python caps the same field at the same number, and its `[:2000]`
+ * counts code points — which is why the cut goes through `capCodePoints` and
+ * not `String.prototype.slice`. */
+export const ERROR_BODY_MAX_CODE_POINTS = 2000;
+
 /**
  * True if `value` is a tool result carrying MCP's error flag.
  *
@@ -57,6 +64,14 @@ export const TOOL_ERROR_TYPE = "tool_error";
  * — which is what `baton-proxy` is, and why the wire probe recorded that the
  * floor an SDK cannot see, the proxy can.
  *
+ * ⚠ **And moving THIS sensor up to the request handler would cost more than
+ * it closed**, which is why the gap is recorded rather than chased: both
+ * majors convert a thrown handler error into a returned `isError` inside that
+ * handler (`mcp.js:135`, `mcp-DXXb3Vv3.mjs:1404`), so above it the two failure
+ * shapes are the same object and `error_type` collapses to `tool_error` for
+ * both. Python's vector pins `"error_type": "ValueError"`. The throw/return
+ * distinction only exists BELOW the request handler, which is where this sits.
+ *
  * Guarded end to end — this runs on the vendor's tool-call path (SPEC §11.2:
  * never block the call), so it fails to False.
  */
@@ -79,8 +94,8 @@ export function isErrorResult(value: unknown): boolean {
  * the reason belongs. An empty string says "no reason given", which is honest
  * and which the Console already renders as such.
  *
- * ⚠ **No truncation here, deliberately.** The caller cuts AFTER scrubbing,
- * matching the throw path's `String(scrubber(message)).slice(0, 2000)`.
+ * ⚠ **No truncation here, deliberately.** The caller cuts AFTER scrubbing, to
+ * `ERROR_BODY_MAX_CODE_POINTS`, on both failure legs alike.
  * Cutting inside this helper would put the truncation BEFORE the scrubber for
  * one of the two failure shapes and after it for the other — and a PII value
  * straddling the boundary would reach the scrubber as a fragment its pattern
@@ -95,7 +110,9 @@ export function errorText(value: unknown): string {
     if (!Array.isArray(content)) return "";
     for (const part of content) {
       const text = (part as { text?: unknown })?.text;
-      if (typeof text === "string" && text.trim()) parts.push(text.trim());
+      if (typeof text !== "string") continue;
+      const trimmed = text.trim();
+      if (trimmed) parts.push(trimmed);
     }
   } catch {
     return "";
