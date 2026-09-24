@@ -356,11 +356,10 @@ describe("cross-SDK emitter conformance (Phase 3)", () => {
   it("populates the exempt payload fields with the right shape, not just any value", () => {
     // The exemptions above are the only place a real divergence could hide,
     // so each one still gets a shape assertion.
-    const pick = (name: string) => events.find(CASES.find((c) => c.name === name)!.pick)!;
-    const end = pick("tool_call_end");
-    const error = pick("tool_call_error");
-    const returned = pick("tool_call_error.returned");
-    const snapshot = pick("surface_snapshot");
+    const end = events.find((e) => e.event_type === "tool_call_end")!;
+    const error = events.find(isThrownError)!;
+    const returned = events.find(isReturnedError)!;
+    const snapshot = events.find((e) => e.event_type === "surface_snapshot")!;
 
     if (end.event_type === "tool_call_end") {
       expect(end.payload.result).not.toBeNull();
@@ -523,21 +522,38 @@ describe("cross-SDK emitter conformance (Phase 3)", () => {
     // Two calls ran, so `find` is not enough — it returns the FIRST start,
     // and pairing the error against that one asserts only that two calls got
     // different ids. Index into the asserted order instead.
-    const [, , okStart, okEnd, failStart, failError] = events;
+    // ⚠ By the leg each event IS, never by its index. This destructured
+    // `const [, , okStart, okEnd, failStart, failError] = events` until the
+    // scenario grew a third call under it — an anchor on a list whose length
+    // is a property of the scenario, which is the pattern `CASES` was built
+    // to refuse.
+    const starts = events.filter((e) => e.event_type === "tool_call_start");
+    const [okStart, failStart, softStart] = starts;
+    const okEnd = events.find((e) => e.event_type === "tool_call_end")!;
+    const failError = events.find(isThrownError)!;
+    const softError = events.find(isReturnedError)!;
+    expect(starts).toHaveLength(3);
 
     expect(okStart!.call_id).toEqual(expect.any(String));
-    expect(okEnd!.call_id).toBe(okStart!.call_id);
+    expect(okEnd.call_id).toBe(okStart!.call_id);
 
     // The FAILING call's two legs pair on their own id — the case SPEC
     // §11.5.4 tier 1 matters most for, and the one an `error !== okStart`
     // assertion cannot see: a freshly minted id on the error leg satisfies
     // that and is unpairable.
     expect(failStart!.call_id).toEqual(expect.any(String));
-    expect(failError!.call_id).toBe(failStart!.call_id);
+    expect(failError.call_id).toBe(failStart!.call_id);
 
-    // And the two calls really are distinct, so neither assertion above is
-    // passing on one shared id.
-    expect(failStart!.call_id).not.toBe(okStart!.call_id);
+    // ⚠ And the RETURNED failure shape (SPEC §11.4.3), whose terminal leg is
+    // emitted from a different branch than the throw's. `call_id` is minted
+    // once per call so it is right by construction — which is exactly the
+    // argument this test exists not to accept.
+    expect(softStart!.call_id).toEqual(expect.any(String));
+    expect(softError.call_id).toBe(softStart!.call_id);
+
+    // And the three calls really are distinct, so none of the assertions
+    // above is passing on one shared id.
+    expect(new Set(starts.map((e) => e.call_id)).size).toBe(3);
 
     // Null on the two types SPEC defines no call_id for. The field is still
     // PRESENT — the key-set assertion above covers that; this covers the value.
