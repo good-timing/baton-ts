@@ -58,11 +58,35 @@ import type { Sink } from "../src/sinks.js";
 const here = path.dirname(fileURLToPath(import.meta.url));
 const vectorsDir = path.join(here, "..", "baton-spec", "vectors");
 
-function vector(eventType: string): Record<string, unknown> {
+/** Keyed by VECTOR name, which is no longer always the event type:
+ * `tool_call_error` has two structurally different shapes (SPEC §11.4.3) and
+ * `generate.py` writes `tool_call_error.returned.json` for the second. */
+function vector(name: string): Record<string, unknown> {
   return JSON.parse(
-    readFileSync(path.join(vectorsDir, `${eventType}.json`), "utf-8"),
+    readFileSync(path.join(vectorsDir, `${name}.json`), "utf-8"),
   ) as Record<string, unknown>;
 }
+
+/**
+ * One case per vector: the file to compare against, and how to pick the
+ * emitted event it pins. The two `tool_call_error` shapes are told apart by
+ * `result` exactly as `generate.py` tells them apart when naming the files —
+ * a raise leaves it null, a returned flag populates it.
+ */
+const CASES: ReadonlyArray<{ name: string; pick: (e: Event) => boolean }> = [
+  { name: "annotation", pick: (e) => e.event_type === "annotation" },
+  { name: "surface_snapshot", pick: (e) => e.event_type === "surface_snapshot" },
+  { name: "tool_call_start", pick: (e) => e.event_type === "tool_call_start" },
+  { name: "tool_call_end", pick: (e) => e.event_type === "tool_call_end" },
+  {
+    name: "tool_call_error",
+    pick: (e) => e.event_type === "tool_call_error" && e.payload.result === null,
+  },
+  {
+    name: "tool_call_error.returned",
+    pick: (e) => e.event_type === "tool_call_error" && e.payload.result != null,
+  },
+];
 
 /**
  * Envelope fields allowed to differ from the Python vector, each for a
@@ -133,6 +157,22 @@ const PAYLOAD_ALLOWED_TO_DIFFER: Record<string, ReadonlySet<string>> = {
     "error_type",
     "duration_ms", // timing
   ]),
+  "tool_call_error.returned": new Set([
+    // ⚠ `error_type` is deliberately NOT exempt here. The returned shape does
+    // not name a language's exception class — both producers emit the
+    // registered literal `"tool_error"`, and that agreement is the parity this
+    // vector exists to pin. `error_body` is not exempt either: the reason is
+    // unwrapped from the same content text, so the two must produce the same
+    // sentence from the same envelope.
+    //
+    // `result` is, for the reason `tool_call_end.result` is: the envelope is
+    // era-native by design (SPEC §11.4.3), so Python records its library's
+    // pydantic dump — `is_error`, `structured_content`, `result_type` — while
+    // this package records the vendor's literal return, which is what both TS
+    // majors put on the wire. The shape is asserted separately below.
+    "result",
+    "duration_ms", // timing
+  ]),
   surface_snapshot: new Set([
     // The vendor-true surface is genuinely different between the two
     // runtimes: FastMCP derives JSON Schema from Python type hints
@@ -179,6 +219,16 @@ async function runSpecScenario(): Promise<Event[]> {
   server.registerTool("boom", {}, () => {
     throw new Error("simulated failure");
   });
+  // ⚠ The SECOND failure shape (SPEC §11.4.3), and it needs its own tool for
+  // the reason `generate.py`'s does: the two produce structurally different
+  // `tool_call_error` payloads, and a scenario holding only `boom` leaves the
+  // shape `result` was added for unexercised. Returning the flag is how a TS
+  // tool reports a failure without throwing — measured on both majors, the
+  // SDK passes this literal through to the client.
+  server.registerTool("soft_fail", {}, () => ({
+    content: [{ type: "text" as const, text: "simulated returned failure" }],
+    isError: true,
+  }));
 
   withBaton(server, {
     vendorId: "spec-vectors",
@@ -209,6 +259,7 @@ async function runSpecScenario(): Promise<Event[]> {
   });
   await client.callTool({ name: "lookup", arguments: { name: "alice" } });
   await client.callTool({ name: "boom", arguments: {} });
+  await client.callTool({ name: "soft_fail", arguments: {} });
 
   return sink.events;
 }
@@ -233,6 +284,8 @@ describe("cross-SDK emitter conformance (Phase 3)", () => {
       "tool_call_end",
       "tool_call_start",
       "tool_call_error",
+      "tool_call_start",
+      "tool_call_error",
     ]);
   });
 
@@ -240,29 +293,18 @@ describe("cross-SDK emitter conformance (Phase 3)", () => {
     // 1-based and monotonic per session, shared across event types — the
     // vectors carry 1,2,3,4,(5),6. An off-by-one start would let the
     // Console mis-order a TS-sourced session against a Python-sourced one.
-    expect(events.map((e) => e.sequence_number)).toEqual([1, 2, 3, 4, 5, 6]);
-    for (const eventType of [
-      "annotation",
-      "surface_snapshot",
-      "tool_call_start",
-      "tool_call_end",
-    ]) {
-      const emitted = events.find((e) => e.event_type === eventType)!;
-      expect(emitted.sequence_number).toBe(vector(eventType).sequence_number);
+    expect(events.map((e) => e.sequence_number)).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+    // Every vector's own number, the two error shapes included — the returned
+    // one is last on both sides, so an added call that drifted the two
+    // scenarios apart would show up here rather than silently.
+    for (const { name, pick } of CASES) {
+      expect(events.find(pick)!.sequence_number, name).toBe(vector(name).sequence_number);
     }
   });
 
-  it.each([
-    "annotation",
-    "surface_snapshot",
-    "tool_call_start",
-    "tool_call_end",
-    "tool_call_error",
-  ])("%s: envelope matches the Python vector field-for-field", (eventType) => {
-    const emitted = JSON.parse(
-      JSON.stringify(events.find((e) => e.event_type === eventType)!),
-    ) as Record<string, unknown>;
-    const reference = vector(eventType);
+  it.each(CASES)("$name: envelope matches the Python vector field-for-field", ({ name, pick }) => {
+    const emitted = JSON.parse(JSON.stringify(events.find(pick)!)) as Record<string, unknown>;
+    const reference = vector(name);
 
     // Key set first — a missing or extra envelope field is the failure this
     // test most needs to catch, and comparing values alone would miss an
@@ -275,22 +317,14 @@ describe("cross-SDK emitter conformance (Phase 3)", () => {
     }
   });
 
-  it.each([
-    "annotation",
-    "surface_snapshot",
-    "tool_call_start",
-    "tool_call_end",
-    "tool_call_error",
-  ])("%s: payload matches the Python vector field-for-field", (eventType) => {
-    const emitted = JSON.parse(
-      JSON.stringify(events.find((e) => e.event_type === eventType)!),
-    ) as Record<string, unknown>;
+  it.each(CASES)("$name: payload matches the Python vector field-for-field", ({ name, pick }) => {
+    const emitted = JSON.parse(JSON.stringify(events.find(pick)!)) as Record<string, unknown>;
     const emittedPayload = emitted.payload as Record<string, unknown>;
-    const referencePayload = vector(eventType).payload as Record<
+    const referencePayload = vector(name).payload as Record<
       string,
       unknown
     >;
-    const exempt = PAYLOAD_ALLOWED_TO_DIFFER[eventType]!;
+    const exempt = PAYLOAD_ALLOWED_TO_DIFFER[name]!;
 
     expect(Object.keys(emittedPayload).sort()).toEqual(
       Object.keys(referencePayload).sort(),
@@ -298,7 +332,7 @@ describe("cross-SDK emitter conformance (Phase 3)", () => {
 
     for (const key of Object.keys(referencePayload)) {
       if (exempt.has(key)) continue;
-      expect(emittedPayload[key], `${eventType}.payload.${key}`).toEqual(
+      expect(emittedPayload[key], `${name}.payload.${key}`).toEqual(
         referencePayload[key],
       );
     }
@@ -308,7 +342,8 @@ describe("cross-SDK emitter conformance (Phase 3)", () => {
     // The exemptions above are the only place a real divergence could hide,
     // so each one still gets a shape assertion.
     const end = events.find((e) => e.event_type === "tool_call_end")!;
-    const error = events.find((e) => e.event_type === "tool_call_error")!;
+    const error = events.find(CASES[4]!.pick)!;
+    const returned = events.find(CASES[5]!.pick)!;
     const snapshot = events.find((e) => e.event_type === "surface_snapshot")!;
 
     if (end.event_type === "tool_call_end") {
@@ -321,15 +356,27 @@ describe("cross-SDK emitter conformance (Phase 3)", () => {
       expect(error.payload.error_type.length).toBeGreaterThan(0);
       expect(typeof error.payload.duration_ms).toBe("number");
     }
+    if (returned.event_type === "tool_call_error") {
+      // The one exemption the returned shape adds. Python's envelope is its
+      // library's pydantic dump; this one is the vendor's literal return —
+      // both era-native, both carrying the flag and the reason, which is what
+      // `result` is defined to hold. Pinned as that shape, not as Python's.
+      expect(returned.payload.result).toEqual({
+        content: [{ type: "text", text: "simulated returned failure" }],
+        isError: true,
+      });
+      expect(typeof returned.payload.duration_ms).toBe("number");
+    }
     if (snapshot.event_type === "surface_snapshot") {
       expect(snapshot.payload.surface_hash).toMatch(/^sha256:[0-9a-f]{64}$/);
       expect(snapshot.payload.server_info).toMatchObject({
         name: "spec-vector-generator",
       });
       // The vendor-true surface excludes Baton's own injected annotate tool
-      // and carries the vendor's two tools — same as the Python vector's.
+      // and carries the vendor's three tools — same as the Python vector's,
+      // which grew `soft_fail` in the same change (`baton-spec` f1e0280).
       const tools = snapshot.payload.tools as Array<{ name: string }>;
-      expect(tools.map((t) => t.name)).toEqual(["boom", "lookup"]);
+      expect(tools.map((t) => t.name)).toEqual(["boom", "lookup", "soft_fail"]);
     }
   });
 

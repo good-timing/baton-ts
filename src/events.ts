@@ -62,14 +62,14 @@ export type ToolCallEndPayload = z.infer<typeof ToolCallEndPayloadSchema>;
  * message or the unwrapped reason (PII-scrubbed, capped at 2000 chars per the
  * design note).
  *
- * ⚠ This schema ACCEPTS `result` but this producer does not yet EMIT it, and
- * the split is deliberate. Unlike `baton-console`'s ingest — which forbids
- * unknown keys on the envelope only, leaving `payload` an opaque dict — this
- * schema is `.strict()` down to the payload, and `test/conformance.test.ts`
- * parses every `baton-spec` vector through it. So a `baton-spec` bump carrying
- * the field reds this suite on BOTH error vectors, the throw-shape one
- * included, because it now carries `result: null`. Accepting first is what
- * makes that bump safe; emitting is the separate change.
+ * ⚠ This schema ACCEPTED `result` one commit before this producer emitted
+ * it (`67453eb`), and the split was deliberate. Unlike `baton-console`'s
+ * ingest — which forbids unknown keys on the envelope only, leaving `payload`
+ * an opaque dict — this schema is `.strict()` down to the payload, and
+ * `test/conformance.test.ts` parses every `baton-spec` vector through it. So
+ * the `baton-spec` bump carrying the field would have reddened this suite on
+ * BOTH error vectors, the throw-shape one included, because it now carries
+ * `result: null`. Accepting first is what made that bump safe.
  *
  * `result` carries the full result envelope on the returned shape and is null
  * on a throw, where no result object exists. It is deliberately NOT unwrapped
@@ -81,21 +81,21 @@ export const ToolCallErrorPayloadSchema = z
     error_type: z.string(),
     error_body: z.string(),
     duration_ms: z.number().int().nullable().default(null),
-    // ⚠ `.optional()`, NOT `.default(null)` like the sibling fields — and the
-    // difference is the whole reason this lands as its own change.
+    // ⚠ `.optional()`, NOT `.default(null)` like the sibling fields — and it
+    // stays that way now that the producer emits the field.
     //
     // A default makes the schema an EMITTER: parsing a payload without the key
-    // ADDS it. This repo's submodule still pins a `baton-spec` whose
-    // `events.schema.json` is `additionalProperties: false`, and three tests
-    // check the TS side against that pin — a byte-identical vector round-trip,
-    // an ajv validation of TS-built events, and a field-for-field payload
-    // comparison. All three reddened on `.default(null)`, because the schema
-    // started inventing a key the pinned spec forbids.
+    // ADDS it. That is wrong in a schema that also READS — a stored event from
+    // before the field existed would come back carrying an invented key, and
+    // against the pre-`f1e0280` spec pin, whose `events.schema.json` is
+    // `additionalProperties: false`, it reddened three tests saying so: a
+    // byte-identical vector round-trip, an ajv validation of TS-built events,
+    // and a field-for-field payload comparison.
     //
-    // `.optional()` accepts the field when a newer vector carries it and stays
-    // silent when it does not, so this file is correct against BOTH spec pins
-    // and the bump is decoupled from it. Revisit only if this producer starts
-    // emitting the field, which is a separate change.
+    // `.optional()` accepts the field when a vector carries it and stays
+    // silent when it does not. What makes the EMITTED shape complete is the
+    // emitter declaring `result` on both failure legs (`withBaton.ts`),
+    // explicitly `null` on a throw — not the schema filling it in.
     result: z.unknown().nullable().optional(),
   })
   .strict();

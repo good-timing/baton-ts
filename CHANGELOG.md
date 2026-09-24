@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased: the principal stops being a string with a prefix on it
+## Unreleased: the principal becomes an object, and a returned error flag becomes a failure
 
 - **BREAKING — `principal_id` becomes `principal: {id, source, form}`.** All
   three members are required together, so a producer emits the whole object or
@@ -53,6 +53,50 @@
   the default cannot disagree. `principalFor` itself is **not** exported: it is
   the single construction site for the wire object, and handing it out would
   let a caller assemble a partial `principal` by hand.
+
+- **BEHAVIOUR — a tool that RETURNS an error result now emits
+  `tool_call_error`, where it used to emit `tool_call_end`.** MCP files a
+  failed `tools/call` as a 200 whose `CallToolResult` sets `isError`; a
+  JSON-RPC error means a protocol fault. This package classified on thrown
+  exceptions alone, so every failure a vendor reported as a value was filed as
+  a success (SPEC §11.4.3; §6.1's old wording said "on exception", and this
+  package copied the spec).
+
+  The caller's result is unchanged: the value is returned, never thrown
+  (§11.2). What moves is which event the session carries, and with it any
+  Console figure that counts failures.
+
+- **`tool_call_error.result` is now EMITTED, not merely accepted.** `67453eb`
+  landed the schema half; this is the producer half. On a returned flag it
+  carries the full envelope — deliberately NOT unwrapped the way
+  `tool_call_end.result` unwraps to the developer's return, because on a
+  failure the flag and the reason both live on the envelope. On a throw it is
+  explicitly `null`, which is the shape Python's vector carries.
+
+  `error_type` is the registered literal `"tool_error"` for the returned shape
+  and stays the error's constructor name for a throw. The literal is the same
+  one `baton` (Python) and `baton-extmcp` emit, which is what lets a consumer
+  compare the three sensors.
+
+- ⚠ **One spelling, `isError`, and no `content` guard — both measured on both
+  majors, 2026-09-24.** Python's helper probes `is_error` first because that is
+  an attribute name `mcp` 2.x introduced; the TS SDKs have no snake_case era,
+  and what this package sees is the vendor's own literal return, passed through
+  unconverted by `@modelcontextprotocol/sdk` 1.x and
+  `@modelcontextprotocol/server` 2.x alike.
+
+  Python's helper also requires a list-valued `content`, to exclude an object
+  that merely carries the attribute. That guard is wrong here and is
+  deliberately not ported: a tool returning `{isError: true, rows: 0}` — no
+  content at all — reaches the client as `{content: [], isError: true}`. The
+  guard would make this sensor miss a failure its own caller can see.
+
+- **`baton-spec` moves to `f1e0280`**, which carries `result` on
+  `ToolCallErrorPayload` and a second `tool_call_error` vector for the returned
+  shape. The cross-SDK conformance scenario grew the `soft_fail` tool to match
+  `generate.py`'s, so both failure shapes are now pinned against a real
+  Python-emitted envelope — `error_type` and `error_body` compared, not
+  exempted.
 
 ## 0.3.7: the envelope says what was underneath the call
 

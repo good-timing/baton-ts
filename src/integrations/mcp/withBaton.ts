@@ -23,7 +23,11 @@
  * ```
  *
  * Wraps every tool call to emit `tool_call_start` → call → `tool_call_end` /
- * `tool_call_error`, injects server `instructions` (SPEC §5.1.2), registers
+ * `tool_call_error` — the latter on FAILURE, which MCP expresses two ways
+ * (SPEC §11.4.3): the vendor handler throws, or it returns a result carrying
+ * MCP's error flag on a 200. Reading only the first is what this package did,
+ * and what §6.1's own wording told it to. Injects server `instructions`
+ * (SPEC §5.1.2), registers
  * the `<vendor>_annotate` tool (SPEC §5.1.1), injects `user_goal`/
  * `expected_result`/`overall_task` intent params on every wrapped tool's
  * schema (SPEC §11.4.1 `call_intent`/`call_expected`/`call_workflow`/
@@ -100,6 +104,7 @@ import {
 } from "./config.js";
 import { captureDisabled, DisabledSink, logDisabled } from "../../optout.js";
 import { emit } from "./emit.js";
+import { errorText, isErrorResult, TOOL_ERROR_TYPE } from "./errorResult.js";
 import { BatonHandle } from "./handle.js";
 import { resolveAnnotationToolName, usableServerName } from "./annotationName.js";
 import { buildServerInstructions } from "./llmText.js";
@@ -406,6 +411,15 @@ function batonWrap(nameRef: { current: string }, original: AnyHandler, ctx: Wrap
             error_type: err instanceof Error ? err.constructor.name : "Error",
             error_body: String(ctx.scrubber(message)).slice(0, 2000),
             duration_ms: durationMs,
+            // Explicit, though the field is `.optional()` and this is its
+            // absent value. The schema is deliberately not an emitter (see
+            // `ToolCallErrorPayloadSchema`), so if this leg stayed silent the
+            // key would be missing — and Python's `tool_call_error` vector
+            // carries `result: null`, so the cross-SDK key-set check in
+            // `emitterConformance.test.ts` is what would say so. Each of the
+            // two failure shapes declares which it is, the same reason
+            // Python's emitter made the parameter positional-without-default.
+            result: null,
           },
         }),
       );
@@ -413,6 +427,37 @@ function batonWrap(nameRef: { current: string }, original: AnyHandler, ctx: Wrap
     }
 
     const durationMs = Math.round(performance.now() - startedAt);
+
+    // The OTHER failure shape (SPEC §11.4.3): the handler returned normally
+    // and the result carries MCP's error flag, which rides a 200 rather than a
+    // JSON-RPC error. It arrives here rather than through the catch above, and
+    // filing it as `tool_call_end` is filing a failure as a success.
+    if (isErrorResult(result)) {
+      await emit(ctx.sink, () =>
+        ToolCallErrorEventSchema.parse({
+          ...common,
+          call_id: callId,
+          sequence_number: ctx.counter.next(sessionId),
+          captured_at: new Date().toISOString(),
+          payload: {
+            tool_name: toolName,
+            error_type: TOOL_ERROR_TYPE,
+            // Scrub, THEN cut — see `errorText`'s note. A value straddling
+            // the boundary would otherwise reach the scrubber as a fragment.
+            error_body: String(ctx.scrubber(errorText(result))).slice(0, 2000),
+            duration_ms: durationMs,
+            // The ENVELOPE, not the unwrapped developer return that
+            // `tool_call_end` records: the flag and the reason both live on
+            // the envelope, and unwrapping is what drops them.
+            result: ctx.scrubber(result),
+          },
+        }),
+      );
+      // Returned, never thrown. The vendor chose to report this failure as a
+      // value, and §11.2 says a sensor does not change what the caller sees.
+      return result;
+    }
+
     await emit(ctx.sink, () =>
       ToolCallEndEventSchema.parse({
         ...common,
