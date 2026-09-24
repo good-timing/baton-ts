@@ -59,8 +59,9 @@ export type ToolCallEndPayload = z.infer<typeof ToolCallEndPayloadSchema>;
  * the vendor handler throws, or it returns a result carrying MCP's error flag
  * on a 200. `error_type` is the error's constructor name for a throw and the
  * registered value `"tool_error"` for a returned flag; `error_body` is the
- * message or the unwrapped reason (PII-scrubbed, capped at 2000 chars per the
- * design note).
+ * message or the unwrapped reason (PII-scrubbed, then capped — the limit and
+ * its unit live on `ERROR_BODY_MAX_CODE_POINTS` in
+ * `integrations/mcp/errorResult.ts`, which both failure legs cut with).
  *
  * ⚠ This schema ACCEPTED `result` one commit before this producer emitted
  * it (`67453eb`), and the split was deliberate. Unlike `baton-console`'s

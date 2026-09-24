@@ -261,9 +261,13 @@ describe.each(MAJORS)("returned isError — $label", (major) => {
     // presence: scrubbing first shortens the string enough that the cut lands
     // inside `[REDACTED:email]` itself. The test above is what rules out
     // "absent because everything was truncated away".
-    const padding = "x".repeat(1989);
-    const reason = `${padding} alice@example.com trailing`;
-    expect(reason.slice(0, 2000).endsWith("alice@exam")).toBe(true);
+    const email = "alice@example.com";
+    // Derived from the cap, not hardcoded beside it: a bump to the constant
+    // would otherwise move the boundary out from under the address and leave
+    // this asserting nothing.
+    const reason = `${"x".repeat(ERROR_BODY_MAX_CODE_POINTS - 11)} ${email} trailing`;
+    const survivesACutFirst = [...reason].slice(0, ERROR_BODY_MAX_CODE_POINTS).join("");
+    expect(survivesACutFirst.endsWith("alice@exam")).toBe(true);
 
     const sink = new CapturingSink();
     const server = major.make();
@@ -276,7 +280,10 @@ describe.each(MAJORS)("returned isError — $label", (major) => {
     await client.callTool({ name: "leaky", arguments: { name: "p1" } });
 
     const event = terminal(sink, "tool_call_error");
-    expect(event.payload.error_body.length).toBeLessThanOrEqual(2000);
+    // Code points, which is the unit the cap is in.
+    expect([...event.payload.error_body].length).toBeLessThanOrEqual(
+      ERROR_BODY_MAX_CODE_POINTS,
+    );
     expect(event.payload.error_body).not.toContain("alice@exam");
     // And the envelope, which is never truncated, keeps nothing either.
     expect(JSON.stringify(event.payload.result)).not.toContain("alice@exam");

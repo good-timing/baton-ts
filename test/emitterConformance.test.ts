@@ -522,34 +522,41 @@ describe("cross-SDK emitter conformance (Phase 3)", () => {
     // Two calls ran, so `find` is not enough — it returns the FIRST start,
     // and pairing the error against that one asserts only that two calls got
     // different ids. Index into the asserted order instead.
-    // ⚠ By the leg each event IS, never by its index. This destructured
+    // ⚠ By what each event NAMES, never by its position. This destructured
     // `const [, , okStart, okEnd, failStart, failError] = events` until the
     // scenario grew a third call under it — an anchor on a list whose length
     // is a property of the scenario, which is the pattern `CASES` was built
-    // to refuse.
+    // to refuse. A first pass at the fix only moved the anchor into `starts`,
+    // which is the same defect one array along.
     const starts = events.filter((e) => e.event_type === "tool_call_start");
-    const [okStart, failStart, softStart] = starts;
+    const startFor = (toolName: string) =>
+      starts.find((e) => (e.payload as { tool_name: string }).tool_name === toolName)!;
+    // Keyed on the tool each leg names, which is the only thing about these
+    // events that is not an artifact of the scenario's order or length.
+    const okStart = startFor("lookup");
+    const failStart = startFor("boom");
+    const softStart = startFor("soft_fail");
     const okEnd = events.find((e) => e.event_type === "tool_call_end")!;
     const failError = events.find(isThrownError)!;
     const softError = events.find(isReturnedError)!;
     expect(starts).toHaveLength(3);
 
-    expect(okStart!.call_id).toEqual(expect.any(String));
-    expect(okEnd.call_id).toBe(okStart!.call_id);
+    expect(okStart.call_id).toEqual(expect.any(String));
+    expect(okEnd.call_id).toBe(okStart.call_id);
 
     // The FAILING call's two legs pair on their own id — the case SPEC
     // §11.5.4 tier 1 matters most for, and the one an `error !== okStart`
     // assertion cannot see: a freshly minted id on the error leg satisfies
     // that and is unpairable.
-    expect(failStart!.call_id).toEqual(expect.any(String));
-    expect(failError.call_id).toBe(failStart!.call_id);
+    expect(failStart.call_id).toEqual(expect.any(String));
+    expect(failError.call_id).toBe(failStart.call_id);
 
     // ⚠ And the RETURNED failure shape (SPEC §11.4.3), whose terminal leg is
     // emitted from a different branch than the throw's. `call_id` is minted
     // once per call so it is right by construction — which is exactly the
     // argument this test exists not to accept.
-    expect(softStart!.call_id).toEqual(expect.any(String));
-    expect(softError.call_id).toBe(softStart!.call_id);
+    expect(softStart.call_id).toEqual(expect.any(String));
+    expect(softError.call_id).toBe(softStart.call_id);
 
     // And the three calls really are distinct, so none of the assertions
     // above is passing on one shared id.

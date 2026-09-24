@@ -265,12 +265,6 @@ class SurfaceState {
   }
 }
 
-/** `nameRef` is read on every call, not captured: v2's `update({name})`
- * renames a tool in place, keeping the same entry object AND the same
- * executor, so a wrapper that closed over the registration-time string would
- * keep emitting events under the old `tool_name` and keep missing its own
- * param-registry entry — which downgrades the strip to the cold-registry
- * path and puts a warning on the vendor's stderr for every call. */
 /**
  * `error_body` for either failure shape (SPEC §11.4.3), so the two legs cannot
  * drift apart on the one rule they share.
@@ -287,6 +281,12 @@ function errorBody(ctx: WrapContext, text: string): string {
   return capCodePoints(String(ctx.scrubber(text)), ERROR_BODY_MAX_CODE_POINTS);
 }
 
+/** `nameRef` is read on every call, not captured: v2's `update({name})`
+ * renames a tool in place, keeping the same entry object AND the same
+ * executor, so a wrapper that closed over the registration-time string would
+ * keep emitting events under the old `tool_name` and keep missing its own
+ * param-registry entry — which downgrades the strip to the cold-registry
+ * path and puts a warning on the vendor's stderr for every call. */
 function batonWrap(nameRef: { current: string }, original: AnyHandler, ctx: WrapContext): AnyHandler {
   return async (...callArgs: AnyArgs): Promise<unknown> => {
     const toolName = nameRef.current;
@@ -372,7 +372,7 @@ function batonWrap(nameRef: { current: string }, original: AnyHandler, ctx: Wrap
       // describes the SERVER and is captured outside any call, so there is no
       // caller to name (register D5).
       principal,
-      // Same four stamps, same exclusion: a surface_snapshot describes the
+      // Same five stamps, same exclusion: a surface_snapshot describes the
       // SERVER and is captured outside any call, so it has no caller's
       // transport to name any more than it has a caller to name.
       transport_observed: observeTransport(extra),
