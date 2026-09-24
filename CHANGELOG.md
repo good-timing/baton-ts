@@ -1,6 +1,12 @@
 # Changelog
 
-## Unreleased: the principal becomes an object, and a returned error flag becomes a failure
+## 0.4.0: the principal becomes an object, and a returned error flag becomes a failure
+
+Two breaking changes under one number. ⚠ **A MINOR bump, per SPEC §13's own
+rule that pre-1.0 breakage rides a minor** — stated because the Python side
+shipped the same two changes as PATCHES (0.8.6, 0.8.10) and recorded each as a
+deviation. This one is not a deviation, so `@goodtiming/baton-sdk@^0.3` does
+NOT admit it, which is the protection the rule exists to give.
 
 - **BREAKING — `principal_id` becomes `principal: {id, source, form}`.** All
   three members are required together, so a producer emits the whole object or
