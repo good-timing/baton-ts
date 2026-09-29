@@ -85,16 +85,17 @@ export type { Principal, PrincipalIdMode } from "./identity.js";
 // the narrow type and a vendor naming it in a `Sink` signature gets TS2345.
 // A consumer wanting a name for the received shape uses
 // `z.infer<typeof PrincipalWireSchema>` or `Event["principal"]`.
-// `HASH_SCHEME` is exported because a vendor recomputing a pseudonym needs the
-// same prefix we wrote, and `hashPrincipalId` now defaults to it — so the
-// exported constant and the default cannot disagree.
+// ⚠ **`HASH_SCHEME` was exported here until 0.4.1 and is GONE**, because there
+// is no prefix left for a vendor recomputing a pseudonym to match: a hashed
+// principal is the bare digest (SPEC §11.4, §13 entry 0.8.11). A vendor holding
+// the old constant gets a tagged value from its own copy and a bare one from
+// this SDK across the upgrade — a breaking removal, stated in the CHANGELOG.
 //
 // `principalFor` is NOT exported, and that is the deliberate half: it is the
 // single construction site for the wire object, and handing it out invites a
 // vendor to assemble a `principal` by hand, which is exactly the "all three
 // members or nothing" guarantee this change exists to make structural.
 export {
-  HASH_SCHEME,
   PRINCIPAL_FORM_HASHED,
   PRINCIPAL_FORM_RAW,
   PRINCIPAL_SOURCE_ASSERTED,

@@ -10,7 +10,7 @@ Phase 2 of the design note in `baton-internal` (private — read it before touch
 
 **Known divergences from the Python SDK** — deliberate, and recorded here because a parity audit opens this file before it opens a docstring:
 
-1. **No attested identity SOURCE.** Every principal this SDK emits carries `source: "asserted"`; `BatonConfig.resolvePrincipal` is the only identity mechanism here. ⚠ Do not phrase this as "no `h1:` rung" — the reason, and why that phrasing is wrong in the dangerous direction, is in `src/integrations/mcp/principalResolution.ts`.
+1. **No attested identity SOURCE.** Every principal this SDK emits carries `source: "asserted"`; `BatonConfig.resolvePrincipal` is the only identity mechanism here. ⚠ Do not phrase this as a fact about the VALUE's shape — a hashed principal carries no tag at all since 0.4.1, so there is no prefix to name. What is missing is the `source: "attested"` value; the reason, and why the shape-based phrasing is wrong in the dangerous direction, is in `src/integrations/mcp/principalResolution.ts`.
 2. **Vendor hooks run INLINE with no timeout.** Python runs them off the event loop under a 5s budget (`integrations/_hooks.py`); a blocking hook here stalls its own request. Applies to `resolvePrincipal` and `scrubber`.
 3. **A malformed (lone-surrogate) `issuer` drops the issuer and still hashes**, where Python drops the principal entirely. The generated corpus cannot pin this — Python's generator cannot emit a vector for an input that raises.
 

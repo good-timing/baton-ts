@@ -8,12 +8,14 @@
  * **Hook only — there is deliberately no ATTESTED rung here yet**, so every
  * principal this SDK emits carries `source: "asserted"`.
  *
- * ⚠ **The missing rung is not named by the tag, and saying "no `h1:` rung"
- * would now be false.** This SDK does emit `h1:` — that prefix is the HMAC KEY
- * GENERATION and is the same on both provenances. What is missing is the
- * `source: "attested"` value, and a consumer must read `source` to learn that,
- * never the prefix. SPEC §11.4 forbids presenting an asserted principal as
- * verified, and this arm has only asserted to present.
+ * ⚠ **The missing rung has no shape on the value, and never will again.** This
+ * note said "saying `no h1: rung` would be false, because this SDK does emit
+ * `h1:`" — true until 0.4.1, when the tag came off the value entirely (SPEC
+ * §11.4, §13 entry 0.8.11). A hashed principal is now the bare digest, so there
+ * is no prefix to be right or wrong about: the missing thing is the
+ * `source: "attested"` VALUE, and a consumer reads `source` to learn it. SPEC
+ * §11.4 forbids presenting an asserted principal as verified, and this arm has
+ * only asserted to present.
  *
  * Python reads `claims["sub"]` off a verified access token; TypeScript's
  * `AuthInfo` has no `claims` field at all (it is

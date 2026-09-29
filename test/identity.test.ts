@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  HASH_SCHEME,
   PRINCIPAL_FORM_HASHED,
   PRINCIPAL_FORM_RAW,
   PRINCIPAL_SOURCE_ASSERTED,
@@ -31,25 +30,31 @@ describe("hashPrincipalId parity with the Python SDK", () => {
           tenantId: vectors.tenant_id,
           key: vectors.key_utf8,
           issuer: c.issuer,
-          scheme: c.scheme,
         }),
       ).toBe(c.expected);
     });
   }
 
-  it("defaults to the key generation Python's corpus was generated under", () => {
-    // ⚠ **Pinned by LITERAL, and that is the point of this case.** Every other
-    // tag assertion in this file spells the prefix `${HASH_SCHEME}`, which is
-    // SELF-REFERENTIAL: change the constant and they all follow it, green. A
-    // mutation reviving the retired `v1:` as the value of HASH_SCHEME survived
-    // the entire suite for exactly that reason. The corpus's `expected`
-    // strings are Python's own output, so comparing the DEFAULT-scheme hash
-    // against one of them is the only assertion here that can see the constant
-    // move — and it is a wire constant, so a silent move is a split actor
-    // across the two SDKs.
+  it("emits a BARE digest, and the SAME digest the tagged era emitted", () => {
+    // ⚠ **Pinned by LITERAL, and that is the point of this case.** This was
+    // "defaults to the key generation Python's corpus was generated under",
+    // guarding a wire constant that no longer exists (`HASH_SCHEME`, removed at
+    // 0.4.1 with the tag). The reason it was pinned by literal still applies to
+    // its replacement: an assertion written against a constant in this repo is
+    // self-referential and cannot see that constant move.
+    //
+    // **What it guards now is the CONTINUITY claim.** SPEC §13 says taking the
+    // tag off was a relabel, not a recomputation — the tag was never in the HMAC
+    // message. The hex below was Python's output under `h1:` before 0.8.11 and
+    // is Python's output bare after it, so this is the one assertion proving the
+    // digest survived the change ACROSS the language boundary. If it ever reds,
+    // the derivation moved and every stored pseudonym is unreproducible.
     const plain = vectors.cases.find((c) => c.name === "plain ascii");
     expect(plain).toBeDefined();
-    expect(plain!.expected.startsWith("h1:")).toBe(true);
+    expect(plain!.expected).toBe(
+      "311e59dcfc8cf3abb267b85dec03bc3e924b2e3fa9d627209a9cfaf0f1164d47",
+    );
+    expect(plain!.expected).not.toContain(":");
     expect(
       hashPrincipalId(plain!.principal, {
         tenantId: vectors.tenant_id,
@@ -57,7 +62,6 @@ describe("hashPrincipalId parity with the Python SDK", () => {
         issuer: plain!.issuer,
       }),
     ).toBe(plain!.expected);
-    expect(HASH_SCHEME).toBe("h1");
   });
 
   it("covers the canonicalization traps on purpose", () => {
@@ -74,41 +78,42 @@ describe("hashPrincipalId parity with the Python SDK", () => {
 describe("hashPrincipalId properties", () => {
   const KEY = "unit-key";
 
-  it("labels the KEY GENERATION without moving the digest", () => {
-    // Pins the property `HASH_SCHEME` documents, and the one that licensed
-    // retiring the provenance tag: relabelling moves the prefix and nothing
-    // else.
-    const current = hashPrincipalId("e-1", { tenantId: "t", key: KEY });
-    const rotated = hashPrincipalId("e-1", { tenantId: "t", key: KEY, scheme: "h2" });
-
-    expect(current.startsWith(`${HASH_SCHEME}:`)).toBe(true);
-    expect(current).not.toBe(rotated);
-    expect(current.split(":")[1]).toBe(rotated.split(":")[1]);
+  it("emits a value that carries NO facts about itself", () => {
+    // Replaces "labels the KEY GENERATION without moving the digest", which
+    // hashed under `h2` and checked only the prefix moved. There is no prefix
+    // to move at 0.4.1.
+    //
+    // ⚠ **Written as "no colon", not as "not h1:".** Naming the retired tag
+    // would let `h2:`, `v1:` or a newly invented letter through, which is how
+    // a tag came back the first time. 64 lowercase hex characters and nothing
+    // else is the whole contract.
+    const digest = hashPrincipalId("e-1", { tenantId: "t", key: KEY });
+    expect(digest).toMatch(/^[0-9a-f]{64}$/);
   });
 
   it("folds the tenant into the MESSAGE, so one principal cannot correlate across tenants", () => {
-    expect(hashPrincipalId("e-1", { tenantId: "t-a", key: KEY, scheme: HASH_SCHEME })).not.toBe(
-      hashPrincipalId("e-1", { tenantId: "t-b", key: KEY, scheme: HASH_SCHEME }),
+    expect(hashPrincipalId("e-1", { tenantId: "t-a", key: KEY })).not.toBe(
+      hashPrincipalId("e-1", { tenantId: "t-b", key: KEY }),
     );
   });
 
   it("treats a missing issuer as the pre-issuer form", () => {
     // The append-only layout: every hash the proxy and extmcp have emitted
     // since 0.5.0 was issuer-less, and they share this contract.
-    const omitted = hashPrincipalId("e-1", { tenantId: "t", key: KEY, scheme: HASH_SCHEME });
-    expect(hashPrincipalId("e-1", { tenantId: "t", key: KEY, issuer: null, scheme: HASH_SCHEME })).toBe(omitted);
-    expect(hashPrincipalId("e-1", { tenantId: "t", key: KEY, issuer: undefined, scheme: HASH_SCHEME })).toBe(omitted);
+    const omitted = hashPrincipalId("e-1", { tenantId: "t", key: KEY });
+    expect(hashPrincipalId("e-1", { tenantId: "t", key: KEY, issuer: null })).toBe(omitted);
+    expect(hashPrincipalId("e-1", { tenantId: "t", key: KEY, issuer: undefined })).toBe(omitted);
   });
 
   it("separates two people who share a subject under different issuers", () => {
-    expect(hashPrincipalId("sub-7", { tenantId: "t", key: KEY, issuer: "https://a.example", scheme: HASH_SCHEME })).not.toBe(
-      hashPrincipalId("sub-7", { tenantId: "t", key: KEY, issuer: "https://b.example", scheme: HASH_SCHEME }),
+    expect(hashPrincipalId("sub-7", { tenantId: "t", key: KEY, issuer: "https://a.example" })).not.toBe(
+      hashPrincipalId("sub-7", { tenantId: "t", key: KEY, issuer: "https://b.example" }),
     );
   });
 
   it("encodes a string key as UTF-8, matching Python's env-var path", () => {
-    expect(hashPrincipalId("e-1", { tenantId: "t", key: "🔑", scheme: HASH_SCHEME })).toBe(
-      hashPrincipalId("e-1", { tenantId: "t", key: new TextEncoder().encode("🔑"), scheme: HASH_SCHEME }),
+    expect(hashPrincipalId("e-1", { tenantId: "t", key: "🔑" })).toBe(
+      hashPrincipalId("e-1", { tenantId: "t", key: new TextEncoder().encode("🔑") }),
     );
   });
 });
@@ -310,7 +315,7 @@ describe("principalFor", () => {
     // bytes.
     const hashed = principalFor({ principalId: "e-1" }, { mode: "hashed", tenantId: "t", key: "k" });
     expect(hashed).toEqual({
-      id: expect.stringMatching(new RegExp(`^${HASH_SCHEME}:[0-9a-f]{64}$`)),
+      id: expect.stringMatching(/^[0-9a-f]{64}$/),
       source: PRINCIPAL_SOURCE_ASSERTED,
       form: PRINCIPAL_FORM_HASHED,
     });

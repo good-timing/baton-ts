@@ -1,5 +1,68 @@
 # Changelog
 
+## 0.4.1: a hashed principal is the bare hash
+
+**BREAKING — `principal.id` stops carrying a tag.** A hashed value was
+`h1:<hex>` and is now `<hex>`. No member is added or removed: `principal` keeps
+`id` + `source` + `form`, all three required. SPEC §11.4 and the §13 entry for
+`0.8.11`.
+
+⚠ **A PATCH number carrying a breaking wire change, against SPEC §13's own rule
+that pre-1.0 breakage rides a minor** — deliberate and noted rather than
+silently done, matching the Python side, which shipped this as `0.8.11` and
+0.8.1 / 0.8.6 / 0.8.10 before it. Chosen (Ujwal, 2026-09-29) for one version
+number across the family; there are no customers on this format.
+
+⚠ **This is the FIRST deviation in this package, and it costs the protection
+0.4.0 bought.** That release took a MINOR precisely so `^0.3` would not admit
+it, and said so. A patch does not work that way: **`@goodtiming/baton-sdk@^0.4`
+DOES admit 0.4.1**, so a consumer on that range picks up a breaking value change
+with no signal. A consumer that needs the tagged spelling must pin the exact
+version, `0.4.0`. The same warning appears in SPEC §13 for 0.8.10, for the same
+reason.
+
+**Why, and it is not a grouping fix.** Nothing groups better: the tag only ever
+changed when the digest changed, so keying on the whole string and keying on the
+bare hash gave the same answer in every case the contract permitted — a
+production sweep on 2026-09-29 found zero principals split by a tag. It went
+because the object exists to keep a fact *about* a value out of the value, and
+this tag was the last survivor of the encoding 0.4.0 dismantled; and because a
+consumer's correctness rested on three producers honouring a comment saying not
+to repurpose the tag, where now there is no tag to repurpose.
+
+- **BREAKING — `HASH_SCHEME` is no longer exported**, and `hashPrincipalId`'s
+  `scheme` option is removed rather than deprecated. Both named a prefix that no
+  longer exists. ⚠ **A vendor recomputing a pseudonym with its own copy gets a
+  tagged value from the old code and a bare one from this release** — the same
+  comparison break consumers see, reached from the producer side.
+
+- ⚠ **Consumer consequence — a value change on an existing member.** A consumer
+  comparing whole `principal.id` strings across this upgrade sees one actor
+  become two, for **every** hashed principal (0.4.0's relabel hit only the
+  vendor-asserted ones). Stripping a leading `h<n>:` before comparing is
+  unaffected. **No backfill**: stored events keep their tag, so both spellings of
+  one digest coexist in a collector permanently and must not read as two people.
+
+- ⚠ **No ordering constraint.** Nothing is added to the envelope, so a collector
+  with a closed schema has nothing new to reject and does not have to deploy
+  first — unlike 0.4.0. ⚠ **That makes the range-pin gap above the only warning
+  a consumer gets**: there is no 422, no failed deploy and no log line, just ids
+  that stop matching the stored ones.
+
+- ⚠ **Rotation is now an unmarked discontinuity, and this is the deliberate
+  cost.** Nothing records which key produced a digest, so cutting the HMAC secret
+  replaces a tenant's whole population with no marker anywhere. A
+  `principal.key_generation` member was built and dropped: it could not have
+  re-joined a person across the boundary — the raw value is never stored and no
+  consumer can match new digests to old — so it would have labelled a
+  discontinuity it could not repair, and nothing read it.
+
+**The parity corpus was regenerated and proves the digest did NOT move.**
+`test/identityVectors.json` comes from Python's `hash_principal_id`, and the
+`plain ascii` hex is byte-identical to what the tagged corpus carried — so the
+tag's removal is a relabel across the language boundary, not a recomputation. The
+`scheme is a label, not message bytes` case is gone with the option it exercised.
+
 ## 0.4.0: the principal becomes an object, and a returned error flag becomes a failure
 
 Two breaking changes under one number. ⚠ **A MINOR bump, per SPEC §13's own

@@ -25,43 +25,44 @@ from __future__ import annotations
 import json
 import pathlib
 
-from baton.identity import HASH_SCHEME, hash_principal_id
+from baton.identity import hash_principal_id
 
 TENANT = "tenant-parity"
 # Non-ASCII bytes in the key too, so a UTF-8 encoding mistake on either arm
 # cannot hide behind an all-ASCII secret.
 KEY = b"parity-corpus-key-\xf0\x9f\x94\x91"
 
-#: (name, principal, issuer, scheme). Names are asserted on in the test, so a
-#: trap case cannot be dropped silently.
-CASES: list[tuple[str, str, str | None, str]] = [
-    ("plain ascii", "employee-4417", None, HASH_SCHEME),
-    # The tag is NOT part of the HMAC message, so this case must produce the
-    # same hex as "plain ascii" under a different prefix. `h2` is the
-    # RESERVED key-generation tag, used here because it is the only other
-    # value the registered set admits — a rotation is the one event that
-    # moves a digest, and this pins that a relabel is not.
-    ("scheme is a label, not message bytes", "employee-4417", None, "h2"),
-    ("issuer present", "employee-4417", "https://idp.example", HASH_SCHEME),
-    ("issuer WHITESPACE-ONLY (paired defect)", "e-1", "   ", HASH_SCHEME),
-    ("issuer empty string", "e-1", "", HASH_SCHEME),
-    ("uppercase folds", "Employee-4417", None, HASH_SCHEME),
-    ("surrounding whitespace", "  employee-4417\t\n", None, HASH_SCHEME),
-    ("NFD needs NFC", "José", None, HASH_SCHEME),
-    ("NFC already", "José", None, HASH_SCHEME),
+#: (name, principal, issuer). Names are asserted on in the test, so a trap case
+#: cannot be dropped silently.
+#:
+#: The `scheme` dimension is GONE at 0.8.11 / ts 0.4.1, with the case "scheme is
+#: a label, not message bytes". That case hashed one principal under `h2` and
+#: expected the same hex under a different prefix, pinning that the tag was not
+#: in the HMAC message. There is no tag to vary now, so the property is vacuous
+#: rather than unproven — and the `plain ascii` digest below is byte-identical to
+#: the hex the tagged corpus carried, which proves the removal moved no digit
+#: ACROSS the language boundary.
+CASES: list[tuple[str, str, str | None]] = [
+    ("plain ascii", "employee-4417", None),
+    ("issuer present", "employee-4417", "https://idp.example"),
+    ("issuer WHITESPACE-ONLY (paired defect)", "e-1", "   "),
+    ("issuer empty string", "e-1", ""),
+    ("uppercase folds", "Employee-4417", None),
+    ("surrounding whitespace", "  employee-4417\t\n", None),
+    ("NFD needs NFC", "José", None),
+    ("NFC already", "José", None),
     (
         "BOM-prefixed (JS trim strips U+FEFF, Python strip does NOT)",
         "﻿employee-4417",
         None,
-        HASH_SCHEME,
     ),
-    ("non-breaking space around", " employee ", None, HASH_SCHEME),
-    ("turkish dotted I", "İSTANBUL", None, HASH_SCHEME),
-    ("sharp s", "STRAẞE", None, HASH_SCHEME),
-    ("emoji principal", "\U0001f600-user", None, HASH_SCHEME),
-    ("cyrillic", "Петр", None, HASH_SCHEME),
-    ("issuer needs NFC too", "e-1", "https://idé.example", HASH_SCHEME),
-    ("empty after canonicalize", "   ", None, HASH_SCHEME),
+    ("non-breaking space around", " employee ", None),
+    ("turkish dotted I", "İSTANBUL", None),
+    ("sharp s", "STRAẞE", None),
+    ("emoji principal", "\U0001f600-user", None),
+    ("cyrillic", "Петр", None),
+    ("issuer needs NFC too", "e-1", "https://idé.example"),
+    ("empty after canonicalize", "   ", None),
 ]
 
 
@@ -78,12 +79,11 @@ def main() -> None:
                 "name": name,
                 "principal": principal,
                 "issuer": issuer,
-                "scheme": scheme,
                 "expected": hash_principal_id(
-                    principal, tenant_id=TENANT, key=KEY, issuer=issuer, scheme=scheme
+                    principal, tenant_id=TENANT, key=KEY, issuer=issuer
                 ),
             }
-            for name, principal, issuer, scheme in CASES
+            for name, principal, issuer in CASES
         ],
     }
     dest = pathlib.Path(__file__).resolve().parent.parent / "test" / "identityVectors.json"

@@ -22,19 +22,21 @@ import { createHmac } from "node:crypto";
 
 import { capCodePoints } from "./_text.js";
 
-/** The HMAC KEY GENERATION, and nothing else.
- *
- * It is not a provenance marker and not a privacy classifier. Provenance is
- * `PrincipalWire.source` and the classification is `PrincipalWire.form`, and
- * both ride every mode — including `"raw"`, where no tag exists at all, which
- * is the gap a tag can structurally never close. `h2:` is reserved for a key
- * rotation. SPEC §11.4 and the §13 entry carry the full derivation.
- *
- * ⚠ **This value is a WIRE CONSTANT.** `test/identity.test.ts` pins it against
- * Python's generated corpus by literal, not through this name — an assertion
- * written as ``startsWith(`${HASH_SCHEME}:`)`` is self-referential and cannot
- * see this constant change. */
-export const HASH_SCHEME = "h1";
+// ⚠ **`HASH_SCHEME = "h1"` lived here and is GONE at 0.4.1** (SPEC §11.4, §13
+// entry 0.8.11), together with `hashPrincipalId`'s `scheme` option. A hashed
+// principal is the BARE digest: no tag, no prefix, no scheme.
+//
+// It named the HMAC key generation, and a fact ABOUT a value must not ride
+// INSIDE the value — the rule `PrincipalWire`'s three members exist to make
+// structural. Provenance is `source`, the classification is `form`, and both
+// ride every mode including `"raw"`, where no tag ever existed.
+//
+// ⚠ **What went with it:** nothing now records WHICH key produced a digest, so
+// rotating the secret replaces a tenant's whole population with no marker
+// anywhere. Accepted — the generation could not have re-joined a person across
+// the boundary anyway. It was also an EXPORT, so a vendor recomputing a
+// pseudonym against its own copy gets a tagged value from the old one and a
+// bare value from this one.
 
 /** Where a principal came from. `"asserted"` is a vendor's own resolver,
  * which nothing in the protocol checks, and is the only value this SDK
@@ -145,11 +147,9 @@ export interface Principal {
  *
  * `tenantId` is folded into the HMAC MESSAGE (not just the key) so the same
  * principal under two tenants can never collide or be cross-tenant-correlated.
- * Returns `"<scheme>:<hex>"`.
- *
- * `scheme` is NOT part of the HMAC message: the digest for a given
- * `(tenantId, principal, issuer)` is identical under every scheme and only the
- * prefix moves. What that buys is in `HASH_SCHEME`.
+ * Returns the BARE lowercase hex digest — no tag, no prefix, no scheme. It
+ * returned `"h1:<hex>"` until 0.4.1; the tag was never part of the HMAC
+ * message, so taking it off moved no digit of the digest.
  *
  * ⚠ **`issuer` null/undefined MUST hash byte-identically to the pre-issuer
  * form** — the append-only message layout is what guarantees it, and every
@@ -166,21 +166,12 @@ export function hashPrincipalId(
     // as one. Both spellings must mean "no issuer" or the two arms of that
     // caller hash differently.
     issuer?: string | null | undefined;
-    /** The key generation, defaulting to the current one exactly as Python's
-     * does. A caller passes this only to reproduce a digest under a
-     * superseded key.
-     *
-     * `| undefined` explicitly, for the same `exactOptionalPropertyTypes`
-     * reason `issuer` carries above — and it bites HARDER here, because this
-     * option exists precisely to be omittable. Without it the natural vendor
-     * shape, forwarding an optional off their own config
-     * (`scheme: cfg.scheme` where `cfg.scheme: string | undefined`), is a
-     * compile error on the published types. No in-repo caller can see that:
-     * they either omit it or pass a concrete string from the corpus. */
-    scheme?: string | undefined;
+    // ⚠ `scheme?: string` was here until 0.4.1 and is REMOVED, not deprecated.
+    // A keyword left in place is an invitation to pass one, and there is no
+    // longer any tag for it to select.
   },
 ): string {
-  const { tenantId, key, issuer = null, scheme = HASH_SCHEME } = options;
+  const { tenantId, key, issuer = null } = options;
   let message = `${tenantId}\x00${canonicalize(rawPrincipal)}`;
   // `!== null` alone: the destructure above defaults an explicitly-passed
   // `undefined` to `null`, so only one of the two states survives it. The
@@ -192,8 +183,7 @@ export function hashPrincipalId(
   // A string key is UTF-8 encoded, matching Python's env-var path
   // (`BATON_PRINCIPAL_ID_HMAC_KEY` arrives as text and is `.encode()`d there).
   const keyBytes = typeof key === "string" ? Buffer.from(key, "utf8") : key;
-  const digest = createHmac("sha256", keyBytes).update(message, "utf8").digest("hex");
-  return `${scheme}:${digest}`;
+  return createHmac("sha256", keyBytes).update(message, "utf8").digest("hex");
 }
 
 /** Normalize whatever a vendor's hook returned into a usable `Principal`, or
