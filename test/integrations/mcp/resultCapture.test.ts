@@ -22,6 +22,11 @@
  * return and the two SDKs hand it over differently.
  */
 
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import Ajv2020 from "ajv/dist/2020.js";
+import addFormats from "ajv-formats";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { withBaton } from "../../../src/integrations/mcp/withBaton.js";
@@ -168,7 +173,7 @@ describe.each(MAJORS)("resultCaptureMode — $label", (major) => {
     expect(event.payload.error_type).toBe("tool_error");
   });
 
-  it("off: the THROW shape is UNCHANGED, marker included", async () => {
+  it("off: the THROW shape is UNCHANGED, and carries NO marker", async () => {
     // §11.4.3(1): a thrown error's message is the vendor's own code speaking
     // about a call that returned nothing, so nothing here is result-derived
     // and nothing is withheld — including the marker, which would otherwise
@@ -195,6 +200,56 @@ describe.each(MAJORS)("resultCaptureMode — $label", (major) => {
     const event = terminal(sink, "tool_call_end");
     expect(event.payload.result_capture).toBeUndefined();
     expect("result_capture" in event.payload).toBe(false);
+  });
+});
+
+describe("a withheld event validates against the PUBLISHED schema", () => {
+  /** ⚠ This exists because 496 green tests did NOT depend on the spec pin.
+   *
+   * `conformance.test.ts` ajv-validates the `baton-spec` vectors and a set of
+   * MINIMALLY-populated payloads — none of which carries `result_capture`. So
+   * the pin could be reverted to `f1e0280` and the whole suite still passed,
+   * while every `"off"` event this SDK emits was rejected by the shared
+   * schema: both tool-call payload definitions are `additionalProperties:
+   * false`, so the older schema reads the new member as an illegal extra key.
+   *
+   * That is the failure mode `CONTRIBUTING.md` already names — "a stale pin
+   * makes these tests pass loudly and prove nothing" — and this diff added the
+   * first wire member where it was silent. An `"off"`-shaped event validated
+   * here is what makes the pin load-bearing again.
+   */
+  it("ajv accepts a withheld tool_call_end against events.schema.json", async () => {
+    const schema = JSON.parse(
+      readFileSync(
+        path.join(path.dirname(fileURLToPath(import.meta.url)), "../../../baton-spec/events.schema.json"),
+        "utf-8",
+      ),
+    ) as object;
+    const ajv = new Ajv2020({ strict: false });
+    addFormats(ajv);
+    const validate = ajv.compile(schema);
+
+    const sink = new CapturingSink();
+    const rec = new Recorder();
+    const server = MAJORS[0]!.make();
+    MAJORS[0]!.tool(server, "fetch", { row: z.string() }, () => ({
+      content: [{ type: "text" as const, text: SECRET }],
+    }));
+    withBaton(server as never, {
+      vendorId: "acme",
+      vendorDisplayName: "Acme",
+      consentToken: "ct",
+      sink,
+      scrubber: rec.scrub,
+      resultCaptureMode: "off",
+    });
+    const client = await MAJORS[0]!.connect(server);
+    await client.callTool({ name: "fetch", arguments: { row: "42" } });
+
+    const event = terminal(sink, "tool_call_end");
+    expect(event.payload.result_capture, "the assertion below would be vacuous").toBe("off");
+    const ok = validate(JSON.parse(JSON.stringify(event)));
+    expect(ok, JSON.stringify(validate.errors)).toBe(true);
   });
 });
 

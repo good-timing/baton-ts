@@ -8,6 +8,7 @@ import { displayNameFromServer } from "./annotationName.js";
 import type { ResolvePrincipalHook } from "./principalResolution.js";
 import { DEFAULT_CONSENT_TOKEN } from "../../events.js";
 import { PRINCIPAL_ID_MODES, type PrincipalIdMode } from "../../identity.js";
+import { WITHHELD } from "./errorResult.js";
 import { HttpSink, type Sink } from "../../sinks.js";
 
 // Vendor IDs are the annotation-tool-name prefix — same pattern Python
@@ -27,7 +28,12 @@ export { VENDOR_ID_PATTERN } from "../../dsn.js";
 const INTENT_PARAM_MODES = new Set(["optional", "required", "off"]);
 // What the vendor may ask us to do with tool RESULT data (SPEC §11.4).
 // `"full"` never reaches the wire — absence is what means captured.
-const RESULT_CAPTURE_MODES = new Set(["full", "off"]);
+//
+// `WITHHELD` is IMPORTED, never restated, for the reason the registry above it
+// gives: the emitter sends that exact literal, and a hand-written copy here
+// would let this validator accept a value the emitter no longer emits with no
+// test standing between them.
+const RESULT_CAPTURE_MODES: ReadonlySet<string> = new Set(["full", WITHHELD]);
 // Imported, never restated: the registry is derived from `FORM_BY_MODE`, so a
 // mode cannot be accepted here without someone having chosen its `form`.
 // `principalFor` drops Python's unrecognised-mode branch on the strength of

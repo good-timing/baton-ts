@@ -124,17 +124,47 @@ export function errorText(value: unknown): string {
 
 /** The one registered non-default value of `resultCaptureMode`, on the wire and
  * in the config alike (SPEC §11.4). A string and not a boolean because SPEC
- * reserves a second value for the content ladder's partial rung — which is
- * also why nothing tests `!== "off"` to mean "capture". */
+ * reserves a second value for the content ladder's partial rung. */
 export const WITHHELD = "off";
+
+/** What a vendor may set. The union is the enforcement mechanism — see below. */
+export type ResultCaptureMode = "full" | typeof WITHHELD;
 
 /** Whether `mode` withholds result-derived data.
  *
- * A POSITIVE test, deliberately: the partial rung, when it lands, is a third
- * mode that also has no full body to emit, so `mode !== "full"` would have to
- * be revisited at every call site that day. */
-export function withholding(mode: string | undefined): boolean {
-  return mode === WITHHELD;
+ * ⚠ **A first version of this justified `mode === "off"` by saying the partial
+ * rung "also has no full body to emit, so `!== "full"` would have to be
+ * revisited". That reasoning is INVERTED and is corrected rather than
+ * overwritten.** Under `=== "off"` a newly-added `"shape"` falls to the
+ * CAPTURING branch and the whole body goes on the wire — silent, and in the one
+ * direction that cannot be undone once events are sent. That is the same
+ * failure `config.ts`'s validator comment warns about, reintroduced one layer
+ * down from the door that guards it.
+ *
+ * `!== "full"` would have been wrong-but-safe. Neither is what ships, because
+ * the mode is a UNION and this file can do better than either: every consumer
+ * of it switches exhaustively with a `never` arm, so adding `"shape"` to
+ * `ResultCaptureMode` is a COMPILE error at each site rather than a silent
+ * behaviour change at one of them.
+ *
+ * ⚠ The Python SDK deliberately does NOT do this — there `result_capture_mode`
+ * is a plain `str` validated at the config door, matching `intent_param_mode`
+ * and `principal_id_mode`, and narrowing it to a `Literal` would move
+ * validation away from its siblings. The asymmetry is deliberate: TypeScript
+ * gets the guarantee because the union already exists and it costs nothing. */
+export function withholding(mode: ResultCaptureMode): boolean {
+  switch (mode) {
+    case WITHHELD:
+      return true;
+    case "full":
+      return false;
+    default: {
+      // Unreachable while the union is exhaustive. When the partial rung is
+      // added, THIS is what fails to compile — which is the point.
+      const unhandled: never = mode;
+      throw new Error(`unhandled resultCaptureMode: ${String(unhandled)}`);
+    }
+  }
 }
 
 /** The `tool_call_end` payload members the capture mode decides.
@@ -146,7 +176,7 @@ export function withholding(mode: string | undefined): boolean {
  * the throw leg already takes on `result`. SPEC §11.4.3 makes null and absent
  * equivalent, so the choice is about key-set stability, not meaning. */
 export function endResultFields(
-  mode: string | undefined,
+  mode: ResultCaptureMode,
   result: unknown,
   scrubber: (value: unknown) => unknown,
 ): { result: unknown; result_capture?: string } {
@@ -173,7 +203,7 @@ export function endResultFields(
  * error your own handler threw, not result-derived, so SPEC §11.4.3(1) leaves
  * that leg unchanged under every mode. */
 export function returnedErrorFields(
-  mode: string | undefined,
+  mode: ResultCaptureMode,
   result: unknown,
   errorBody: (text: string) => string,
   scrubber: (value: unknown) => unknown,
