@@ -24,22 +24,7 @@ import {
   errorText,
   isErrorResult,
 } from "../../../src/integrations/mcp/errorResult.js";
-import { MAJORS, CapturingSink } from "./_majors.js";
-import type { Event } from "../../../src/events.js";
-
-/** The terminal event of the (single) call, with its type pinned first — and
- * NARROWED to it, so a caller reads the payload without restating the literal
- * in a hand-written guard. Two copies of the same literal per call site could
- * drift apart, and when they did the test would die on the guard instead of
- * on a readable expectation. */
-function terminal<T extends Event["event_type"]>(
-  sink: CapturingSink,
-  expected: T,
-): Extract<Event, { event_type: T }> {
-  const event = sink.events[sink.events.length - 1]!;
-  expect(event.event_type).toBe(expected);
-  return event as Extract<Event, { event_type: T }>;
-}
+import { MAJORS, CapturingSink, terminal } from "./_majors.js";
 
 describe.each(MAJORS)("returned isError — $label", (major) => {
   const install = (server: unknown, sink: CapturingSink) =>

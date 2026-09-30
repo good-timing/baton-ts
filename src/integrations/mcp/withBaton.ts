@@ -108,6 +108,7 @@ import { emit } from "./emit.js";
 import {
   ERROR_BODY_MAX_CODE_POINTS,
   endResultFields,
+  type ResultCaptureMode,
   returnedErrorFields,
   isErrorResult,
   TOOL_ERROR_TYPE,
@@ -164,7 +165,7 @@ interface WrapContext {
   /** Whether result-derived data is withheld (SPEC §11.4). Validated once at
    * the config door, like `intentParamMode`, so nothing downstream re-checks
    * it. */
-  resultCaptureMode: "full" | "off";
+  resultCaptureMode: ResultCaptureMode;
   paramRegistry: Map<string, IntentParamDispositions>;
   /** Vendor-true JSON Schema for the surface snapshot, in whatever spelling
    * THIS server actually puts on the wire. */

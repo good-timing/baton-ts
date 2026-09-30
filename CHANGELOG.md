@@ -4,34 +4,19 @@
 
 ### Added
 
-- **`BatonConfig.resultCaptureMode` — a vendor can declare that tool RESPONSE
-  data is never captured.** `"full"` is the default and changes nothing. Under
-  `"off"`, nothing **derived from the tool's result** leaves the process: no
-  `result` on `tool_call_end` or `tool_call_error`, and no `error_body` on the
-  returned-failure shape, where that text is unwrapped from the result. Every
-  affected event carries the new wire member `result_capture: "off"` (SPEC
-  §11.4). Requests are unaffected — `params` are captured in both modes.
-
-  **The marker is a correctness fix, not analytics.** An absent `result`
-  already means "the handler threw, there was no result", so without a member
-  saying otherwise a consumer reads a withheld body as an empty response and
-  files a failure that never happened.
-
-  **What survives `"off"`:** `error_type`, `tool_name` and `duration_ms`, so
-  failure classification, pairing and timing all still work — and the message
-  of an error your own handler THROWS, which is not derived from a result (SPEC
-  §11.4.3). ⚠ Thrown messages are a classic leak channel; if that is also a
-  problem, say so and the mode grows a stricter value.
-
-  **What is lost:** body-level analysis. A call that returns 200 with a useless
-  body can no longer be detected; those calls leave the denominator of
-  body-level analysis rather than counting as passes or failures.
+- **`BatonConfig.resultCaptureMode`** — `"off"` withholds everything derived
+  from what a tool returns (`result` on both tool-call events, and `error_body`
+  on the returned-failure shape, where that text is unwrapped from the result)
+  and marks each affected event `result_capture: "off"` per SPEC §11.4.
+  Requests are unaffected. The message of an error the handler THROWS is kept:
+  it is not result-derived (§11.4.3). What survives, what it costs, and the
+  reviewer-facing caveats are in the README section "Not capturing responses at
+  all" — not repeated here, so the two cannot drift.
 
   ⚠ **This package OMITS `result_capture` when capturing, where `baton-sdk`
-  sends `null`.** Both are conformant — SPEC §11.4 makes absent and null
-  equivalent and requires a consumer to read the VALUE, never test for the key
-  — and it is the same axis `result` already differs on between `baton-sdk` and
-  `baton-proxy` (§11.4.3).
+  sends `null`.** Both conformant: SPEC §11.4 makes absent and null equivalent
+  and requires a consumer to read the VALUE, never test for the key. Same axis
+  `result` already differs on between `baton-sdk` and `baton-proxy` (§11.4.3).
 
 ### Changed
 
@@ -39,6 +24,11 @@
   legal on the wire: both tool-call payload definitions are
   `additionalProperties: false`, so the schema had to learn the member before
   any producer could send it.
+
+- `test/conformance.test.ts` now validates a MAXIMALLY-populated payload of each
+  type against the pinned schema, and asserts each fixture's key set equals its
+  Zod schema's. Optional members were previously never schema-checked, so the
+  pin could be reverted with the whole suite still green.
 
 ## 0.4.1: a hashed principal is the bare hash
 

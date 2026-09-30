@@ -24,6 +24,9 @@ import {
   ToolCallStartEventSchema,
   ToolCallEndEventSchema,
   ToolCallErrorEventSchema,
+  ToolCallStartPayloadSchema,
+  ToolCallEndPayloadSchema,
+  ToolCallErrorPayloadSchema,
   AnnotationEventSchema,
   SurfaceSnapshotEventSchema,
 } from "../src/events.js";
@@ -60,6 +63,89 @@ describe("baton-spec conformance", () => {
     // serialization shape (key set, null-vs-undefined, nesting) matches
     // the Python-captured wire bytes, not just that Zod could coerce it.
     expect(JSON.parse(JSON.stringify(parsed))).toEqual(data);
+  });
+
+  /** ⚠ **The minimal case below cannot see an optional member.**
+   *
+   * It populates only what each payload REQUIRES, so a member this SDK can
+   * emit but does not have to has never been validated against the pinned
+   * schema. `result_capture` was the first to make that visible: the spec pin
+   * could be reverted to `f1e0280` and all 496 tests still passed, while every
+   * `"off"` event the SDK emits was rejected by the schema of record — both
+   * tool-call payload definitions being `additionalProperties: false`. That is
+   * the failure `CONTRIBUTING.md` names, "a stale pin makes these tests pass
+   * loudly and prove nothing".
+   *
+   * Fixing it per-member would scale linearly with members and depend on
+   * someone remembering. These two cases fix it generally:
+   *
+   * (a) validate a payload with EVERY member populated, so an optional one
+   *     cannot hide; and
+   * (b) assert each fixture's key set IS its Zod schema's key set — so adding
+   *     a member to `src/events.ts` without bumping the `baton-spec` pin fails
+   *     HERE, before anyone thinks to write a test for that member.
+   *
+   * (b) is what stops (a) rotting: without it, the fixtures silently go stale
+   * the first time a member is added and (a) starts proving less than it says.
+   */
+  const MAXIMAL: Record<string, Record<string, unknown>> = {
+    tool_call_start: {
+      tool_name: "x",
+      params: { a: 1 },
+      call_intent: "why",
+      call_expected: "what",
+      call_workflow: "task",
+      intent_source: "injected_param",
+    },
+    tool_call_end: {
+      tool_name: "x",
+      result: { content: [{ type: "text", text: "ok" }] },
+      duration_ms: 3,
+      result_capture: "off",
+    },
+    tool_call_error: {
+      tool_name: "x",
+      error_type: "tool_error",
+      error_body: "boom",
+      duration_ms: 3,
+      result: { content: [], isError: true },
+      result_capture: "off",
+    },
+  };
+
+  const MAXIMAL_SCHEMAS = {
+    tool_call_start: ToolCallStartPayloadSchema,
+    tool_call_end: ToolCallEndPayloadSchema,
+    tool_call_error: ToolCallErrorPayloadSchema,
+  } as const;
+
+  it.each(Object.keys(MAXIMAL))(
+    "%s: the maximal fixture covers every member its Zod schema declares",
+    (name) => {
+      const schema = MAXIMAL_SCHEMAS[name as keyof typeof MAXIMAL_SCHEMAS];
+      expect(Object.keys(MAXIMAL[name]!).sort()).toEqual(Object.keys(schema.shape).sort());
+    },
+  );
+
+  it("maximally-populated TS-built events are valid against the PINNED schema", () => {
+    const common = {
+      tenant_id: "t",
+      vendor_id: "v",
+      session_id: "s",
+      sequence_number: 0,
+      captured_at: new Date().toISOString(),
+      consent_token: "ct",
+    };
+    const built = [
+      ToolCallStartEventSchema.parse({ ...common, payload: MAXIMAL.tool_call_start }),
+      ToolCallEndEventSchema.parse({ ...common, payload: MAXIMAL.tool_call_end }),
+      ToolCallErrorEventSchema.parse({ ...common, payload: MAXIMAL.tool_call_error }),
+    ];
+    for (const event of built) {
+      const serialized = JSON.parse(JSON.stringify(event));
+      const valid = validate(serialized);
+      expect(valid, ajv.errorsText(validate.errors)).toBe(true);
+    }
   });
 
   it("minimally-populated TS-built events of every type are schema-valid", () => {

@@ -1,7 +1,13 @@
 /**
- * Detecting MCP's returned error flag. Port of `baton` (Python)'s
- * `integrations/_error_result.py`, with one predicate deliberately different —
- * see `isErrorResult`.
+ * What result-derived data reaches the wire, and in what shape.
+ *
+ * Two halves of one question. Detecting MCP's returned error FLAG — the port
+ * of `baton` (Python)'s `integrations/_error_result.py`, with one predicate
+ * deliberately different, see `isErrorResult`. And the capture MODE (SPEC
+ * §11.4), which decides whether any of it egresses at all. The second half
+ * governs the SUCCESS path too, so a reader looking for "where is the result
+ * on a good call decided" is in the right file despite the name — kept as
+ * `errorResult.ts` because the filename pins parity with Python's module.
  *
  * SPEC §11.4.3. **A failed MCP tool call is a 200.** The protocol files it as a
  * successful JSON-RPC response whose `CallToolResult` body sets the error flag;
@@ -122,50 +128,29 @@ export function errorText(value: unknown): string {
   return parts.join("\n");
 }
 
-/** The one registered non-default value of `resultCaptureMode`, on the wire and
- * in the config alike (SPEC §11.4). A string and not a boolean because SPEC
- * reserves a second value for the content ladder's partial rung. */
-export const WITHHELD = "off";
+/** The registered values of `resultCaptureMode` (SPEC §11.4), and the single
+ * source of truth for them.
+ *
+ * Shaped after `identity.ts`'s `FORM_BY_MODE` → `PRINCIPAL_ID_MODES`, whose
+ * own note says why: a second hand-written list makes the guarantee "two lists
+ * happen to agree", which is the prose-shaped binding that pattern exists to
+ * replace. `config.ts` builds its validator set from THIS array rather than
+ * restating the literals, so a mode cannot be accepted at the door without
+ * someone having given it a payload shape below. */
+export const RESULT_CAPTURE_MODES = ["full", "off"] as const;
 
-/** What a vendor may set. The union is the enforcement mechanism — see below. */
-export type ResultCaptureMode = "full" | typeof WITHHELD;
+/** What a vendor may set. Derived, so the type and the registry cannot drift. */
+export type ResultCaptureMode = (typeof RESULT_CAPTURE_MODES)[number];
 
-/** Whether `mode` withholds result-derived data.
+/** The one registered non-default value, on the wire and in the config alike.
+ * A string and not a boolean because SPEC reserves a second value for the
+ * content ladder's partial rung.
  *
- * ⚠ **A first version of this justified `mode === "off"` by saying the partial
- * rung "also has no full body to emit, so `!== "full"` would have to be
- * revisited". That reasoning is INVERTED and is corrected rather than
- * overwritten.** Under `=== "off"` a newly-added `"shape"` falls to the
- * CAPTURING branch and the whole body goes on the wire — silent, and in the one
- * direction that cannot be undone once events are sent. That is the same
- * failure `config.ts`'s validator comment warns about, reintroduced one layer
- * down from the door that guards it.
- *
- * `!== "full"` would have been wrong-but-safe. Neither is what ships, because
- * the mode is a UNION and this file can do better than either: every consumer
- * of it switches exhaustively with a `never` arm, so adding `"shape"` to
- * `ResultCaptureMode` is a COMPILE error at each site rather than a silent
- * behaviour change at one of them.
- *
- * ⚠ The Python SDK deliberately does NOT do this — there `result_capture_mode`
- * is a plain `str` validated at the config door, matching `intent_param_mode`
- * and `principal_id_mode`, and narrowing it to a `Literal` would move
- * validation away from its siblings. The asymmetry is deliberate: TypeScript
- * gets the guarantee because the union already exists and it costs nothing. */
-export function withholding(mode: ResultCaptureMode): boolean {
-  switch (mode) {
-    case WITHHELD:
-      return true;
-    case "full":
-      return false;
-    default: {
-      // Unreachable while the union is exhaustive. When the partial rung is
-      // added, THIS is what fails to compile — which is the point.
-      const unhandled: never = mode;
-      throw new Error(`unhandled resultCaptureMode: ${String(unhandled)}`);
-    }
-  }
-}
+ * `satisfies` and NOT a type annotation: an annotation widens this to
+ * `ResultCaptureMode`, and then `case WITHHELD:` stops narrowing the switches
+ * below — which silently costs the exhaustiveness that is the whole point of
+ * deriving the registry. This keeps the literal type AND checks membership. */
+export const WITHHELD = "off" satisfies ResultCaptureMode;
 
 /** The `tool_call_end` payload members the capture mode decides.
  *
@@ -183,8 +168,12 @@ export function endResultFields(
   // The scrubber is called HERE and not by the caller: SPEC §7 says it MUST
   // NOT be invoked on a withheld result, so a helper handed an already-scrubbed
   // value would be a guard standing after the thing it guards.
-  if (withholding(mode)) return { result: null, result_capture: WITHHELD };
-  return { result: scrubber(result) };
+  switch (mode) {
+    case WITHHELD:
+      return { result: null, result_capture: WITHHELD };
+    case "full":
+      return { result: scrubber(result) };
+  }
 }
 
 /** The RETURN failure shape's result-derived members (SPEC §11.4.3(2)).
@@ -198,18 +187,17 @@ export function endResultFields(
  * producer would have to follow. An empty `error_body` is genuinely ambiguous
  * with "the failure carried no message", and `result_capture` is what tells the
  * two apart — a second reason the marker is not optional.
- *
- * The THROW shape has no projection and needs none: its `error_body` is the
- * error your own handler threw, not result-derived, so SPEC §11.4.3(1) leaves
- * that leg unchanged under every mode. */
+ */
 export function returnedErrorFields(
   mode: ResultCaptureMode,
   result: unknown,
   errorBody: (text: string) => string,
   scrubber: (value: unknown) => unknown,
 ): { error_body: string; result: unknown; result_capture?: string } {
-  if (withholding(mode)) {
-    return { error_body: "", result: null, result_capture: WITHHELD };
+  switch (mode) {
+    case WITHHELD:
+      return { error_body: "", result: null, result_capture: WITHHELD };
+    case "full":
+      return { error_body: errorBody(errorText(result)), result: scrubber(result) };
   }
-  return { error_body: errorBody(errorText(result)), result: scrubber(result) };
 }

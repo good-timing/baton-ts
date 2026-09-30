@@ -22,16 +22,11 @@
  * return and the two SDKs hand it over differently.
  */
 
-import { readFileSync } from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
-import Ajv2020 from "ajv/dist/2020.js";
-import addFormats from "ajv-formats";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
+import type { ResultCaptureMode } from "../../../src/integrations/mcp/errorResult.js";
 import { withBaton } from "../../../src/integrations/mcp/withBaton.js";
-import { MAJORS, CapturingSink } from "./_majors.js";
-import type { Event } from "../../../src/events.js";
+import { MAJORS, CapturingSink, terminal } from "./_majors.js";
 
 const SECRET = "row-42-social-security-000-00-0000";
 
@@ -49,24 +44,15 @@ class Recorder {
 
   /** Whether the secret ever reached the scrubber, at any depth. */
   saw(needle: string): boolean {
-    return this.calls.some((c) => JSON.stringify(c ?? null)?.includes(needle));
+    return this.calls.some((c) => JSON.stringify(c ?? null).includes(needle));
   }
-}
-
-function terminal<T extends Event["event_type"]>(
-  sink: CapturingSink,
-  expected: T,
-): Extract<Event, { event_type: T }> {
-  const event = sink.events[sink.events.length - 1]!;
-  expect(event.event_type).toBe(expected);
-  return event as Extract<Event, { event_type: T }>;
 }
 
 describe.each(MAJORS)("resultCaptureMode — $label", (major) => {
   const install = (
     server: unknown,
     sink: CapturingSink,
-    mode: "full" | "off",
+    mode: ResultCaptureMode,
     rec: Recorder,
   ) =>
     withBaton(server as never, {
@@ -78,48 +64,31 @@ describe.each(MAJORS)("resultCaptureMode — $label", (major) => {
       resultCaptureMode: mode,
     });
 
-  /** One successful call through a tool whose body carries the secret. */
-  const runOk = async (mode: "full" | "off") => {
+  /** One call through a tool whose body carries the secret.
+   *
+   * The three shapes under test — success, RETURNED error flag, THROW — differ
+   * only in the handler, so they are one driver. The `.catch` is a no-op on
+   * the two that do not throw. */
+  const run = async (mode: ResultCaptureMode, name: string, handler: () => unknown) => {
     const sink = new CapturingSink();
     const rec = new Recorder();
     const server = major.make();
-    major.tool(server, "fetch", { row: z.string() }, () => ({
-      content: [{ type: "text" as const, text: SECRET }],
-    }));
+    major.tool(server, name, { row: z.string() }, handler);
     install(server, sink, mode, rec);
     const client = await major.connect(server);
-    await client.callTool({ name: "fetch", arguments: { row: "42" } });
+    await client.callTool({ name, arguments: { row: "42" } }).catch(() => undefined);
     return { sink, rec };
   };
 
-  /** One call that RETURNS the error flag — the shape that withholds both. */
-  const runReturnedError = async (mode: "full" | "off") => {
-    const sink = new CapturingSink();
-    const rec = new Recorder();
-    const server = major.make();
-    major.tool(server, "soft_fail", { row: z.string() }, () => ({
-      content: [{ type: "text" as const, text: SECRET }],
-      isError: true,
-    }));
-    install(server, sink, mode, rec);
-    const client = await major.connect(server);
-    await client.callTool({ name: "soft_fail", arguments: { row: "42" } });
-    return { sink, rec };
+  const ok = () => ({ content: [{ type: "text" as const, text: SECRET }] });
+  const softFail = () => ({ content: [{ type: "text" as const, text: SECRET }], isError: true });
+  const hardFail = (): never => {
+    throw new Error(`no such row ${SECRET}`);
   };
 
-  /** One call that THROWS — the shape `"off"` must leave alone. */
-  const runThrow = async (mode: "full" | "off") => {
-    const sink = new CapturingSink();
-    const rec = new Recorder();
-    const server = major.make();
-    major.tool(server, "hard_fail", { row: z.string() }, () => {
-      throw new Error(`no such row ${SECRET}`);
-    });
-    install(server, sink, mode, rec);
-    const client = await major.connect(server);
-    await client.callTool({ name: "hard_fail", arguments: { row: "42" } }).catch(() => undefined);
-    return { sink, rec };
-  };
+  const runOk = (mode: ResultCaptureMode) => run(mode, "fetch", ok);
+  const runReturnedError = (mode: ResultCaptureMode) => run(mode, "soft_fail", softFail);
+  const runThrow = (mode: ResultCaptureMode) => run(mode, "hard_fail", hardFail);
 
   // ==========================================================================
   // 1 · The short-circuit
@@ -200,56 +169,6 @@ describe.each(MAJORS)("resultCaptureMode — $label", (major) => {
     const event = terminal(sink, "tool_call_end");
     expect(event.payload.result_capture).toBeUndefined();
     expect("result_capture" in event.payload).toBe(false);
-  });
-});
-
-describe("a withheld event validates against the PUBLISHED schema", () => {
-  /** ⚠ This exists because 496 green tests did NOT depend on the spec pin.
-   *
-   * `conformance.test.ts` ajv-validates the `baton-spec` vectors and a set of
-   * MINIMALLY-populated payloads — none of which carries `result_capture`. So
-   * the pin could be reverted to `f1e0280` and the whole suite still passed,
-   * while every `"off"` event this SDK emits was rejected by the shared
-   * schema: both tool-call payload definitions are `additionalProperties:
-   * false`, so the older schema reads the new member as an illegal extra key.
-   *
-   * That is the failure mode `CONTRIBUTING.md` already names — "a stale pin
-   * makes these tests pass loudly and prove nothing" — and this diff added the
-   * first wire member where it was silent. An `"off"`-shaped event validated
-   * here is what makes the pin load-bearing again.
-   */
-  it("ajv accepts a withheld tool_call_end against events.schema.json", async () => {
-    const schema = JSON.parse(
-      readFileSync(
-        path.join(path.dirname(fileURLToPath(import.meta.url)), "../../../baton-spec/events.schema.json"),
-        "utf-8",
-      ),
-    ) as object;
-    const ajv = new Ajv2020({ strict: false });
-    addFormats(ajv);
-    const validate = ajv.compile(schema);
-
-    const sink = new CapturingSink();
-    const rec = new Recorder();
-    const server = MAJORS[0]!.make();
-    MAJORS[0]!.tool(server, "fetch", { row: z.string() }, () => ({
-      content: [{ type: "text" as const, text: SECRET }],
-    }));
-    withBaton(server as never, {
-      vendorId: "acme",
-      vendorDisplayName: "Acme",
-      consentToken: "ct",
-      sink,
-      scrubber: rec.scrub,
-      resultCaptureMode: "off",
-    });
-    const client = await MAJORS[0]!.connect(server);
-    await client.callTool({ name: "fetch", arguments: { row: "42" } });
-
-    const event = terminal(sink, "tool_call_end");
-    expect(event.payload.result_capture, "the assertion below would be vacuous").toBe("off");
-    const ok = validate(JSON.parse(JSON.stringify(event)));
-    expect(ok, JSON.stringify(validate.errors)).toBe(true);
   });
 });
 

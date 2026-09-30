@@ -8,7 +8,7 @@ import { displayNameFromServer } from "./annotationName.js";
 import type { ResolvePrincipalHook } from "./principalResolution.js";
 import { DEFAULT_CONSENT_TOKEN } from "../../events.js";
 import { PRINCIPAL_ID_MODES, type PrincipalIdMode } from "../../identity.js";
-import { WITHHELD } from "./errorResult.js";
+import { RESULT_CAPTURE_MODES, type ResultCaptureMode } from "./errorResult.js";
 import { HttpSink, type Sink } from "../../sinks.js";
 
 // Vendor IDs are the annotation-tool-name prefix — same pattern Python
@@ -29,11 +29,11 @@ const INTENT_PARAM_MODES = new Set(["optional", "required", "off"]);
 // What the vendor may ask us to do with tool RESULT data (SPEC §11.4).
 // `"full"` never reaches the wire — absence is what means captured.
 //
-// `WITHHELD` is IMPORTED, never restated, for the reason the registry above it
-// gives: the emitter sends that exact literal, and a hand-written copy here
-// would let this validator accept a value the emitter no longer emits with no
-// test standing between them.
-const RESULT_CAPTURE_MODES: ReadonlySet<string> = new Set(["full", WITHHELD]);
+// DERIVED from the registry, never restated — the same rule
+// `PRINCIPAL_ID_MODE_SET` below follows, and for the same reason: a
+// hand-written copy makes the guarantee "two lists happen to agree", so a mode
+// could be accepted here that the emitter has no payload shape for.
+const RESULT_CAPTURE_MODE_SET: ReadonlySet<string> = new Set(RESULT_CAPTURE_MODES);
 // Imported, never restated: the registry is derived from `FORM_BY_MODE`, so a
 // mode cannot be accepted here without someone having chosen its `form`.
 // `principalFor` drops Python's unrecognised-mode branch on the strength of
@@ -147,33 +147,29 @@ export interface BatonConfig {
   /** Whether tool RESPONSE data is captured at all (SPEC §11.4).
    *
    * `"full"` (the default) captures as it always has. `"off"` means nothing
-   * **derived from the tool's result** leaves this process: no `result` on
+   * **derived from what your tool returns** leaves this process: no `result` on
    * `tool_call_end` or `tool_call_error`, and no `error_body` on the
-   * returned-failure shape, where that text is unwrapped from the result.
-   * Every affected event carries `result_capture: "off"` so a consumer reads
-   * a FACT rather than inferring one from what is missing — without it an
-   * absent result is indistinguishable from "the tool returned nothing", and
-   * a consumer manufactures a failure that never happened.
+   * returned-failure shape, where that text is unwrapped from the result. Each
+   * affected event carries `result_capture: "off"`, so a reader has a FACT
+   * rather than an absence to guess from — without it a missing result is
+   * indistinguishable from "the tool returned nothing", and a consumer
+   * manufactures a failure that never happened.
    *
-   * **Requests are unaffected.** `params` are captured in both modes.
+   * **Requests are unaffected**: `params` are captured in both modes.
    *
-   * **What SURVIVES `"off"`, and say this to a reviewer unprompted:**
-   * `error_type`, `tool_name` and `duration_ms`, so failure classification,
-   * pairing and timing all still work — and the message of an error your own
-   * handler THROWS, which is not derived from a result (SPEC §11.4.3). ⚠ Thrown
-   * messages are a classic leak channel: a failed query echoed back, a record
-   * id in the message. If that is also a problem, say so and the mode grows a
-   * stricter value then.
-   *
-   * **What is lost:** body-level analysis. A call that returns 200 with a
-   * useless body can no longer be detected; those calls leave the denominator
-   * of body-level analysis rather than counting as passes or failures.
+   * ⚠ The message of an error your handler THROWS is KEPT — it is your own code
+   * speaking about a call that never returned, so it is not result-derived
+   * (SPEC §11.4.3). Thrown messages are a classic leak channel; if that is also
+   * a problem for you, say so and the mode grows a stricter value.
    *
    * Not a scrubber rule, deliberately (SPEC §7): a scrubber TRANSFORMS a value
    * that still crosses the network, this DECLARES that nothing crosses. Under
-   * `"off"` the scrubber is never invoked on the result — calling vendor code
-   * to produce a value we discard is a path that can only fail. */
-  resultCaptureMode?: "full" | "off";
+   * `"off"` the scrubber is never invoked on the result at all.
+   *
+   * What it costs you, and the rest of the reasoning: README, "Not capturing
+   * responses at all". Kept there rather than repeated here — the two copies
+   * had already drifted apart in wording by the time this was written. */
+  resultCaptureMode?: ResultCaptureMode;
   /** Per-request principal identity — the ASSERTED provenance behind the
    * envelope's `principal` (SPEC §11.4 rung 0), which emits
    * `source: "asserted"`. It is the only provenance this SDK has.
@@ -433,7 +429,7 @@ export function validateBatonConfig(config: BatonConfig): asserts config is Reso
   }
   if (
     config.resultCaptureMode !== undefined &&
-    !RESULT_CAPTURE_MODES.has(config.resultCaptureMode)
+    !RESULT_CAPTURE_MODE_SET.has(config.resultCaptureMode)
   ) {
     // The union literal above already makes an unregistered value a COMPILE
     // error for a TypeScript caller; this covers the JavaScript one, and it
