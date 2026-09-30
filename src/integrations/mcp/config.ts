@@ -25,6 +25,9 @@ export { VENDOR_ID_PATTERN } from "../../dsn.js";
 // Per-tool intent-param injection modes (mirrors baton-proxy's
 // BATON_INTENT_PARAM and Python's VendorConfig.intent_param_mode).
 const INTENT_PARAM_MODES = new Set(["optional", "required", "off"]);
+// What the vendor may ask us to do with tool RESULT data (SPEC §11.4).
+// `"full"` never reaches the wire — absence is what means captured.
+const RESULT_CAPTURE_MODES = new Set(["full", "off"]);
 // Imported, never restated: the registry is derived from `FORM_BY_MODE`, so a
 // mode cannot be accepted here without someone having chosen its `form`.
 // `principalFor` drops Python's unrecognised-mode branch on the strength of
@@ -135,6 +138,36 @@ export interface BatonConfig {
    * nothing. A tool registered with no `inputSchema` at all is left alone
    * regardless of this setting (see `schemaCompat.injectGoalParams`). */
   intentParamMode?: "optional" | "required" | "off";
+  /** Whether tool RESPONSE data is captured at all (SPEC §11.4).
+   *
+   * `"full"` (the default) captures as it always has. `"off"` means nothing
+   * **derived from the tool's result** leaves this process: no `result` on
+   * `tool_call_end` or `tool_call_error`, and no `error_body` on the
+   * returned-failure shape, where that text is unwrapped from the result.
+   * Every affected event carries `result_capture: "off"` so a consumer reads
+   * a FACT rather than inferring one from what is missing — without it an
+   * absent result is indistinguishable from "the tool returned nothing", and
+   * a consumer manufactures a failure that never happened.
+   *
+   * **Requests are unaffected.** `params` are captured in both modes.
+   *
+   * **What SURVIVES `"off"`, and say this to a reviewer unprompted:**
+   * `error_type`, `tool_name` and `duration_ms`, so failure classification,
+   * pairing and timing all still work — and the message of an error your own
+   * handler THROWS, which is not derived from a result (SPEC §11.4.3). ⚠ Thrown
+   * messages are a classic leak channel: a failed query echoed back, a record
+   * id in the message. If that is also a problem, say so and the mode grows a
+   * stricter value then.
+   *
+   * **What is lost:** body-level analysis. A call that returns 200 with a
+   * useless body can no longer be detected; those calls leave the denominator
+   * of body-level analysis rather than counting as passes or failures.
+   *
+   * Not a scrubber rule, deliberately (SPEC §7): a scrubber TRANSFORMS a value
+   * that still crosses the network, this DECLARES that nothing crosses. Under
+   * `"off"` the scrubber is never invoked on the result — calling vendor code
+   * to produce a value we discard is a path that can only fail. */
+  resultCaptureMode?: "full" | "off";
   /** Per-request principal identity — the ASSERTED provenance behind the
    * envelope's `principal` (SPEC §11.4 rung 0), which emits
    * `source: "asserted"`. It is the only provenance this SDK has.
@@ -390,6 +423,21 @@ export function validateBatonConfig(config: BatonConfig): asserts config is Reso
     throw new Error(
       `BatonConfig.intentParamMode ${JSON.stringify(config.intentParamMode)} must be one of ` +
         `${JSON.stringify([...INTENT_PARAM_MODES].sort())}.`,
+    );
+  }
+  if (
+    config.resultCaptureMode !== undefined &&
+    !RESULT_CAPTURE_MODES.has(config.resultCaptureMode)
+  ) {
+    // The union literal above already makes an unregistered value a COMPILE
+    // error for a TypeScript caller; this covers the JavaScript one, and it
+    // matters more here than for most fields because the failure is silent in
+    // the one direction that cannot be undone — an unrecognised mode reads as
+    // "not off", so bodies a vendor believed were switched off get captured
+    // and sent, with no error anywhere.
+    throw new Error(
+      `BatonConfig.resultCaptureMode ${JSON.stringify(config.resultCaptureMode)} must be one of ` +
+        `${JSON.stringify([...RESULT_CAPTURE_MODES].sort())}.`,
     );
   }
   if (config.resolvePrincipal !== undefined && typeof config.resolvePrincipal !== "function") {

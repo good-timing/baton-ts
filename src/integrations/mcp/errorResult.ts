@@ -121,3 +121,65 @@ export function errorText(value: unknown): string {
   }
   return parts.join("\n");
 }
+
+/** The one registered non-default value of `resultCaptureMode`, on the wire and
+ * in the config alike (SPEC §11.4). A string and not a boolean because SPEC
+ * reserves a second value for the content ladder's partial rung — which is
+ * also why nothing tests `!== "off"` to mean "capture". */
+export const WITHHELD = "off";
+
+/** Whether `mode` withholds result-derived data.
+ *
+ * A POSITIVE test, deliberately: the partial rung, when it lands, is a third
+ * mode that also has no full body to emit, so `mode !== "full"` would have to
+ * be revisited at every call site that day. */
+export function withholding(mode: string | undefined): boolean {
+  return mode === WITHHELD;
+}
+
+/** The `tool_call_end` payload members the capture mode decides.
+ *
+ * ⚠ `result` stays DECLARED under `"off"`, explicitly null, rather than being
+ * omitted — so the only key-set difference between the two modes is the marker
+ * being added. That matters for `emitterConformance.test.ts`, whose payload
+ * comparison is key-set-exact, and it is the same declare-both-shapes posture
+ * the throw leg already takes on `result`. SPEC §11.4.3 makes null and absent
+ * equivalent, so the choice is about key-set stability, not meaning. */
+export function endResultFields(
+  mode: string | undefined,
+  result: unknown,
+  scrubber: (value: unknown) => unknown,
+): { result: unknown; result_capture?: string } {
+  // The scrubber is called HERE and not by the caller: SPEC §7 says it MUST
+  // NOT be invoked on a withheld result, so a helper handed an already-scrubbed
+  // value would be a guard standing after the thing it guards.
+  if (withholding(mode)) return { result: null, result_capture: WITHHELD };
+  return { result: scrubber(result) };
+}
+
+/** The RETURN failure shape's result-derived members (SPEC §11.4.3(2)).
+ *
+ * Both are unwrapped FROM the result — `error_body` from its `content` text
+ * parts, `result` as the whole envelope — so `"off"` withholds both and
+ * neither `errorText` nor the scrubber runs on it.
+ *
+ * ⚠ `error_body` becomes `""` rather than being dropped: it is REQUIRED on
+ * `ToolCallErrorPayload`, and widening that array is a conformance change every
+ * producer would have to follow. An empty `error_body` is genuinely ambiguous
+ * with "the failure carried no message", and `result_capture` is what tells the
+ * two apart — a second reason the marker is not optional.
+ *
+ * The THROW shape has no projection and needs none: its `error_body` is the
+ * error your own handler threw, not result-derived, so SPEC §11.4.3(1) leaves
+ * that leg unchanged under every mode. */
+export function returnedErrorFields(
+  mode: string | undefined,
+  result: unknown,
+  errorBody: (text: string) => string,
+  scrubber: (value: unknown) => unknown,
+): { error_body: string; result: unknown; result_capture?: string } {
+  if (withholding(mode)) {
+    return { error_body: "", result: null, result_capture: WITHHELD };
+  }
+  return { error_body: errorBody(errorText(result)), result: scrubber(result) };
+}

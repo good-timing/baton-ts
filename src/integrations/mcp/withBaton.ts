@@ -107,7 +107,8 @@ import { capCodePoints } from "../../_text.js";
 import { emit } from "./emit.js";
 import {
   ERROR_BODY_MAX_CODE_POINTS,
-  errorText,
+  endResultFields,
+  returnedErrorFields,
   isErrorResult,
   TOOL_ERROR_TYPE,
 } from "./errorResult.js";
@@ -160,6 +161,10 @@ interface WrapContext {
   scrubber: (value: unknown) => unknown;
   annotationToolName: string;
   intentParamMode: IntentParamMode;
+  /** Whether result-derived data is withheld (SPEC §11.4). Validated once at
+   * the config door, like `intentParamMode`, so nothing downstream re-checks
+   * it. */
+  resultCaptureMode: "full" | "off";
   paramRegistry: Map<string, IntentParamDispositions>;
   /** Vendor-true JSON Schema for the surface snapshot, in whatever spelling
    * THIS server actually puts on the wire. */
@@ -433,6 +438,12 @@ function batonWrap(nameRef: { current: string }, original: AnyHandler, ctx: Wrap
           payload: {
             tool_name: toolName,
             error_type: err instanceof Error ? err.constructor.name : "Error",
+            // ⚠ KEPT under `resultCaptureMode: "off"`, and that is the rule's
+            // shape rather than an exception to it: the rule is keyed on
+            // PROVENANCE, and a thrown error's message is the vendor's own
+            // code speaking about a call that returned nothing (SPEC
+            // §11.4.3(1)). A switch written as "drop `error_body`" would
+            // delete the highest-value diagnostic the product has.
             error_body: errorBody(ctx, message),
             duration_ms: durationMs,
             // Explicit, though the field is `.optional()` and this is its
@@ -466,13 +477,23 @@ function batonWrap(nameRef: { current: string }, original: AnyHandler, ctx: Wrap
           payload: {
             tool_name: toolName,
             error_type: TOOL_ERROR_TYPE,
-            error_body: errorBody(ctx, errorText(result)),
             duration_ms: durationMs,
-            // The whole envelope. ⚠ On this producer that is the same shape
-            // `tool_call_end.result` records, which is NOT what Python's
-            // contrast says — `ToolCallErrorPayloadSchema` in `events.ts`
-            // holds that claim and names the test that enforces it.
-            result: ctx.scrubber(result),
+            // Both remaining members are unwrapped FROM the result on this
+            // shape, so one projection decides them together and owns the
+            // scrubber call. `error_type` is NOT result-derived and is passed
+            // regardless: the call still failed (SPEC §11.2.6).
+            //
+            // ⚠ Under `"full"` `result` is the whole envelope, and on this
+            // producer that is the same shape `tool_call_end.result` records —
+            // which is NOT what Python's contrast says.
+            // `ToolCallErrorPayloadSchema` in `events.ts` holds that claim and
+            // names the test that enforces it.
+            ...returnedErrorFields(
+              ctx.resultCaptureMode,
+              result,
+              (text) => errorBody(ctx, text),
+              ctx.scrubber,
+            ),
           },
         }),
       );
@@ -487,7 +508,11 @@ function batonWrap(nameRef: { current: string }, original: AnyHandler, ctx: Wrap
         call_id: callId,
         sequence_number: ctx.counter.next(sessionId),
         captured_at: new Date().toISOString(),
-        payload: { tool_name: toolName, result: ctx.scrubber(result), duration_ms: durationMs },
+        payload: {
+          tool_name: toolName,
+          duration_ms: durationMs,
+          ...endResultFields(ctx.resultCaptureMode, result, ctx.scrubber),
+        },
       }),
     );
 
@@ -1015,6 +1040,7 @@ export function withBaton(server: SupportedMcpServer, supplied: BatonConfig = {}
     scrubber,
     annotationToolName,
     intentParamMode,
+    resultCaptureMode: config.resultCaptureMode ?? "full",
     paramRegistry: new Map(),
     resolvePrincipal: config.resolvePrincipal,
     principalIdMode: config.principalIdMode ?? "hashed",
