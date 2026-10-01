@@ -154,12 +154,25 @@ export const WITHHELD = "off" satisfies ResultCaptureMode;
 
 /** The `tool_call_end` payload members the capture mode decides.
  *
- * ⚠ `result` stays DECLARED under `"off"`, explicitly null, rather than being
- * omitted — so the only key-set difference between the two modes is the marker
- * being added. That matters for `emitterConformance.test.ts`, whose payload
- * comparison is key-set-exact, and it is the same declare-both-shapes posture
- * the throw leg already takes on `result`. SPEC §11.4.3 makes null and absent
- * equivalent, so the choice is about key-set stability, not meaning. */
+ * `result: null` under `"off"` is REDUNDANT here, and saying so is the point.
+ * `ToolCallEndPayloadSchema.result` is `z.unknown().nullable().default(null)`,
+ * so the key is present with a null value whether or not this branch names it —
+ * the declare-rather-than-omit posture is the SCHEMA's, not this function's.
+ * Dropping the literal yields a byte-identical wire shape and NOTHING detects
+ * it. Kept because it states the intent at the site that decides the mode, not
+ * because it is load-bearing.
+ *
+ * ⚠ **So do not look for a test that would catch its removal — there is none,
+ * and two earlier versions of this paragraph named one.** The first said the
+ * cross-SDK key-set check, which `withoutNulls` made blind; the second said
+ * `errorResult.test.ts`'s `toContain("result")`, which lives in a throw-path
+ * test that never sets `resultCaptureMode` and so never enters this branch. The
+ * guarantee that matters is asserted where it is produced:
+ * `resultCapture.test.ts` pins `result` null under `"off"` on this leg. ⚠ The
+ * sibling claim on the THROW leg (`withBaton.ts`) does hold —
+ * `ToolCallErrorPayloadSchema.result` is `.optional()` with no default, so
+ * removing that literal is detectable. Two legs, two different answers, which is
+ * why this says which is which. */
 /** ⚠ PRECONDITION: call this ONLY from inside an `emit()` build thunk.
  * It applies the vendor's scrubber bare, which is correct there (a throw
  * drops the event) and wrong anywhere else (a throw reaches the agent as

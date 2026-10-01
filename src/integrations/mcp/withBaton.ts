@@ -452,11 +452,14 @@ function batonWrap(nameRef: { current: string }, original: AnyHandler, ctx: Wrap
             // Explicit, though the field is `.optional()` and this is its
             // absent value. The schema is deliberately not an emitter (see
             // `ToolCallErrorPayloadSchema`), so if this leg stayed silent the
-            // key would be missing — and Python's `tool_call_error` vector
-            // carries `result: null`, so the cross-SDK key-set check in
-            // `emitterConformance.test.ts` is what would say so. Each of the
-            // two failure shapes declares which it is, the same reason
-            // Python's emitter made the parameter positional-without-default.
+            // key would be missing. Each of the two failure shapes declares
+            // which it is, the same reason Python's emitter made the parameter
+            // positional-without-default.
+            //
+            // ⚠ Guarded by `errorResult.test.ts`'s `toContain("result")`, NOT by
+            // the cross-SDK key-set check — measured by removing this line. Why,
+            // at one site: `endResultFields` in `errorResult.ts`. SPEC §11.4.3
+            // states the same void rationale and wants the same amendment.
             result: null,
           },
         }),
