@@ -18,6 +18,10 @@
   and requires a consumer to read the VALUE, never test for the key. Same axis
   `result` already differs on between `baton-sdk` and `baton-proxy` (§11.4.3).
 
+- **`ResultCaptureMode`** is exported, so the field above has a nameable type.
+  Without it a vendor had to write `BatonConfig["resultCaptureMode"]` — the
+  rolled-up `dist/index.d.ts` declared the type but did not export it.
+
 ### Changed
 
 - The `baton-spec` pin moves to `db27f3f`, which is what makes `result_capture`
