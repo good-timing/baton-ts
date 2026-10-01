@@ -51,6 +51,23 @@ export const ToolCallEndPayloadSchema = z
     tool_name: z.string(),
     result: z.unknown().nullable().default(null),
     duration_ms: z.number().int().nullable().default(null),
+    // SPEC §11.4: the producer declares it WITHHELD result-derived data.
+    // Absent means CAPTURED, so no consumer needs a version table.
+    //
+    // `.optional()`, NOT `.default(null)`, for the reason recorded on
+    // `ToolCallErrorPayloadSchema.result` below: a default makes this reader
+    // an EMITTER, and parsing a stored event from before the member existed
+    // would hand back an invented key.
+    //
+    // ⚠ **This package OMITS the member when capturing, where the Python SDK
+    // sends `result_capture: null`.** Both are conformant and SPEC §11.4 says
+    // so outright — absent and null are equivalent, and a consumer MUST read
+    // the VALUE, never test for the key. It is the same axis `result` already
+    // differs on between `baton-sdk` (null) and `baton-proxy` (omitted), per
+    // §11.4.3. Omitting is chosen here because the alternative — matching
+    // Python — would require regenerating `baton-spec`'s vectors from an
+    // UNMERGED branch, pinning a key set no released producer emits.
+    result_capture: z.string().nullable().optional(),
   })
   .strict();
 export type ToolCallEndPayload = z.infer<typeof ToolCallEndPayloadSchema>;
@@ -112,6 +129,10 @@ export const ToolCallErrorPayloadSchema = z
     // emitter declaring `result` on both failure legs (`withBaton.ts`),
     // explicitly `null` on a throw — not the schema filling it in.
     result: z.unknown().nullable().optional(),
+    // SPEC §11.4, on BOTH payloads because the RETURN failure shape withholds
+    // `result` too. Same `.optional()` reasoning as the field above it, and
+    // same omit-when-capturing posture as `ToolCallEndPayloadSchema`.
+    result_capture: z.string().nullable().optional(),
   })
   .strict();
 export type ToolCallErrorPayload = z.infer<typeof ToolCallErrorPayloadSchema>;

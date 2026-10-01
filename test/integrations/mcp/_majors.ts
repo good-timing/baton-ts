@@ -5,6 +5,7 @@
  * smallest surface that lets one test body drive either.
  */
 
+import { expect } from "vitest";
 import { McpServer as McpServerV1 } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { Client as ClientV1 } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport as TransportV1 } from "@modelcontextprotocol/sdk/inMemory.js";
@@ -27,6 +28,27 @@ export class CapturingSink implements Sink {
   }
   async flush(): Promise<void> {}
   async aclose(): Promise<void> {}
+}
+
+/** The terminal event of the (single) call, with its type pinned FIRST — and
+ * narrowed to it, so a caller reads the payload without restating the literal
+ * in a hand-written guard.
+ *
+ * ⚠ Pinning the type before reading a body is load-bearing, not tidiness.
+ * Taken off "whichever terminal event was emitted", body assertions pass
+ * against the OLD behaviour too — the returned error flag was already inside
+ * `tool_call_end.result` before it was reclassified. That is the Python
+ * change's recorded lesson.
+ *
+ * Shared because two test files had grown byte-identical copies, and the
+ * second one dropped this paragraph. */
+export function terminal<T extends Event["event_type"]>(
+  sink: CapturingSink,
+  expected: T,
+): Extract<Event, { event_type: T }> {
+  const event = sink.events[sink.events.length - 1]!;
+  expect(event.event_type).toBe(expected);
+  return event as Extract<Event, { event_type: T }>;
 }
 
 export interface Major {

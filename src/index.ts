@@ -63,6 +63,10 @@ export type { Sink, StdoutSinkOptions, HttpSinkOptions } from "./sinks.js";
 export { StdoutSink, HttpSink, safeWrite } from "./sinks.js";
 
 export type { BatonConfig } from "./integrations/mcp/index.js";
+// Exported for the reason `PrincipalIdMode` is, below: `BatonConfig
+// .resultCaptureMode` is typed with it, so a vendor cannot name the field's
+// type without it.
+export type { ResultCaptureMode } from "./integrations/mcp/index.js";
 export { withBaton, BatonHandle } from "./integrations/mcp/index.js";
 // The only way a consumer can name `withBaton`'s parameter now that neither
 // SDK major's `McpServer` is imported.

@@ -26,6 +26,7 @@ import type { SupportedMcpServer } from "./withBaton.js";
 import type { ProactiveTracker } from "./proactiveTracker.js";
 import { detectAgentRuntime, UNKNOWN_AGENT_RUNTIME } from "./runtimeAdapter.js";
 import { resolveSessionId } from "./sessionResolution.js";
+import { scrubOrNull } from "./safeScrub.js";
 import type { SessionCounter } from "./sessionCounter.js";
 
 /** The annotate tool's arguments. Spelled out because `SupportedMcpServer`
@@ -100,9 +101,11 @@ export function registerAnnotationTool(
         }) ?? UNKNOWN_AGENT_RUNTIME;
       // As in the tool-call wrapper: coordinates coarsened after the ladder
       // read the raw meta, before the vendor's scrubber (handoff D5).
-      const scrubbedMeta = meta
-        ? (options.scrubber(roundMetaCoordinates(meta)) as Record<string, unknown>)
-        : null;
+      const scrubbedMeta = scrubOrNull(
+        options.scrubber,
+        meta ? roundMetaCoordinates(meta) : null,
+        "_meta",
+      );
       const sessionId = await resolveSessionId(options.fallbackSessionId, extra);
       // A proactive annotation (no signal_type) claims the session's
       // proactive slot so the tool wrapper won't also synthesise one from
@@ -143,8 +146,10 @@ export function registerAnnotationTool(
             // Agent-facing names -> wire keys, as with `overall_task`
             // below: `user_goal` is stored as `intent`, `expected_result` as
             // `expected_outcome`.
+            // eslint-disable-next-line no-restricted-syntax -- inside the emit() build thunk: a throw is already contained, and null here would fabricate a shape
             intent: options.scrubber(args.user_goal),
             expected_outcome: args.expected_result
+              // eslint-disable-next-line no-restricted-syntax -- inside the emit() build thunk: a throw is already contained, and null here would fabricate a shape
               ? options.scrubber(args.expected_result)
               : null,
             // `signal_type` is a closed enum — nothing to scrub. The task label
@@ -159,10 +164,13 @@ export function registerAnnotationTool(
             // Agent-facing param `overall_task` -> wire key `workflow`, the same
             // split the injected params use (`overall_task` -> `call_workflow`):
             // renaming the param must not move the key the console groups on.
+            // eslint-disable-next-line no-restricted-syntax -- inside the emit() build thunk: a throw is already contained, and null here would fabricate a shape
             workflow: args.overall_task ? options.scrubber(args.overall_task) : null,
             suggested_improvement: args.suggested_improvement
+              // eslint-disable-next-line no-restricted-syntax -- inside the emit() build thunk: a throw is already contained, and null here would fabricate a shape
               ? options.scrubber(args.suggested_improvement)
               : null,
+            // eslint-disable-next-line no-restricted-syntax -- inside the emit() build thunk: a throw is already contained, and null here would fabricate a shape
             context: args.context ? options.scrubber(args.context) : null,
           },
         }),

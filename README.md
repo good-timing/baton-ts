@@ -47,9 +47,27 @@ Sending to your own collector instead, or trying the package before you have a k
 
 **It is pattern matching, not a guarantee.** `{"name": "Jane Doe"}` passes through untouched. Decide what your server puts in tool params and results on that basis. [What it does and does not catch](https://goodtiming.ai/docs.html#pii).
 
-## Turning capture off
+**The scrubber is not the only lever.** If some tool results cannot be recorded at all, `resultCaptureMode` below withholds them outright rather than transforming them.
 
-`BATON_DISABLED=1` in the environment of the process running the server, and the SDK installs nothing at all. The switch belongs to whoever RUNS the server. [The long version](https://goodtiming.ai/docs.html#off-switch).
+## Not capturing responses at all
+
+`resultCaptureMode: "off"` and nothing **derived from what your tool returns** leaves your process — not the result, and not the reason text on a failure your handler returns rather than throws. Requests are unaffected: `params` are captured either way.
+
+```ts
+withBaton(server, { dsn, resultCaptureMode: "off" });
+```
+
+Each affected event says so, in its own field (`result_capture: "off"`), rather than leaving a reader to guess from what is missing. That is the difference between the two levers: a scrubber TRANSFORMS a value that still crosses the network, this DECLARES that nothing crosses.
+
+**What is still captured, and it is deliberate:** the tool name, the duration, and whether the call failed — so failure detection, pairing and timing all keep working. Also the message of an error your handler **throws**, which is your own code speaking about a call that never returned, and the most useful diagnostic the product has. ⚠ Thrown messages are a classic leak channel — a failed query echoed back, a record id in the message. If that is also a problem for you, say so and we will add a stricter setting.
+
+**What it costs you:** anything that needs to read a response body. A call that returns `200` with a useless body can no longer be detected, and those calls sit outside the denominator of body-level analysis rather than counting as passes or failures.
+
+## Turning capture off entirely
+
+Not the same thing as the section above: that one keeps the signal and drops the response bodies, this one emits nothing at all. It also belongs to a different person — `resultCaptureMode` is set by whoever WRAPS the server, in code; this is set by whoever RUNS it, in the environment.
+
+`BATON_DISABLED=1` in the environment of the process running the server, and the SDK installs nothing at all. [The long version](https://goodtiming.ai/docs.html#off-switch).
 
 Checking it worked: `handle.sink` is still an object, so finding one there is not a sign the switch failed. It is the sink you passed if you passed one, and a `DisabledSink` otherwise. Either way nothing writes to it, because nothing is wrapped.
 

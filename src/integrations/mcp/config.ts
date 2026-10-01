@@ -8,6 +8,7 @@ import { displayNameFromServer } from "./annotationName.js";
 import type { ResolvePrincipalHook } from "./principalResolution.js";
 import { DEFAULT_CONSENT_TOKEN } from "../../events.js";
 import { PRINCIPAL_ID_MODES, type PrincipalIdMode } from "../../identity.js";
+import { RESULT_CAPTURE_MODES, type ResultCaptureMode } from "./errorResult.js";
 import { HttpSink, type Sink } from "../../sinks.js";
 
 // Vendor IDs are the annotation-tool-name prefix — same pattern Python
@@ -25,6 +26,14 @@ export { VENDOR_ID_PATTERN } from "../../dsn.js";
 // Per-tool intent-param injection modes (mirrors baton-proxy's
 // BATON_INTENT_PARAM and Python's VendorConfig.intent_param_mode).
 const INTENT_PARAM_MODES = new Set(["optional", "required", "off"]);
+// What the vendor may ask us to do with tool RESULT data (SPEC §11.4).
+// `"full"` never reaches the wire — absence is what means captured.
+//
+// DERIVED from the registry, never restated — the same rule
+// `PRINCIPAL_ID_MODE_SET` below follows, and for the same reason: a
+// hand-written copy makes the guarantee "two lists happen to agree", so a mode
+// could be accepted here that the emitter has no payload shape for.
+const RESULT_CAPTURE_MODE_SET: ReadonlySet<string> = new Set(RESULT_CAPTURE_MODES);
 // Imported, never restated: the registry is derived from `FORM_BY_MODE`, so a
 // mode cannot be accepted here without someone having chosen its `form`.
 // `principalFor` drops Python's unrecognised-mode branch on the strength of
@@ -135,6 +144,32 @@ export interface BatonConfig {
    * nothing. A tool registered with no `inputSchema` at all is left alone
    * regardless of this setting (see `schemaCompat.injectGoalParams`). */
   intentParamMode?: "optional" | "required" | "off";
+  /** Whether tool RESPONSE data is captured at all (SPEC §11.4).
+   *
+   * `"full"` (the default) captures as it always has. `"off"` means nothing
+   * **derived from what your tool returns** leaves this process: no `result` on
+   * `tool_call_end` or `tool_call_error`, and no `error_body` on the
+   * returned-failure shape, where that text is unwrapped from the result. Each
+   * affected event carries `result_capture: "off"`, so a reader has a FACT
+   * rather than an absence to guess from — without it a missing result is
+   * indistinguishable from "the tool returned nothing", and a consumer
+   * manufactures a failure that never happened.
+   *
+   * **Requests are unaffected**: `params` are captured in both modes.
+   *
+   * ⚠ The message of an error your handler THROWS is KEPT — it is your own code
+   * speaking about a call that never returned, so it is not result-derived
+   * (SPEC §11.4.3). Thrown messages are a classic leak channel; if that is also
+   * a problem for you, say so and the mode grows a stricter value.
+   *
+   * Not a scrubber rule, deliberately (SPEC §7): a scrubber TRANSFORMS a value
+   * that still crosses the network, this DECLARES that nothing crosses. Under
+   * `"off"` the scrubber is never invoked on the result at all.
+   *
+   * What it costs you, and the rest of the reasoning: README, "Not capturing
+   * responses at all". Kept there rather than repeated here — the two copies
+   * had already drifted apart in wording by the time this was written. */
+  resultCaptureMode?: ResultCaptureMode;
   /** Per-request principal identity — the ASSERTED provenance behind the
    * envelope's `principal` (SPEC §11.4 rung 0), which emits
    * `source: "asserted"`. It is the only provenance this SDK has.
@@ -391,6 +426,33 @@ export function validateBatonConfig(config: BatonConfig): asserts config is Reso
       `BatonConfig.intentParamMode ${JSON.stringify(config.intentParamMode)} must be one of ` +
         `${JSON.stringify([...INTENT_PARAM_MODES].sort())}.`,
     );
+  }
+  if (
+    config.resultCaptureMode !== undefined &&
+    !RESULT_CAPTURE_MODE_SET.has(config.resultCaptureMode)
+  ) {
+    // The union literal above already makes an unregistered value a COMPILE
+    // error for a TypeScript caller; this covers the JavaScript one, and it
+    // matters more here than for most fields because the failure is silent in
+    // the one direction that cannot be undone — an unrecognised mode reads as
+    // "not off", so bodies a vendor believed were switched off get captured
+    // and sent, with no error anywhere.
+    throw new Error(
+      `BatonConfig.resultCaptureMode ${JSON.stringify(config.resultCaptureMode)} must be one of ` +
+        `${JSON.stringify([...RESULT_CAPTURE_MODES].sort())}.`,
+    );
+  }
+  if (config.scrubber !== undefined && typeof config.scrubber !== "function") {
+    // Refused AT INSTALL, and `scrubOrNull` is what makes this necessary rather
+    // than merely tidy. Before the fail-open guard existed, a non-function here
+    // (a JS caller, or `new Scrubber().scrub()` instead of `.scrub`) threw a
+    // TypeError on the FIRST tool call — loud, immediate, unmistakable. The guard
+    // now catches that TypeError, warns once per field, and every scrubbed field
+    // degrades to `null` for the life of the process. So the guard converted a
+    // loud failure into a silent one, and the door is where that gets paid back.
+    // Same argument as `resolvePrincipal` below, found by review of the commit
+    // that added the guard.
+    throw new Error("BatonConfig.scrubber must be a function.");
   }
   if (config.resolvePrincipal !== undefined && typeof config.resolvePrincipal !== "function") {
     // Refused AT INSTALL rather than at the first call. Unvalidated it would

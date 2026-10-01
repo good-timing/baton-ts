@@ -1,7 +1,13 @@
 /**
- * Detecting MCP's returned error flag. Port of `baton` (Python)'s
- * `integrations/_error_result.py`, with one predicate deliberately different —
- * see `isErrorResult`.
+ * What result-derived data reaches the wire, and in what shape.
+ *
+ * Two halves of one question. Detecting MCP's returned error FLAG — the port
+ * of `baton` (Python)'s `integrations/_error_result.py`, with one predicate
+ * deliberately different, see `isErrorResult`. And the capture MODE (SPEC
+ * §11.4), which decides whether any of it egresses at all. The second half
+ * governs the SUCCESS path too, so a reader looking for "where is the result
+ * on a good call decided" is in the right file despite the name — kept as
+ * `errorResult.ts` because the filename pins parity with Python's module.
  *
  * SPEC §11.4.3. **A failed MCP tool call is a 200.** The protocol files it as a
  * successful JSON-RPC response whose `CallToolResult` body sets the error flag;
@@ -120,4 +126,109 @@ export function errorText(value: unknown): string {
     return "";
   }
   return parts.join("\n");
+}
+
+/** The registered values of `resultCaptureMode` (SPEC §11.4), and the single
+ * source of truth for them.
+ *
+ * Shaped after `identity.ts`'s `FORM_BY_MODE` → `PRINCIPAL_ID_MODES`, whose
+ * own note says why: a second hand-written list makes the guarantee "two lists
+ * happen to agree", which is the prose-shaped binding that pattern exists to
+ * replace. `config.ts` builds its validator set from THIS array rather than
+ * restating the literals, so a mode cannot be accepted at the door without
+ * someone having given it a payload shape below. */
+export const RESULT_CAPTURE_MODES = ["full", "off"] as const;
+
+/** What a vendor may set. Derived, so the type and the registry cannot drift. */
+export type ResultCaptureMode = (typeof RESULT_CAPTURE_MODES)[number];
+
+/** The one registered non-default value, on the wire and in the config alike.
+ * A string and not a boolean because SPEC reserves a second value for the
+ * content ladder's partial rung.
+ *
+ * `satisfies` and NOT a type annotation: an annotation widens this to
+ * `ResultCaptureMode`, and then `case WITHHELD:` stops narrowing the switches
+ * below — which silently costs the exhaustiveness that is the whole point of
+ * deriving the registry. This keeps the literal type AND checks membership. */
+export const WITHHELD = "off" satisfies ResultCaptureMode;
+
+/** The `tool_call_end` payload members the capture mode decides.
+ *
+ * `result: null` under `"off"` is REDUNDANT here, and saying so is the point.
+ * `ToolCallEndPayloadSchema.result` is `z.unknown().nullable().default(null)`,
+ * so the key is present with a null value whether or not this branch names it —
+ * the declare-rather-than-omit posture is the SCHEMA's, not this function's.
+ * Dropping the literal yields a byte-identical wire shape and NOTHING detects
+ * it. Kept because it states the intent at the site that decides the mode, not
+ * because it is load-bearing.
+ *
+ * ⚠ **So do not look for a test that would catch its removal — there is none,
+ * and two earlier versions of this paragraph named one.** The first said the
+ * cross-SDK key-set check, which `withoutNulls` made blind; the second said
+ * `errorResult.test.ts`'s `toContain("result")`, which lives in a throw-path
+ * test that never sets `resultCaptureMode` and so never enters this branch. The
+ * guarantee that matters is asserted where it is produced:
+ * `resultCapture.test.ts` pins `result` null under `"off"` on this leg. ⚠ The
+ * sibling claim on the THROW leg (`withBaton.ts`) does hold —
+ * `ToolCallErrorPayloadSchema.result` is `.optional()` with no default, so
+ * removing that literal is detectable. Two legs, two different answers, which is
+ * why this says which is which. */
+/** ⚠ PRECONDITION: call this ONLY from inside an `emit()` build thunk.
+ * It applies the vendor's scrubber bare, which is correct there (a throw
+ * drops the event) and wrong anywhere else (a throw reaches the agent as
+ * `isError: true` on a call that worked — SPEC §11.2). This is still PROSE,
+ * and prose is what let a site be missed once already: the `eslint-disable`
+ * below pre-approves the bare call for any future caller, including one
+ * outside a thunk. The structural fix is to take the scrubber as a thunk
+ * ARGUMENT so no other caller can obtain it; recorded as F1b. */
+export function endResultFields(
+  mode: ResultCaptureMode,
+  result: unknown,
+  scrubber: (value: unknown) => unknown,
+): { result: unknown; result_capture?: string } {
+  // The scrubber is called HERE and not by the caller: SPEC §7 says it MUST
+  // NOT be invoked on a withheld result, so a helper handed an already-scrubbed
+  // value would be a guard standing after the thing it guards.
+  switch (mode) {
+    case WITHHELD:
+      return { result: null, result_capture: WITHHELD };
+    case "full":
+      // eslint-disable-next-line no-restricted-syntax -- inside the emit() build thunk (both callers are thunks): emit drops the event, which is correct for a result
+      return { result: scrubber(result) };
+  }
+}
+
+/** The RETURN failure shape's result-derived members (SPEC §11.4.3(2)).
+ *
+ * Both are unwrapped FROM the result — `error_body` from its `content` text
+ * parts, `result` as the whole envelope — so `"off"` withholds both and
+ * neither `errorText` nor the scrubber runs on it.
+ *
+ * ⚠ `error_body` becomes `""` rather than being dropped: it is REQUIRED on
+ * `ToolCallErrorPayload`, and widening that array is a conformance change every
+ * producer would have to follow. An empty `error_body` is genuinely ambiguous
+ * with "the failure carried no message", and `result_capture` is what tells the
+ * two apart — a second reason the marker is not optional.
+ */
+/** ⚠ PRECONDITION: call this ONLY from inside an `emit()` build thunk.
+ * It applies the vendor's scrubber bare, which is correct there (a throw
+ * drops the event) and wrong anywhere else (a throw reaches the agent as
+ * `isError: true` on a call that worked — SPEC §11.2). This is still PROSE,
+ * and prose is what let a site be missed once already: the `eslint-disable`
+ * below pre-approves the bare call for any future caller, including one
+ * outside a thunk. The structural fix is to take the scrubber as a thunk
+ * ARGUMENT so no other caller can obtain it; recorded as F1b. */
+export function returnedErrorFields(
+  mode: ResultCaptureMode,
+  result: unknown,
+  errorBody: (text: string) => string,
+  scrubber: (value: unknown) => unknown,
+): { error_body: string; result: unknown; result_capture?: string } {
+  switch (mode) {
+    case WITHHELD:
+      return { error_body: "", result: null, result_capture: WITHHELD };
+    case "full":
+      // eslint-disable-next-line no-restricted-syntax -- inside the emit() build thunk (both callers are thunks): emit drops the event, which is correct for a result
+      return { error_body: errorBody(errorText(result)), result: scrubber(result) };
+  }
 }

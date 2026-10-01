@@ -1,5 +1,39 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **`BatonConfig.resultCaptureMode`** — `"off"` withholds everything derived
+  from what a tool returns (`result` on both tool-call events, and `error_body`
+  on the returned-failure shape, where that text is unwrapped from the result)
+  and marks each affected event `result_capture: "off"` per SPEC §11.4.
+  Requests are unaffected. The message of an error the handler THROWS is kept:
+  it is not result-derived (§11.4.3). What survives, what it costs, and the
+  reviewer-facing caveats are in the README section "Not capturing responses at
+  all" — not repeated here, so the two cannot drift.
+
+  ⚠ **This package OMITS `result_capture` when capturing, where `baton-sdk`
+  sends `null`.** Both conformant: SPEC §11.4 makes absent and null equivalent
+  and requires a consumer to read the VALUE, never test for the key. Same axis
+  `result` already differs on between `baton-sdk` and `baton-proxy` (§11.4.3).
+
+- **`ResultCaptureMode`** is exported, so the field above has a nameable type.
+  Without it a vendor had to write `BatonConfig["resultCaptureMode"]` — the
+  rolled-up `dist/index.d.ts` declared the type but did not export it.
+
+### Changed
+
+- The `baton-spec` pin moves to `db27f3f`, which is what makes `result_capture`
+  legal on the wire: both tool-call payload definitions are
+  `additionalProperties: false`, so the schema had to learn the member before
+  any producer could send it.
+
+- `test/conformance.test.ts` now validates a MAXIMALLY-populated payload of each
+  type against the pinned schema, and asserts each fixture's key set equals its
+  Zod schema's. Optional members were previously never schema-checked, so the
+  pin could be reverted with the whole suite still green.
+
 ## 0.4.1: a hashed principal is the bare hash
 
 **BREAKING — `principal.id` stops carrying a tag.** A hashed value was

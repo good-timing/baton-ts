@@ -53,6 +53,7 @@ import { z } from "zod";
 import { beforeAll, describe, expect, it } from "vitest";
 import { withBaton } from "../src/integrations/mcp/withBaton.js";
 import type { Event } from "../src/events.js";
+import { TOOL_ERROR_TYPE } from "../src/integrations/mcp/errorResult.js";
 import type { Sink } from "../src/sinks.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -69,14 +70,28 @@ function vector(name: string): Record<string, unknown> {
 
 /**
  * One case per vector: the file to compare against, and how to pick the
- * emitted event it pins. The two `tool_call_error` shapes are told apart by
- * `result` exactly as `generate.py` tells them apart when naming the files —
- * a raise leaves it null, a returned flag populates it.
- */
+ * emitted event it pins.
+ *
+ * ⚠ **The two `tool_call_error` shapes are told apart by `error_type`, because
+ * SPEC §11.4.3 says that is the only thing a consumer may tell them apart by:**
+ * "`result` is a BODY, not a discriminator, and MUST NOT be used as one … The
+ * discriminator is `error_type`". These pickers read `payload.result === null`
+ * until 2026-10-01, citing `generate.py` — and SPEC names that very line as the
+ * thing not to copy: "sound for that ONE scenario, whose envelope serializes,
+ * and not a rule to copy".
+ *
+ * Two constraints `result` cannot meet, either of which is enough on its own:
+ * `baton-sdk`'s envelope serializer answers `null` when an envelope cannot be
+ * made JSON-safe, so a RETURNED failure can legitimately carry `result: null`;
+ * and under `resultCaptureMode: "off"` BOTH shapes carry `result: null`
+ * (`errorResult.ts`'s returned leg, `withBaton.ts`'s throw leg), so a null test
+ * cannot tell them apart at all. ⚠ This said "neither shape has a `result`"
+ * until it was measured — wrong, and weaker than the truth: the field is there
+ * and identical, which is what actually condemns the old predicate. */
 const isThrownError = (e: Event) =>
-  e.event_type === "tool_call_error" && e.payload.result === null;
+  e.event_type === "tool_call_error" && e.payload.error_type !== TOOL_ERROR_TYPE;
 const isReturnedError = (e: Event) =>
-  e.event_type === "tool_call_error" && e.payload.result != null;
+  e.event_type === "tool_call_error" && e.payload.error_type === TOOL_ERROR_TYPE;
 
 const CASES: ReadonlyArray<{ name: string; pick: (e: Event) => boolean }> = [
   { name: "annotation", pick: (e) => e.event_type === "annotation" },
@@ -143,6 +158,32 @@ const ENVELOPE_ALLOWED_TO_DIFFER = new Set([
   // so exempting the cross-vector comparison leaves nothing uncovered.
   "transport_observed",
 ]);
+
+/** SPEC §11.4: **absent and null are equivalent on the wire, and a consumer
+ * MUST NOT test for the KEY.** So the two producers may legitimately disagree
+ * about whether an optional member is present at all, and this comparison has
+ * to be made modulo that or it enforces a rule SPEC does not state.
+ *
+ * ⚠ **Not an entry in `PAYLOAD_ALLOWED_TO_DIFFER`, and the difference is the
+ * point.** That table exempts a key's VALUE and says so ("The KEY is still
+ * compared"), which left no hook for a key-set difference at all — so the
+ * divergence `response_capture_switch.md` argues is LEGAL was, in this suite, a
+ * scheduled break: `result_capture` is omitted here where Python sends `null`,
+ * `db27f3f` declined to regenerate the vectors because no producer emitted the
+ * member yet, and the first regeneration from Python would have reddened
+ * `tool_call_end`, `tool_call_error` and `tool_call_error.returned` on a
+ * difference nobody had decided was one. Measured by doing it: all three.
+ *
+ * Stripping both sides implements the rule ONCE, for every optional member
+ * present and future, instead of naming members in a list someone has to
+ * remember. And it still fails on everything it should: a reference member that
+ * is non-null while this SDK omits it survives the strip and reds the key set,
+ * which is the real regression — "we stopped emitting something Python emits".
+ * Only the null-vs-absent pair is forgiven, because SPEC says those two ARE the
+ * same wire. */
+function withoutNulls(payload: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(payload).filter(([, v]) => v !== null));
+}
 
 /**
  * Payload fields allowed to differ, per event type. Everything else in the
@@ -334,11 +375,10 @@ describe("cross-SDK emitter conformance (Phase 3)", () => {
 
   it.each(CASES)("$name: payload matches the Python vector field-for-field", ({ name, pick }) => {
     const emitted = JSON.parse(JSON.stringify(events.find(pick)!)) as Record<string, unknown>;
-    const emittedPayload = emitted.payload as Record<string, unknown>;
-    const referencePayload = vector(name).payload as Record<
-      string,
-      unknown
-    >;
+    const emittedPayload = withoutNulls(emitted.payload as Record<string, unknown>);
+    const referencePayload = withoutNulls(
+      vector(name).payload as Record<string, unknown>,
+    );
     const exempt = PAYLOAD_ALLOWED_TO_DIFFER[name]!;
 
     expect(Object.keys(emittedPayload).sort()).toEqual(
