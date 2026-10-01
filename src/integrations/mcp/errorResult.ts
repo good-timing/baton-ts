@@ -160,6 +160,14 @@ export const WITHHELD = "off" satisfies ResultCaptureMode;
  * comparison is key-set-exact, and it is the same declare-both-shapes posture
  * the throw leg already takes on `result`. SPEC §11.4.3 makes null and absent
  * equivalent, so the choice is about key-set stability, not meaning. */
+/** ⚠ PRECONDITION: call this ONLY from inside an `emit()` build thunk.
+ * It applies the vendor's scrubber bare, which is correct there (a throw
+ * drops the event) and wrong anywhere else (a throw reaches the agent as
+ * `isError: true` on a call that worked — SPEC §11.2). This is still PROSE,
+ * and prose is what let a site be missed once already: the `eslint-disable`
+ * below pre-approves the bare call for any future caller, including one
+ * outside a thunk. The structural fix is to take the scrubber as a thunk
+ * ARGUMENT so no other caller can obtain it; recorded as F1b. */
 export function endResultFields(
   mode: ResultCaptureMode,
   result: unknown,
@@ -189,6 +197,14 @@ export function endResultFields(
  * with "the failure carried no message", and `result_capture` is what tells the
  * two apart — a second reason the marker is not optional.
  */
+/** ⚠ PRECONDITION: call this ONLY from inside an `emit()` build thunk.
+ * It applies the vendor's scrubber bare, which is correct there (a throw
+ * drops the event) and wrong anywhere else (a throw reaches the agent as
+ * `isError: true` on a call that worked — SPEC §11.2). This is still PROSE,
+ * and prose is what let a site be missed once already: the `eslint-disable`
+ * below pre-approves the bare call for any future caller, including one
+ * outside a thunk. The structural fix is to take the scrubber as a thunk
+ * ARGUMENT so no other caller can obtain it; recorded as F1b. */
 export function returnedErrorFields(
   mode: ResultCaptureMode,
   result: unknown,

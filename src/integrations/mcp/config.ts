@@ -442,6 +442,18 @@ export function validateBatonConfig(config: BatonConfig): asserts config is Reso
         `${JSON.stringify([...RESULT_CAPTURE_MODES].sort())}.`,
     );
   }
+  if (config.scrubber !== undefined && typeof config.scrubber !== "function") {
+    // Refused AT INSTALL, and `scrubOrNull` is what makes this necessary rather
+    // than merely tidy. Before the fail-open guard existed, a non-function here
+    // (a JS caller, or `new Scrubber().scrub()` instead of `.scrub`) threw a
+    // TypeError on the FIRST tool call — loud, immediate, unmistakable. The guard
+    // now catches that TypeError, warns once per field, and every scrubbed field
+    // degrades to `null` for the life of the process. So the guard converted a
+    // loud failure into a silent one, and the door is where that gets paid back.
+    // Same argument as `resolvePrincipal` below, found by review of the commit
+    // that added the guard.
+    throw new Error("BatonConfig.scrubber must be a function.");
+  }
   if (config.resolvePrincipal !== undefined && typeof config.resolvePrincipal !== "function") {
     // Refused AT INSTALL rather than at the first call. Unvalidated it would
     // fail inside the hook's own fail-open guard — logged nowhere, identity

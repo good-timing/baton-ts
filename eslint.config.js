@@ -24,11 +24,18 @@ export default tseslint.config(
       // `emit()` build thunk must go through `scrubOrNull` (SPEC §11.2) — a bare
       // call there returns `isError: true` to the agent for a tool call that
       // worked. That rule lived in a doc comment and a site was missed within the
-      // same change, so the compiler-adjacent version is the rule itself: a bare
-      // call is refused everywhere, and the legitimate in-thunk sites opt out on
-      // a visible line a reviewer sees. Both spellings are banned because the
-      // scrubber is reached as a property (`ctx.scrubber(`) and as a bare
-      // parameter (`scrubber(`).
+      // same change, so this is the mechanical version: the legitimate in-thunk
+      // sites opt out on a visible line a reviewer sees. Both spellings are
+      // banned because the scrubber is reached as a property (`ctx.scrubber(`)
+      // and as a bare parameter (`scrubber(`).
+      //
+      // ⚠ **Scope, measured rather than claimed:** this is a TRIPWIRE, not a
+      // proof. It matches on the NAME at the call, so an alias escapes it —
+      // `const redact = ctx.scrubber; redact(v);` lints clean (probed). It
+      // catches the mistake that was actually made twice; it does not make the
+      // mistake impossible. The version that does is a type change: pass the raw
+      // scrubber as an argument to the `emit()` thunk so an unguarded call cannot
+      // be written. Until then do not read a green lint as that guarantee.
       "no-restricted-syntax": [
         "error",
         {

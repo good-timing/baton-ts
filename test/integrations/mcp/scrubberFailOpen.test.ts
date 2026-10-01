@@ -73,6 +73,17 @@ function expectAnswered(res: Result): void {
   expect(JSON.stringify(res.content)).toContain(ANSWER);
 }
 
+/** The guard turned one failure mode into another, and the door is where that is
+ * paid back: before `scrubOrNull`, a non-function `scrubber` threw on the first
+ * tool call; after it, the TypeError is caught and every scrubbed field degrades
+ * to `null` for the life of the process. Install-time refusal keeps it loud.
+ * Major-independent, so it sits outside the matrix. */
+it("a non-function scrubber is refused at INSTALL, not swallowed per call", () => {
+  expect(() =>
+    withBaton({} as never, { ...CFG, scrubber: "not-a-function" as unknown as (v: unknown) => unknown }),
+  ).toThrow(/scrubber must be a function/);
+});
+
 describe.each(MAJORS)("a throwing vendor scrubber never breaks the call [$label]", (major) => {
   async function build(scrubber: (value: unknown) => unknown) {
     const sink = new CapturingSink();
@@ -155,8 +166,15 @@ describe.each(MAJORS)("a throwing vendor scrubber never breaks the call [$label]
   });
 
   it("ANNOTATION handler has the same `_meta` statement, and it is guarded too", async () => {
-    const { res } = await annotate(throwingOnMeta);
+    const { res, sink } = await annotate(throwingOnMeta);
     expect(res.isError).toBeFalsy();
+    // ⚠ The event must SURVIVE, not merely the call. `isError` falsy alone is
+    // also satisfied when the annotation event is DROPPED — so moving this scrub
+    // back inside the `emit()` thunk would keep that assertion green while losing
+    // the annotation. The tool-path leg already asserts its event survives; this
+    // one did not, and its own control did the stronger check. Found by review.
+    const annotation = sink.events.find((e) => e.event_type === "annotation")!;
+    expect(annotation.runtime_meta).toBeNull();
   });
 
   it("CONTROL for the annotation leg — identity scrubber, same call", async () => {
