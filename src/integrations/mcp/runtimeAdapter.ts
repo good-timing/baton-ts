@@ -93,6 +93,7 @@ export const CLIENT_INFO_META_KEY = "io.modelcontextprotocol/clientInfo";
  * this module owns, and mangling it would be the opposite mistake.
  */
 import { capCodePoints } from "../../_text.js";
+import { scrubOrNull } from "./safeScrub.js";
 
 export const CLIENT_NAME_MAX_LEN = 128;
 
@@ -126,7 +127,10 @@ function clean(
   if (typeof name !== "string" || !name) return null;
   let cleaned: string = name;
   if (scrubber) {
-    const scrubbed = scrubber(cleaned);
+    // Fail-open; `safeScrub` carries why `emit`'s guard does not cover this one.
+    // ⚠ `<unknown>` deliberately, NOT inferred: `T` would infer `string` and make
+    // the guard below look redundant to a reader, when it is load-bearing.
+    const scrubbed = scrubOrNull<unknown>(scrubber, cleaned, "agent-runtime name");
     // A scrubber that redacts by returning null — or anything else that is
     // not a string — loses this TIER; it does not get stringified onto the
     // wire. `String(null)` is `"null"`, which is truthy and would ship as

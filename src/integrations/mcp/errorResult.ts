@@ -172,6 +172,7 @@ export function endResultFields(
     case WITHHELD:
       return { result: null, result_capture: WITHHELD };
     case "full":
+      // eslint-disable-next-line no-restricted-syntax -- inside the emit() build thunk (both callers are thunks): emit drops the event, which is correct for a result
       return { result: scrubber(result) };
   }
 }
@@ -198,6 +199,7 @@ export function returnedErrorFields(
     case WITHHELD:
       return { error_body: "", result: null, result_capture: WITHHELD };
     case "full":
+      // eslint-disable-next-line no-restricted-syntax -- inside the emit() build thunk (both callers are thunks): emit drops the event, which is correct for a result
       return { error_body: errorBody(errorText(result)), result: scrubber(result) };
   }
 }

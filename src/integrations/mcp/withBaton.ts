@@ -95,6 +95,7 @@ import {
 import { StdoutSink, type Sink } from "../../sinks.js";
 import { registerAnnotationTool } from "./annotation.js";
 import { Scrubber } from "../../scrub.js";
+import { scrubOrNull } from "./safeScrub.js";
 import { roundMetaCoordinates } from "../../metaCoordinates.js";
 import {
   resolveBatonConfig,
@@ -284,6 +285,7 @@ class SurfaceState {
  * field-for-field.
  */
 function errorBody(ctx: WrapContext, text: string): string {
+  // eslint-disable-next-line no-restricted-syntax -- called only from emit() build thunks, so emit's guard already covers a throw here
   return capCodePoints(String(ctx.scrubber(text)), ERROR_BODY_MAX_CODE_POINTS);
 }
 
@@ -323,9 +325,7 @@ function batonWrap(nameRef: { current: string }, original: AnyHandler, ctx: Wrap
     // raw meta, and before the vendor's scrubber, so a vendor scrubber still
     // gets the rule (handoff D5). `_meta` only; params and results keep
     // full precision. The annotation tool does the same.
-    const scrubbedMeta = meta
-      ? (ctx.scrubber(roundMetaCoordinates(meta)) as Record<string, unknown>)
-      : null;
+    const scrubbedMeta = scrubOrNull(ctx.scrubber, meta ? roundMetaCoordinates(meta) : null, "_meta");
     const sessionId = await resolveSessionId(ctx.fallbackSessionId, extra);
 
     // Strip the injected goal params IN PLACE, before snapshotting params —
@@ -341,12 +341,13 @@ function batonWrap(nameRef: { current: string }, original: AnyHandler, ctx: Wrap
       dispositions,
     );
     const rawWorkflow = extractGoalParam(params, OVERALL_TASK_PARAM_NAME, toolName, dispositions);
-    const scrubbedIntent = rawIntent !== null ? (ctx.scrubber(rawIntent) as string) : null;
-    const scrubbedExpected = rawExpected !== null ? (ctx.scrubber(rawExpected) as string) : null;
+    // Guarded because `params` is already stripped in place above.
+    const scrubbedIntent = scrubOrNull(ctx.scrubber, rawIntent, USER_GOAL_PARAM_NAME);
+    const scrubbedExpected = scrubOrNull(ctx.scrubber, rawExpected, EXPECTED_RESULT_PARAM_NAME);
     // Scrubbed like the other two. Deterministic redaction preserves the
     // exact-string continuity rung 3b groups on: the same label scrubs to
     // the same output on every call.
-    const scrubbedWorkflow = rawWorkflow !== null ? (ctx.scrubber(rawWorkflow) as string) : null;
+    const scrubbedWorkflow = scrubOrNull(ctx.scrubber, rawWorkflow, OVERALL_TASK_PARAM_NAME);
 
     // The per-call correlation key, minted HERE — in the one scope that emits
     // both legs — so start and end carry the same value by construction. It
@@ -414,6 +415,7 @@ function batonWrap(nameRef: { current: string }, original: AnyHandler, ctx: Wrap
         captured_at: new Date().toISOString(),
         payload: {
           tool_name: toolName,
+          // eslint-disable-next-line no-restricted-syntax -- inside the emit() build thunk: a throw drops the event, which is correct for params
           params: ctx.scrubber(params),
           call_intent: scrubbedIntent,
           call_expected: scrubbedExpected,
