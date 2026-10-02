@@ -35,6 +35,9 @@ import { type PrincipalResolutionContext } from "./principalResolution.js";
 
 /** The token's claim bag, or `null`. Never throws: it reads an object a
  * vendor's verifier built, and an identity read may not fail a tool call. */
+// `iss` is passed through raw: `normalizePrincipal` coerces a non-string,
+// empty or lone-surrogate issuer to `null` for every hook.
+
 function claimsOf(
   context: PrincipalResolutionContext,
 ): Record<string, unknown> | null {
@@ -44,13 +47,6 @@ function claimsOf(
   } catch {
     return null;
   }
-}
-
-/** `iss` when it is a non-empty string. `""` and `null` hash differently, so
- * an empty one passed through would give one person a second pseudonym. */
-function issuerOf(claims: Record<string, unknown>): string | null {
-  const iss = claims.iss;
-  return typeof iss === "string" && iss !== "" ? iss : null;
 }
 
 /** A non-blank string claim, or `null`. Blank is a miss because the hash
@@ -73,7 +69,7 @@ export function principalFromOAuthSub(
   const claims = claimsOf(context);
   if (claims === null) return null;
   const sub = stringClaim(claims, "sub");
-  return sub === null ? null : { principalId: sub, issuer: issuerOf(claims) };
+  return sub === null ? null : { principalId: sub, issuer: claims.iss as string | null | undefined };
 }
 
 /** The token's `email`, as the WHOLE address and with NO issuer.

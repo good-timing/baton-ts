@@ -286,9 +286,9 @@ export interface PrincipalWire {
 // asymmetry is deliberate.** That schema is the PARSE boundary and must
 // tolerate a value SPEC registers later; this is the PRODUCER type, and this
 // SDK emits exactly one `source` and two `form`s. Widening it would inherit
-// the schema's justification without its reason, and would let whoever adds
-// the attested rung pass a stray string. Typed this way, that addition is a
-// compile error in one place — here, where the registry is.
+// the schema's justification without its reason, and would let a stray
+// string through. Typed this way, adding a source is a compile error in one
+// place — here, where the registry is.
 
 /** Turn a resolved principal into the finished wire object, or `null`.
  *
@@ -341,9 +341,7 @@ export function principalFor(
       issuer: principal.issuer ?? null,
     });
   }
-  // Unconditional `source`: an option here would be an argument no caller can
-  // vary, because this arm has one rung (`principalResolution.ts`). When a
-  // second arrives, the parameter arrives with it — and the literal type on
-  // `PrincipalWire.source` makes that a compile error rather than a choice.
+  // Unconditional `source`: every principal comes from the vendor's hook
+  // (SPEC §11.4), so an option here would be an argument no caller can vary.
   return { id, source: PRINCIPAL_SOURCE_ASSERTED, form: FORM_BY_MODE[options.mode] };
 }

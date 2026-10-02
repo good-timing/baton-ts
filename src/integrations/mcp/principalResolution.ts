@@ -1,35 +1,14 @@
 /** `BatonConfig.resolvePrincipal` — the ONLY identity provenance (SPEC §11.4).
  *
- * ⚠ **This arm never had an attested rung, and since SPEC §13's 2026-10-02
- * entry neither does Python**: the producer no longer reads the token itself,
- * anywhere. What this arm gained instead is `authInfo` on the hook's context
- * and the two ready-made hooks in `oauthHooks.ts`. The history below is kept
- * because it is why TypeScript's token hooks read `authInfo.extra` and say so.
+ * **The producer never reads the token itself** (SPEC §11.4, §13 2026-10-02 —
+ * Python's own token rung was removed the same day), so every principal this
+ * SDK emits is `source: "asserted"`. The hook's context carries the validated
+ * `authInfo`, and `oauthHooks.ts` ships the two ready-made OAuth hooks.
  *
  * The TypeScript half of Python's `integrations/identity_adapter.py`, built to
  * close register D6: the field (`user_id` until 0.3.5) had been on this SDK's
  * envelope since 0.3.0 and NOTHING could populate it, so a partition that
  * works on one of two SDKs is not a partition.
- *
- * **Hook only — there is deliberately no ATTESTED rung here yet**, so every
- * principal this SDK emits carries `source: "asserted"`.
- *
- * ⚠ **The missing rung has no shape on the value, and never will again.** This
- * note said "saying `no h1: rung` would be false, because this SDK does emit
- * `h1:`" — true until 0.4.1, when the tag came off the value entirely (SPEC
- * §11.4, §13 entry 0.8.11). A hashed principal is now the bare digest, so there
- * is no prefix to be right or wrong about: the missing thing is the
- * `source: "attested"` VALUE, and a consumer reads `source` to learn it. SPEC
- * §11.4 forbids presenting an asserted principal as verified, and this arm has
- * only asserted to present.
- *
- * Python reads `claims["sub"]` off a verified access token; TypeScript's
- * `AuthInfo` has no `claims` field at all (it is
- * `{token, clientId, scopes, expiresAt?, resource?, extra?}`), so the nearest
- * carrier is the untyped `extra` bag and nothing specifies that `sub` lives
- * there. Reading it would mean guessing where a subject lives, vendor by
- * vendor — and a wrong guess is how two people end up as one actor. Recorded
- * as a divergence rather than filled with a guess.
  */
 
 import {
