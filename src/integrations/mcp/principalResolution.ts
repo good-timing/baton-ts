@@ -74,8 +74,11 @@ export interface PrincipalResolutionContext {
   /** The validated access token for this request, read from wherever this
    * major keeps it — see `extraAuthInfo`. `null` on stdio and on any
    * unauthenticated request. `principalFromOAuthSub` and
-   * `principalFromOAuthEmail` read it, and so can a vendor's own hook. */
-  authInfo: AuthInfo | null;
+   * `principalFromOAuthEmail` read it, and so can a vendor's own hook.
+   *
+   * Optional so a vendor hand-building a context in their own tests keeps
+   * compiling, as Python's defaulted `claims` keeps theirs running. */
+  authInfo?: AuthInfo | null | undefined;
 }
 
 /** A vendor's per-request identity resolver. Sync or async; returning `null`
