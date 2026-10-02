@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.5.0: results can be withheld, and the failures above your handler stop being invisible
 
 ### Added
 
