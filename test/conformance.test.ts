@@ -106,6 +106,7 @@ describe("baton-spec conformance", () => {
       duration_ms: 3,
       result: { content: [], isError: true },
       result_capture: "off",
+      failure_kind: "output_schema_mismatch",
     },
     // ⚠ `AnnotationPayloadSchema` and `SurfaceSnapshotPayloadSchema` are
     // `.default()` throughout today, so the minimal case reaches every member by

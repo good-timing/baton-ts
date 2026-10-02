@@ -133,6 +133,23 @@ export const ToolCallErrorPayloadSchema = z
     // `result` too. Same `.optional()` reasoning as the field above it, and
     // same omit-when-capturing posture as `ToolCallEndPayloadSchema`.
     result_capture: z.string().nullable().optional(),
+    // SPEC §11.4.3: the producer NAMES a failure it made above the vendor's
+    // handler. `tool_call_error` ONLY — unlike `result_capture`, which rides
+    // both payloads — because the one case that files `tool_call_end` today
+    // IS the false success this member exists to correct, so after the fix
+    // nothing carries it on a success payload.
+    //
+    // A plain `z.string()` and NOT `z.enum(FAILURE_KINDS)`, which SPEC
+    // requires rather than permits: a closed enum turns a later registered
+    // value into a `ValidationError` on the vendor's tool-call path, which
+    // §11.2 says must fail open. The registry in
+    // `integrations/mcp/errorResult.ts` constrains what this producer EMITS;
+    // it must not constrain what this schema READS.
+    //
+    // Same `.optional()`-not-`.default(null)` reasoning as the two fields
+    // above: a default makes the schema an emitter, and parsing a stored
+    // event from before the member existed would hand back an invented key.
+    failure_kind: z.string().nullable().optional(),
   })
   .strict();
 export type ToolCallErrorPayload = z.infer<typeof ToolCallErrorPayloadSchema>;

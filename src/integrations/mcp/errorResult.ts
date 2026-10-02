@@ -28,6 +28,80 @@
  * `baton-extmcp`'s — sensor parity is the point. */
 export const TOOL_ERROR_TYPE = "tool_error";
 
+/** The registered values of `failure_kind` (SPEC §11.4.3), and the single
+ * source of truth for them — same posture as `RESULT_CAPTURE_MODES` below,
+ * for the same reason: a second hand-written list makes the guarantee "two
+ * lists happen to agree".
+ *
+ * ⚠ **These are NOT the Console's error vocabulary, and exactly one of them
+ * is spelled identically to its bucket.** `invalid_argument` matches
+ * `worker/errors.py`'s value ON PURPOSE (Ujwal, 2026-10-01) — the plural
+ * `invalid_arguments` was one letter from it, which is the drift that cost
+ * two defects. The other three do not match (`unknown_tool` → `not_found`,
+ * `tool_disabled` → `unclassified`, `output_schema_mismatch` →
+ * `schema_violation`), so a reader who sees the one match and infers a
+ * mapping is wrong. SPEC §11.4.3 carries the table for that reason.
+ *
+ * Open, not closed: `events.ts` types the wire member as a plain string, so a
+ * later registered value cannot red a conforming producer (SPEC §11.2's
+ * fail-open rule). This array is what THIS producer may emit. */
+export const FAILURE_KINDS = [
+  "unknown_tool",
+  "tool_disabled",
+  "invalid_argument",
+  "output_schema_mismatch",
+] as const;
+
+/** What this producer may emit for `failure_kind`. Derived, so the type and
+ * the registry cannot drift. */
+export type FailureKind = (typeof FAILURE_KINDS)[number];
+
+/** The REQUEST-SIDE kinds: the vendor's handler never ran, so nothing on the
+ * payload is derived from a result and the capture mode does not reach them.
+ *
+ * `satisfies` and not an annotation, for the reason `WITHHELD` records: an
+ * annotation widens these to `FailureKind` and the `switch` below stops
+ * narrowing, which costs the exhaustiveness that deriving the registry buys. */
+export const UNKNOWN_TOOL = "unknown_tool" satisfies FailureKind;
+export const TOOL_DISABLED = "tool_disabled" satisfies FailureKind;
+export const INVALID_ARGUMENT = "invalid_argument" satisfies FailureKind;
+
+/** The one RESULT-SIDE kind: the handler returned and the producer's own
+ * conversion of its output rejected it, so `error_body` and `result` are
+ * result-derived and `"off"` withholds both. */
+export const OUTPUT_SCHEMA_MISMATCH = "output_schema_mismatch" satisfies FailureKind;
+
+/**
+ * Which request-side kind a failure above the handler was, from the tool
+ * entry the SDK itself looked up — NOT from the result.
+ *
+ * ⚠ **SPEC §11.4.3 forbids sorting these by inspecting the result object**,
+ * and the reason is visible in both majors' `tools/call` handler: all three
+ * arrive as the same shape. On 1.x all three are a returned `isError` whose
+ * text is `createToolError`'s (`mcp.js:100-108`, inside the handler's own
+ * `try`); on 2.x the first two THROW a `ProtocolError` and the third is a
+ * returned `isError` (`mcp-DXXb3Vv3.mjs:1394-1397`). Reading the message
+ * would be a regex in the producer, which is the thing `failure_kind` exists
+ * to remove.
+ *
+ * So this reads the same two facts the SDK branched on, from the same
+ * registry entry (`_registeredTools[name]`), which makes the label agree with
+ * the SDK's own decision by construction rather than by matching its prose.
+ * `SurfaceState` is deliberately NOT the source: it is a derived copy, it
+ * excludes the annotate tool, and a tool registered before `withBaton` ran
+ * reaches it only through the retroactive sweep.
+ *
+ * `undefined` entry → the tool does not exist. Present and disabled → the
+ * vendor turned it off, which is a different remedy from a missing tool and
+ * the case the Console cannot classify from text at all. Present and enabled
+ * → the handler existed, was callable, and still never ran, which on both
+ * majors leaves exactly one step: argument validation.
+ */
+export function requestSideFailureKind(entry: { enabled?: unknown } | undefined): FailureKind {
+  if (entry === undefined) return UNKNOWN_TOOL;
+  return entry.enabled === false ? TOOL_DISABLED : INVALID_ARGUMENT;
+}
+
 /** The `error_body` cap, in CODE POINTS, shared by both failure legs (SPEC
  * §11.4.3's two shapes) so a change to the limit cannot move one and leave
  * the other. Python caps the same field at the same number, and its `[:2000]`
@@ -231,4 +305,39 @@ export function returnedErrorFields(
       // eslint-disable-next-line no-restricted-syntax -- inside the emit() build thunk (both callers are thunks): emit drops the event, which is correct for a result
       return { error_body: errorBody(errorText(result)), result: scrubber(result) };
   }
+}
+
+/**
+ * The REQUEST-SIDE failure's two body members, and it takes no capture mode
+ * ON PURPOSE.
+ *
+ * The vendor's handler never ran, so there is no tool result anywhere in
+ * this payload: `result` is null because none exists — the same reason
+ * §11.4.3's RAISE shape carries null — and `error_body` is the SDK's own
+ * rejection text, not anything a tool returned. Nothing here is
+ * result-derived, so `"off"` has nothing to withhold and the event carries
+ * **no `result_capture` marker**: SPEC §11.4's "present only when results
+ * are withheld" applied, the same reading its library-path paragraph already
+ * takes for an `error_body` the vendor supplied.
+ *
+ * ⚠ **`error_body` is KEPT under `"off"`, which is the rule's shape and not
+ * an exception to it.** §11.4.3's table says so for all three request-side
+ * kinds, and the provenance rule is why: this text describes the PRODUCER's
+ * decision, the same standing as the strings `baton-proxy` authors for a
+ * call it dropped. It is still scrubbed and capped — `invalid_argument`'s
+ * message can echo the argument values the validator rejected, which is
+ * exactly what a vendor scrubber is for.
+ *
+ * ⚠ **Taking a `mode` and ignoring it was the alternative, and it is worse**:
+ * a reader would then have to find out WHY the switch has no branches, and a
+ * later editor would add them. The absent parameter is the claim.
+ */
+/** ⚠ PRECONDITION: call this ONLY from inside an `emit()` build thunk — the
+ * same precondition its two siblings above carry, for the same reason: it
+ * applies the vendor's scrubber (through `errorBody`) bare. */
+export function requestSideErrorFields(
+  text: string,
+  errorBody: (value: string) => string,
+): { error_body: string; result: null } {
+  return { error_body: errorBody(text), result: null };
 }
