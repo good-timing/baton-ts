@@ -80,14 +80,17 @@ The first three emitted **nothing at all** before `0.5.0`, and the fourth emitte
 `tool_call_end` — a success, for a call your caller saw fail. `failure_kind` names
 which one it was, so nothing downstream has to pattern-match the message.
 
-⚠ **One pre-handler failure is NOT in that table and carries no
-`failure_kind`.** A 1.x tool registered with `execution.taskSupport` of
-`"required"` or `"optional"` is rejected before argument validation, and this
-package cannot tell that apart from a rejected argument without mislabelling
-every ordinary tool on that peer — 1.x stamps the member on all of them. So the
-call still files a `tool_call_error` with the SDK's own message, and the member is
-OMITTED rather than guessed. A consumer reading `failure_kind` must handle its
-absence, which is what SPEC §11.4.3 requires anyway.
+⚠ **A tool declaring `execution.taskSupport` gets a `tool_call_error` with NO
+`failure_kind`, and the failures it can hit are not in that table.** On 1.x a
+tool declaring `"required"` or `"optional"` is rejected before argument
+validation if it was not registered as a task tool, and a `"required"` one is
+rejected when called without task augmentation; an `"optional"` task tool called
+without one goes to automatic polling instead, which is not a failure at all.
+This package omits the member for either declared value rather than guessing,
+because it cannot distinguish those rejections from a rejected argument without
+mislabelling every ordinary tool on that peer — 1.x stamps `taskSupport` on all
+of them. The event still carries the SDK's own message. A consumer reading
+`failure_kind` must handle its absence, which SPEC §11.4.3 requires anyway.
 
 **Why a separate field and not `error_type`.** `error_type` reports the SHAPE the
 SDK handed us, and the two MCP majors disagree about it for the same failure: 1.x
