@@ -131,6 +131,11 @@ describe("principalFromOAuthSub", () => {
     expect(principalFromOAuthSub(ctx(null))).toBeNull();
   });
 
+  it("returns a clean issuer to a vendor wrapping the hook", () => {
+    expect(principalFromOAuthSub(ctx(authInfo({ sub: "a", iss: 42 })))?.issuer).toBeNull();
+    expect(principalFromOAuthSub(ctx(authInfo({ sub: "a", iss: "" })))?.issuer).toBeNull();
+  });
+
   it("an empty issuer hashes as no issuer, rather than a second pseudonym", async () => {
     // Coerced by `normalizePrincipal`, not by the hook, so asserted on the digest.
     const got = await resolve(principalFromOAuthSub, extraV1(authInfo({ sub: "alice", iss: "" })));
@@ -198,6 +203,7 @@ describe("principalFromOAuthEmail", () => {
       principalFromOAuthEmail(c) ?? principalFromOAuthSub(c);
     expect(hook(ctx(authInfo({ sub: "alice" }))) as unknown).toEqual({
       principalId: "alice",
+      issuer: null,
     });
   });
 
@@ -227,6 +233,7 @@ describe("principalFromOAuthEmail", () => {
     const hook: ResolvePrincipalHook = (c) => principalFromOAuthEmail(c) ?? principalFromOAuthSub(c);
     expect(hook(ctx(authInfo({ email: "\x1f", sub: "opaque-123" }))) as unknown).toEqual({
       principalId: "opaque-123",
+      issuer: null,
     });
     expect(principalFromOAuthEmail(ctx(authInfo({ email: "\uFEFF" })))?.principalId).toBe("\uFEFF");
   });

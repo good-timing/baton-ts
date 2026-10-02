@@ -35,8 +35,8 @@ import { type PrincipalResolutionContext } from "./principalResolution.js";
 
 /** The token's claim bag, or `null`. Never throws: it reads an object a
  * vendor's verifier built, and an identity read may not fail a tool call. */
-// `iss` is passed through raw: `normalizePrincipal` coerces a non-string,
-// empty or lone-surrogate issuer to `null` for every hook.
+// `iss` is coerced in the hook as well as in `normalizePrincipal`: these are
+// public exports, and a vendor wrapping one reads `.issuer` first.
 
 function claimsOf(
   context: PrincipalResolutionContext,
@@ -69,7 +69,8 @@ export function principalFromOAuthSub(
   const claims = claimsOf(context);
   if (claims === null) return null;
   const sub = stringClaim(claims, "sub");
-  return sub === null ? null : { principalId: sub, issuer: claims.iss as string | null | undefined };
+  const iss = claims.iss;
+  return sub === null ? null : { principalId: sub, issuer: typeof iss === "string" && iss !== "" ? iss : null };
 }
 
 /** The token's `email`, as the WHOLE address and with NO issuer.
