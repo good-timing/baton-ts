@@ -29,6 +29,9 @@
 export interface Extra {
   /** Transport-supplied session id; present on both majors. */
   sessionId?: string | undefined;
+  /** 1.x: `RequestHandlerExtra.authInfo` — the validated access token, set by
+   * the SDK's bearer-auth middleware on an authenticated HTTP request. */
+  authInfo?: unknown;
   /** 1.x: the request's `_meta`, at the top level — reserved keys INCLUDED. */
   _meta?: unknown;
   /** v2's `ServerContext.mcpReq` — the in-flight JSON-RPC request.
@@ -57,7 +60,35 @@ export interface Extra {
    * the claim repeated: the way past that warning is a narrower read, not a
    * louder assertion. Measurement still backs it — 10 rows, both majors, every
    * transport (v15 probe) — so this is now declared AND measured. */
-  http?: { req?: { headers?: unknown } | undefined } | undefined;
+  http?: { req?: { headers?: unknown } | undefined; authInfo?: unknown } | undefined;
+}
+
+/** A validated access token, as both majors declare it
+ * (`@modelcontextprotocol/sdk` 1.x `server/auth/types.d.ts`,
+ * `@modelcontextprotocol/server` 2.0.0 `createMcpHandler-*.d.mts:751` — the
+ * same six members). Declared structurally for the reason {@link Extra} is.
+ *
+ * ⚠ **There is no `claims` member.** Whatever a verifier knows about the
+ * subject goes in the free-form `extra` bag, and only the vendor's verifier
+ * decides what is there. */
+export interface AuthInfo {
+  token: string;
+  clientId: string;
+  scopes: string[];
+  expiresAt?: number | undefined;
+  resource?: URL | undefined;
+  extra?: Record<string, unknown> | undefined;
+}
+
+/** The request's validated access token, from wherever this major keeps it:
+ * `extra.authInfo` on 1.x, `ctx.http.authInfo` on v2. `null` on stdio (MCP
+ * auth is HTTP middleware) and on any unauthenticated request.
+ *
+ * Only an object is passed on; anything else is `null`, so a hook never has
+ * to guard against a string or a number arriving where a token should. */
+export function extraAuthInfo(extra: Extra): AuthInfo | null {
+  const found = extra.authInfo ?? extra.http?.authInfo;
+  return found !== null && typeof found === "object" ? (found as AuthInfo) : null;
 }
 
 /** The call's `_meta`, from wherever this SDK major keeps it.

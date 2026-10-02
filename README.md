@@ -49,6 +49,25 @@ Sending to your own collector instead, or trying the package before you have a k
 
 **The scrubber is not the only lever.** If some tool results cannot be recorded at all, `resultCaptureMode` below withholds them outright rather than transforming them.
 
+## Who is calling
+
+**Nothing is captured about the person behind a call unless you say how to find them.** Pass `resolvePrincipal`: it receives the call's headers, `_meta`, tool name, arguments and validated `authInfo`, and returns a `Principal` or `null`. Two ready-made hooks cover OAuth:
+
+```typescript
+import { withBaton, principalFromOAuthEmail } from "@goodtiming/baton-sdk";
+
+withBaton(server, {
+  dsn: "https://baton_pk_...@baton.goodtiming.ai/ten_.../your-vendor",
+  resolvePrincipal: principalFromOAuthEmail, // or principalFromOAuthSub
+});
+```
+
+`principalFromOAuthEmail` keys on the token's `email` claim (the whole address); `principalFromOAuthSub` on its subject and issuer. Each returns `null` when the claim is missing, so they compose: `(ctx) => principalFromOAuthEmail(ctx) ?? principalFromOAuthSub(ctx)`.
+
+⚠ **They read the claims from `authInfo.extra`.** The MCP SDK's `AuthInfo` has no `claims` field, so these hooks expect your token verifier to put the decoded JWT claims (`sub`, `iss`, `email`) at the top level of `extra`. If yours keeps them elsewhere, write the three-line hook that reads them from there. A token exists only on HTTP with auth configured; on stdio, write a hook that names the user from whatever you authenticated them with.
+
+The value is HMAC-hashed in your process before it is sent, keyed with `BATON_PRINCIPAL_ID_HMAC_KEY`; without a key, nothing is attached.
+
 ## Not capturing responses at all
 
 `resultCaptureMode: "off"` and nothing **derived from what your tool returns** leaves your process — not the result, and not the reason text on a failure your handler returns rather than throws. Requests are unaffected: `params` are captured either way.

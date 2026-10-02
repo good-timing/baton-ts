@@ -69,7 +69,11 @@ export interface Major {
     handler: (args: any) => unknown,
     outputShape?: Record<string, z.ZodType>,
   ): void;
-  connect(server: any): Promise<any>;
+  /** `authInfo`, when given, rides every request the client sends — the
+   * in-memory transports of BOTH majors accept it on `send` and deliver it
+   * where a real bearer-auth middleware would, so a test can drive an
+   * authenticated call without standing up an OAuth server. */
+  connect(server: any, options?: { authInfo?: unknown }): Promise<any>;
   /** Register a static resource. The two majors agree here, which is itself
    * worth keeping in ONE place: a future divergence lands on the interface
    * rather than in whichever test noticed. */
@@ -100,6 +104,14 @@ export function install(
   return withBaton(server as never, { ...CFG, sink, ...extra });
 }
 
+/** Make every message `transport` sends carry `authInfo`. */
+function withAuthInfo(transport: any, authInfo: unknown): void {
+  if (authInfo === undefined) return;
+  const send = transport.send.bind(transport) as (m: unknown, o: object) => Promise<void>;
+  transport.send = (message: unknown, opts?: Record<string, unknown>): Promise<void> =>
+    send(message, { ...opts, authInfo });
+}
+
 const V1: Major = {
   label: "@modelcontextprotocol/sdk 1.x",
   make: (options) =>
@@ -114,8 +126,9 @@ const V1: Major = {
       handler,
     );
   },
-  connect: async (server) => {
+  connect: async (server, options) => {
     const [clientTransport, serverTransport] = TransportV1.createLinkedPair();
+    withAuthInfo(clientTransport, options?.authInfo);
     const client = new ClientV1({ name: "test-client", version: "1.0.0" });
     await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
     return client;
@@ -144,8 +157,9 @@ const V2: Major = {
       handler,
     );
   },
-  connect: async (server) => {
+  connect: async (server, options) => {
     const [clientTransport, serverTransport] = TransportV2.createLinkedPair();
+    withAuthInfo(clientTransport, options?.authInfo);
     const client = new ClientV2({ name: "test-client", version: "1.0.0" });
     await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
     return client;

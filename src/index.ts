@@ -159,6 +159,10 @@ export {
   hashPrincipalId,
 } from "./identity.js";
 export type {
+  AuthInfo,
   ResolvePrincipalHook,
   PrincipalResolutionContext,
 } from "./integrations/mcp/index.js";
+// The ready-made hooks — the OAuth case is common enough to ship, and a vendor
+// whose verifier keeps claims elsewhere writes their own (see `oauthHooks.ts`).
+export { principalFromOAuthEmail, principalFromOAuthSub } from "./integrations/mcp/index.js";

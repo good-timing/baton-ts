@@ -1,5 +1,31 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **`principalFromOAuthSub` and `principalFromOAuthEmail` — ready-made
+  `resolvePrincipal` hooks.** Both read the validated token's claims from
+  `authInfo.extra` and return `null` when their claim is absent, so they
+  compose with `??`. The sub hook keys on `(sub, iss)`; the email hook on the
+  WHOLE address with no issuer (an address is unique on its own, and an issuer
+  URL change must not split a person), returning the part before the last `@`
+  as `Principal.userName`, which nothing sends anywhere. Neither consults
+  `email_verified`. They agree digest-for-digest with `baton-sdk`'s
+  `principal_from_oauth_sub` / `principal_from_oauth_email`.
+
+  ⚠ **`authInfo.extra` is a convention, not a contract.** MCP's `AuthInfo` has
+  no `claims` member, so the hooks expect a verifier to spread the decoded JWT
+  claims into `extra`. A verifier that keeps them elsewhere gets `null`.
+- **`PrincipalResolutionContext.authInfo`** — the validated access token for the
+  call, read from `extra.authInfo` on SDK 1.x and `ctx.http.authInfo` on v2, or
+  `null` on stdio and unauthenticated requests. `AuthInfo` is exported.
+- **`Principal.userName`** (optional), for parity with Python's `user_name`.
+  Never emitted.
+
+Nothing changes for an install with no `resolvePrincipal`: this SDK never read
+the token itself, and SPEC §11.4 now says no producer does.
+
 ## 0.5.0: results can be withheld, and the failures above your handler stop being invisible
 
 ### Added

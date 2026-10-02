@@ -10,7 +10,7 @@ Phase 2 of the design note in `baton-internal` (private — read it before touch
 
 **Known divergences from the Python SDK** — deliberate, and recorded here because a parity audit opens this file before it opens a docstring:
 
-1. **No attested identity SOURCE.** Every principal this SDK emits carries `source: "asserted"`; `BatonConfig.resolvePrincipal` is the only identity mechanism here. ⚠ Do not phrase this as a fact about the VALUE's shape — a hashed principal carries no tag at all since 0.4.1, so there is no prefix to name. What is missing is the `source: "attested"` value; the reason, and why the shape-based phrasing is wrong in the dangerous direction, is in `src/integrations/mcp/principalResolution.ts`.
+1. **The OAuth hooks read claims from `authInfo.extra`; Python's read a typed `claims` field.** No longer a divergence in SOURCE: since SPEC §13's 2026-10-02 entry neither SDK reads the token itself, both emit only `source: "asserted"`, and both ship `sub`/`email` hooks that agree on one token (pinned by frozen Python digests in `test/integrations/mcp/oauthHooks.test.ts`). What differs is WHERE the claims are: MCP's TypeScript `AuthInfo` has no `claims` member, so the hooks expect a verifier to put them at the top of `extra` — a convention, documented in the README, not a contract.
 2. **Vendor hooks run INLINE with no timeout.** Python runs them off the event loop under a 5s budget (`integrations/_hooks.py`); a blocking hook here stalls its own request. Applies to `resolvePrincipal` and `scrubber`.
 3. **A malformed (lone-surrogate) `issuer` drops the issuer and still hashes**, where Python drops the principal entirely. The generated corpus cannot pin this — Python's generator cannot emit a vector for an input that raises.
 

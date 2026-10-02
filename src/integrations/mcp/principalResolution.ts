@@ -1,4 +1,10 @@
-/** `BatonConfig.resolvePrincipal` — the ASSERTED identity provenance.
+/** `BatonConfig.resolvePrincipal` — the ONLY identity provenance (SPEC §11.4).
+ *
+ * ⚠ **This arm never had an attested rung, and since SPEC §13's 2026-10-02
+ * entry neither does Python**: the producer no longer reads the token itself,
+ * anywhere. What this arm gained instead is `authInfo` on the hook's context
+ * and the two ready-made hooks in `oauthHooks.ts`. The history below is kept
+ * because it is why TypeScript's token hooks read `authInfo.extra` and say so.
  *
  * The TypeScript half of Python's `integrations/identity_adapter.py`, built to
  * close register D6: the field (`user_id` until 0.3.5) had been on this SDK's
@@ -35,7 +41,7 @@ import {
   principalFor,
 } from "../../identity.js";
 import { warn } from "./annotationName.js";
-import { type Extra, extraHeaders, extraMeta } from "./mcpTypes.js";
+import { type AuthInfo, type Extra, extraAuthInfo, extraHeaders, extraMeta } from "./mcpTypes.js";
 
 /** What a vendor's `resolvePrincipal` hook is handed.
  *
@@ -65,6 +71,11 @@ export interface PrincipalResolutionContext {
   /** The call's arguments, AFTER Baton's injected intent params are stripped,
    * so a hook sees exactly what the vendor's own handler will. */
   arguments: Record<string, unknown>;
+  /** The validated access token for this request, read from wherever this
+   * major keeps it — see `extraAuthInfo`. `null` on stdio and on any
+   * unauthenticated request. `principalFromOAuthSub` and
+   * `principalFromOAuthEmail` read it, and so can a vendor's own hook. */
+  authInfo: AuthInfo | null;
 }
 
 /** A vendor's per-request identity resolver. Sync or async; returning `null`
@@ -91,6 +102,7 @@ function buildPrincipalResolutionContext(
     meta: extraMeta(extra),
     toolName,
     arguments: args,
+    authInfo: extraAuthInfo(extra),
   };
 }
 

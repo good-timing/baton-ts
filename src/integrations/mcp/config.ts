@@ -180,10 +180,11 @@ export interface BatonConfig {
    * tool name, and the arguments the vendor's own handler will see. Return a
    * `Principal`, or `null` for "no opinion about this caller".
    *
-   * **This is the only identity mechanism on this arm.** MCP auth is HTTP
-   * middleware, so a stdio server has no token at all; and unlike Python, no
-   * attested rung is implemented here — see `principalResolution.ts` for why
-   * (TypeScript's `AuthInfo` carries no `claims`).
+   * **This is the only identity mechanism, on both SDKs** (SPEC §11.4): unset,
+   * no event carries a `principal`. For OAuth, pass `principalFromOAuthSub` or
+   * `principalFromOAuthEmail`, which read the validated token the context
+   * carries as `authInfo`. MCP auth is HTTP middleware, so on stdio there is no
+   * token and a hook names the user from whatever the vendor authenticated.
    *
    * Never fails a tool call: a hook that throws or returns junk yields an
    * anonymous call. ⚠ It is awaited INLINE with no timeout — a blocking hook

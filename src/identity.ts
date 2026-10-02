@@ -141,6 +141,13 @@ export interface Principal {
    * it, so two identity providers behind one vendor can hand the same subject
    * to different people. */
   issuer?: string | null | undefined;
+  /** A human-readable name for the principal — `principalFromOAuthEmail` puts
+   * the part of the address before the last `@` here. ⚠ **Never emitted.** The
+   * envelope's `principal` carries `id`, `source` and `form` only, and
+   * `normalizePrincipal` drops this, exactly as Python's `Principal.user_name`
+   * stays out of the console path. Carried so a hook's return reads the same
+   * in both SDKs. */
+  userName?: string | null | undefined;
 }
 
 /** HMAC-SHA256 a raw principal into a console-safe, per-tenant `principal.id`.
