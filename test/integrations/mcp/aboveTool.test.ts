@@ -278,6 +278,68 @@ describe.each(MAJORS)("failures above the handler — $label", (major) => {
     expect(sink.events.map((e) => e.sequence_number)).toEqual([1, 2, 3]);
   });
 
+  it("keeps BOTH terminals when one handler calls another tool in-process", async () => {
+    // ⚠ **A regression the park introduced, caught by review and fixed.**
+    // `CallSlot` holds ONE parked terminal, so a second wrapped executor
+    // inside the same `tools/call` dispatch overwrote the first — leaving the
+    // inner call's `tool_call_start` with no terminal at all, permanently
+    // unpaired under SPEC §11.5.4. `terminate` now flushes an
+    // already-parked terminal before storing its own.
+    //
+    // v2's legacy `inputRequired` shim reaches the same bug by a different
+    // road (`mcp-DXXb3Vv3.mjs:602` loops `await handler(request, ctxNext)`
+    // inside one dispatch), which is why the fix is in the park rather than a
+    // guard against this one shape.
+    const sink = new CapturingSink();
+    const server = major.make();
+    major.tool(server, "inner", { name: z.string() }, () => ({
+      content: [{ type: "text" as const, text: "inner" }],
+    }));
+    major.tool(server, "outer", { name: z.string() }, async () => {
+      const entry = (
+        server as { _registeredTools: Record<string, { handler?: unknown; executor?: unknown }> }
+      )._registeredTools["inner"]!;
+      const target = (typeof entry.executor === "function" ? entry.executor : entry.handler) as (
+        ...a: unknown[]
+      ) => unknown;
+      await target({ name: "nested" }, {});
+      return { content: [{ type: "text" as const, text: "outer" }] };
+    });
+    install(server, sink);
+    const client = await major.connect(server);
+    await client.callTool({ name: "outer", arguments: { name: "p1" } });
+
+    // Two starts and TWO ends. The inner one is flushed unreplaced when the
+    // outer parks, so it lands between the two starts' terminals.
+    expect(sink.events.map((e) => e.event_type)).toEqual([
+      "surface_snapshot",
+      "tool_call_start",
+      "tool_call_start",
+      "tool_call_end",
+      "tool_call_end",
+    ]);
+    // Every start has a terminal with its own `call_id` — the property the
+    // event-type list alone does not prove.
+    const starts = sink.events.filter((e) => e.event_type === "tool_call_start");
+    const ends = sink.events.filter((e) => e.event_type === "tool_call_end");
+    expect(starts.map((e) => e.call_id).sort()).toEqual(ends.map((e) => e.call_id).sort());
+  });
+
+  it("reports a PROTOTYPE-named tool as unknown, rather than saying nothing", async () => {
+    // ⚠ `_registeredTools` is a plain object, so `registry["constructor"]`
+    // answers `Object` — non-undefined, so the "a tool we did not wrap" guard
+    // declined to report and a caller-visible `Tool constructor disabled`
+    // reached the client with this seam silent. `Object.hasOwn` is what makes
+    // the lookup answer the question it is asking.
+    const sink = new CapturingSink();
+    const { client } = await connected(sink);
+    await client.callTool({ name: "constructor", arguments: { name: "p1" } }).catch(() => {});
+
+    const event = terminal(sink, "tool_call_error");
+    expect(event.payload.failure_kind).toBe("unknown_tool");
+    expect(event.payload.tool_name).toBe("constructor");
+  });
+
   it("says NOTHING about Baton's own annotate tool", async () => {
     // It is excluded from `wrapIfNeeded` because it emits `annotation`, not
     // `tool_call_*`. A rejected argument on it must not file an

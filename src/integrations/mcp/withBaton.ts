@@ -405,6 +405,10 @@ async function openCall(
   toolName: string,
   extra: Extra,
   params: Record<string, unknown>,
+  /** Is there a registry entry for this tool? `false` only from the
+   * `tools/call` seam's `unknown_tool` path, and it suppresses one warning
+   * whose diagnosis would be wrong there — see `extractGoalParam`. */
+  registered = true,
 ): Promise<{ common: Record<string, unknown>; callId: string; sessionId: string }> {
   const meta = extraMeta(extra);
   const runtime =
@@ -430,14 +434,15 @@ async function openCall(
   // strip keeps user_goal/expected_result off the tool AND out of the
   // captured `params` (which must equal the vendor-visible arguments).
   const dispositions = ctx.paramRegistry.get(toolName);
-  const rawIntent = extractGoalParam(params, USER_GOAL_PARAM_NAME, toolName, dispositions);
+  const rawIntent = extractGoalParam(params, USER_GOAL_PARAM_NAME, toolName, dispositions, registered);
   const rawExpected = extractGoalParam(
     params,
     EXPECTED_RESULT_PARAM_NAME,
     toolName,
     dispositions,
+    registered,
   );
-  const rawWorkflow = extractGoalParam(params, OVERALL_TASK_PARAM_NAME, toolName, dispositions);
+  const rawWorkflow = extractGoalParam(params, OVERALL_TASK_PARAM_NAME, toolName, dispositions, registered);
   // Guarded because `params` is already stripped in place above.
   const scrubbedIntent = scrubOrNull(ctx.scrubber, rawIntent, USER_GOAL_PARAM_NAME);
   const scrubbedExpected = scrubOrNull(ctx.scrubber, rawExpected, EXPECTED_RESULT_PARAM_NAME);
@@ -578,6 +583,29 @@ function batonWrap(nameRef: { current: string }, original: AnyHandler, ctx: Wrap
         await emit(ctx.sink, build);
         return;
       }
+      // ⚠ **A parked terminal already here belongs to an EARLIER-completING
+      // call in this same dispatch, and flushing it now is what keeps it from
+      // being dropped.** The slot holds one decision, and parking without
+      // this would overwrite it: a `tool_call_start` with no terminal, which
+      // SPEC §11.5.4 leaves permanently unpaired. Two shapes reach it, one
+      // probed and one read:
+      //
+      //   - a vendor handler that invokes a SIBLING tool's wrapped executor
+      //     in-process — the inner call completes first, so the outer's park
+      //     lands second and used to erase it;
+      //   - v2's legacy `inputRequired` shim, which loops
+      //     `await handler(request, ctxNext)` inside ONE dispatch
+      //     (`mcp-DXXb3Vv3.mjs:602`), so every round but the last parks and
+      //     is immediately superseded.
+      //
+      // The earlier one is flushed UNREPLACED, which is the correct reading
+      // rather than a convenience: the outer's outcome describes the call
+      // `tools/call` itself dispatched, and that call is always the LAST to
+      // decide, because its own `await` encloses everything it called.
+      // Relabelling an inner call's success `output_schema_mismatch` would
+      // blame whichever round happened to finish first.
+      const earlier = slot.flushTerminal;
+      if (earlier !== null) await earlier({ failed: false, raised: false, err: undefined, result: undefined });
       slot.flushTerminal = async (outcome) => {
         await emit(ctx.sink, replacement !== null && outcome.failed ? replacement(outcome) : build);
       };
@@ -723,7 +751,13 @@ function batonWrap(nameRef: { current: string }, original: AnyHandler, ctx: Wrap
             ...resultDerivedFields(
               ctx.resultCaptureMode,
               () => (outcome.raised ? messageOf(outcome.err) : errorText(outcome.result)),
-              outcome.result,
+              // ⚠ `?? null`. On the `raised` lane there is no returned value,
+              // and `undefined` here would make the scrubber answer
+              // `undefined` and DROP the key — where the sibling raise lane a
+              // few lines up declares `result: null` explicitly, for the
+              // reason `ToolCallErrorPayloadSchema` records. One shape for
+              // "no result object existed", not two.
+              outcome.result ?? null,
               (text) => errorBody(ctx, text),
               ctx.scrubber,
             ),
@@ -746,11 +780,18 @@ function extractGoalParam(
   paramName: string,
   toolName: string,
   dispositions: IntentParamDispositions | undefined,
+  registered: boolean,
 ): string | null {
   if (!(paramName in args)) return null;
   const disposition = dispositions ? dispositions[paramName] : undefined;
   if (disposition === "native") return null;
-  if (disposition === undefined) {
+  // ⚠ The warning says "cold registry", which is a real and useful diagnosis
+  // for a tool that EXISTS and was never wired — and a wrong one for a tool
+  // that does not exist at all. The `tools/call` seam reaches here for an
+  // unknown tool, where there is no entry to have been wired, so the caller
+  // says which case it is rather than letting this infer it from an absent
+  // disposition that means two different things.
+  if (disposition === undefined && registered) {
     process.stderr.write(
       `baton: stripping ${paramName} from unlisted tool ${JSON.stringify(toolName)} (cold registry)\n`,
     );
@@ -1107,7 +1148,13 @@ async function emitRequestSideFailure(
   if (typeof toolName !== "string") return;
   if (toolName === ctx.annotationToolName) return;
   const entry = toolEntry(toolName);
-  if (entry !== undefined && dispatchTarget(entry)?.[BATON_WRAPPED] !== true) return;
+  // ⚠ `!= null`, so a null entry falls THROUGH to `unknown_tool` rather than
+  // into `dispatchTarget`, where reading `.executor` off it would throw. The
+  // registry is reached through a cast past the SDK's `private`, so its shape
+  // is a declaration and not a runtime guarantee; `requestSideFailureKind`
+  // makes the same check for the same reason, and it is this line that lets
+  // that one be reached at all.
+  if (entry != null && dispatchTarget(entry)?.[BATON_WRAPPED] !== true) return;
 
   // ⚠ A COPY, unlike the inner wrapper's in-place strip. `openCall` removes
   // Baton's injected intent params from whatever it is given, and here the
@@ -1126,6 +1173,7 @@ async function emitRequestSideFailure(
     toolName,
     args[1] as Extra,
     params,
+    entry != null,
   );
 
   // `undefined` where the SDK rejected the call for a reason this producer
@@ -1156,7 +1204,14 @@ async function emitRequestSideFailure(
         // in the SDK's validator, which is not what any other event means by
         // this member. §11.4 types it nullable for cases like this one.
         duration_ms: null,
-        failure_kind: failureKind,
+        // ⚠ A CONDITIONAL SPREAD, not `failure_kind: failureKind`. Zod's
+        // `.optional()` accepts `undefined` and keeps the KEY in its output,
+        // so the plain form writes a present-but-undefined member — invisible
+        // to a JSON-serialising sink and plainly visible to a vendor-supplied
+        // one that iterates keys. SPEC §11.4.3 says a producer that cannot
+        // determine the kind MUST OMIT the member, and omitting is what this
+        // spells.
+        ...(failureKind === undefined ? {} : { failure_kind: failureKind }),
         // KEPT under `"off"` — see `requestSideErrorFields`, which takes no
         // capture mode because nothing here is derived from a result.
         ...requestSideErrorFields(
@@ -1552,7 +1607,21 @@ export function withBaton(server: SupportedMcpServer, supplied: BatonConfig = {}
   // install classifies as `unknown_tool` rather than against a stale snapshot
   // — `update({name: null})` and `remove()` both delete the entry, and the
   // whole point of this lookup is to agree with what the SDK itself just read.
-  installToolsCallSeam(internals.server, (name) => internals._registeredTools?.[name], ctx);
+  installToolsCallSeam(
+    internals.server,
+    // ⚠ `Object.hasOwn`, never a bare index. `_registeredTools` is a plain
+    // object, so `registry["constructor"]` answers `Object` and
+    // `registry["__proto__"]` answers `Object.prototype` — both non-undefined,
+    // so the "a tool we did not wrap" guard would decline to report, and a
+    // caller-visible `Tool constructor disabled` would reach the client with
+    // this seam silent. An agent hallucinating a prototype-shaped tool name is
+    // exactly the kind of failure the seam exists to make visible.
+    (name) => {
+      const registry = internals._registeredTools;
+      return registry && Object.hasOwn(registry, name) ? registry[name] : undefined;
+    },
+    ctx,
+  );
 
   const resolvedAnnotationToolName = registerAnnotationTool(server, {
     sink,
