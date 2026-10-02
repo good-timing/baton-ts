@@ -56,10 +56,20 @@
   registration patches, which is the position that sees what the proxy's wire
   sensor sees: subject, timing, failure.
 
-  ⚠ **No payload carries a BODY.** A read records its URI and its timing, never
-  the content; a prompt get records the name, never the rendered messages. So
-  `result_capture` does not appear on any of the twelve and a producer MUST NOT
-  add it — there is nothing for `"off"` to withhold.
+  ⚠ **No payload carries a RESULT BODY.** A read records its URI and its timing,
+  never the content; a prompt get records the name, never the rendered messages.
+  So `result_capture` does not appear on any of the twelve and a producer MUST
+  NOT add it — nothing on them is derived from a result.
+
+  ⚠ **The six `*_error` legs DO carry the message the vendor's code threw, and
+  `resultCaptureMode: "off"` does not withhold it** — measured on both majors,
+  `baton-internal/spikes/response_capture_canary_1002`. Same provenance rule as a
+  thrown tool error, which is also kept: the text is the vendor's own code
+  speaking, not anything a resource returned. The difference a consumer should
+  know is that a tool's withheld body is MARKED and this family cannot be, since
+  the clause above forbids the member — so a read that quotes fetched content in
+  its failure message egresses it with nothing on the wire saying so. Unruled,
+  and recorded rather than left to be discovered.
 
   ⚠ **The shapes were set by `baton-proxy`, which shipped first, and two of its
   inconsistencies are reproduced on purpose**: `resource_read_start.params` is

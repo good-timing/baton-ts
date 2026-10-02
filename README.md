@@ -77,8 +77,17 @@ recorded as a success:
 | your output schema rejected what the tool returned | `tool_call_error`, `failure_kind: "output_schema_mismatch"` |
 
 The first three emitted **nothing at all** before `0.5.0`, and the fourth emitted
-`tool_call_end` — a success, for a call your caller saw fail. `failure_kind` says
-which of the four it was, so nothing downstream has to pattern-match the message.
+`tool_call_end` — a success, for a call your caller saw fail. `failure_kind` names
+which one it was, so nothing downstream has to pattern-match the message.
+
+⚠ **One pre-handler failure is NOT in that table and carries no
+`failure_kind`.** A 1.x tool registered with `execution.taskSupport` of
+`"required"` or `"optional"` is rejected before argument validation, and this
+package cannot tell that apart from a rejected argument without mislabelling
+every ordinary tool on that peer — 1.x stamps the member on all of them. So the
+call still files a `tool_call_error` with the SDK's own message, and the member is
+OMITTED rather than guessed. A consumer reading `failure_kind` must handle its
+absence, which is what SPEC §11.4.3 requires anyway.
 
 **Why a separate field and not `error_type`.** `error_type` reports the SHAPE the
 SDK handed us, and the two MCP majors disagree about it for the same failure: 1.x
@@ -97,16 +106,25 @@ fourth the message is withheld and the named kind is the only signal left.
 request level: `resources/list`, `resources/read`, `prompts/list` and
 `prompts/get` each emit a start and then an end or an error — twelve event types.
 
-**No body is captured on any of them.** Not a read's content, not a prompt's
-rendered messages. `resultCaptureMode` therefore does not apply and these events
-never carry it: there is nothing on them for it to withhold. A resource URI and a
-prompt name ARE captured, and both go through the scrubber whole — they are text
-your caller supplied, so they can carry paths, query strings and account
-identifiers.
+**No SUCCESSFUL read or get captures a body.** Not a read's content, not a
+prompt's rendered messages. A resource URI and a prompt name ARE captured, and
+both go through the scrubber whole — they are text your caller supplied, so they
+can carry paths, query strings and account identifiers.
+
+⚠ **A FAILING one captures the message your code threw, and
+`resultCaptureMode: "off"` does not withhold it.** These twelve events never
+carry the `result_capture` marker — the rule is that nothing on them is derived
+from a result — so a failing read's `error_body` is kept in both modes and the
+wire says nothing either way. That is the same leak channel as a thrown tool
+error above, with one difference worth your attention: for a tool the marker
+tells a consumer what happened, and here there is no marker. If your read fails
+with `could not parse ${body.slice(0, 200)}`, that content leaves your process
+under a mode you set to stop exactly that. Throw a message that names the
+resource, not its contents.
 
 ## Turning capture off entirely
 
-Not the same thing as the section above: that one keeps the signal and drops the response bodies, this one emits nothing at all. It also belongs to a different person — `resultCaptureMode` is set by whoever WRAPS the server, in code; this is set by whoever RUNS it, in the environment.
+Not the same thing as **Not capturing responses at all**: that one keeps the signal and drops the response bodies, this one emits nothing at all. It also belongs to a different person — `resultCaptureMode` is set by whoever WRAPS the server, in code; this is set by whoever RUNS it, in the environment.
 
 `BATON_DISABLED=1` in the environment of the process running the server, and the SDK installs nothing at all. [The long version](https://goodtiming.ai/docs.html#off-switch).
 
