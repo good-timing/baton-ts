@@ -48,13 +48,44 @@
   §11.4.3 makes that member the RAISE/RETURN discriminator and it is reporting
   the shape faithfully — `failure_kind` is what makes the two comparable.
 
+- **The resource and prompt lifecycles — twelve event types (SPEC §11.4.4),
+  this package's first instrumentation of anything but a tool call.**
+  `resource_list_{start,end,error}`, `resource_read_{start,end,error}`,
+  `prompt_list_{start,end,error}`, `prompt_get_{start,end,error}`. Installed as
+  four seams on the `tools`-adjacent request handlers rather than as
+  registration patches, which is the position that sees what the proxy's wire
+  sensor sees: subject, timing, failure.
+
+  ⚠ **No payload carries a BODY.** A read records its URI and its timing, never
+  the content; a prompt get records the name, never the rendered messages. So
+  `result_capture` does not appear on any of the twelve and a producer MUST NOT
+  add it — there is nothing for `"off"` to withhold.
+
+  ⚠ **The shapes were set by `baton-proxy`, which shipped first, and two of its
+  inconsistencies are reproduced on purpose**: `resource_read_start.params` is
+  the request bag minus `_meta`, so `uri` appears there as well as in its own
+  member, while `prompt_get_start.params` is the `arguments` member alone, so
+  `name` does not. Tidying either would let this producer drift from the one
+  the Console was built against.
+
+  ⚠ **No `principal` and no `call_id` on these types** — parity with that
+  producer, and because the vendor's `resolvePrincipal` hook is tool-shaped. A
+  consumer pairing a start with its end has only SPEC §11.5.4's FIFO floor.
+
+  ⚠ **`error_type` is the exception's class name**, not a JSON-RPC code: the
+  error leg here is throw-only, since the `isError` flag is a `CallToolResult`
+  member and a failing read arrives as a JSON-RPC error. The proxy files the
+  numeric code because the wire is what it holds; both conform.
+
 ### Changed
 
 - The `baton-spec` pin moves to `db27f3f`, which is what makes `result_capture`
   legal on the wire: both tool-call payload definitions are
   `additionalProperties: false`, so the schema had to learn the member before
   any producer could send it. It then moves to **`4f9491f`**, which does the
-  same for `failure_kind`, and for the same reason.
+  same for `failure_kind`, and then to **`d21e232`**, which adds the twelve
+  lifecycle types — 5 `oneOf` branches become 17. Every pre-existing
+  definition is byte-identical across all three bumps.
 
 - `test/conformance.test.ts` now validates a MAXIMALLY-populated payload of each
   type against the pinned schema, and asserts each fixture's key set equals its
