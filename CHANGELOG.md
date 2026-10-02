@@ -22,12 +22,39 @@
   Without it a vendor had to write `BatonConfig["resultCaptureMode"]` — the
   rolled-up `dist/index.d.ts` declared the type but did not export it.
 
+- **A second tool-call seam, on `tools/call`, and SPEC §11.4.3's
+  `failure_kind` on `tool_call_error`.** This package wraps the tool EXECUTOR,
+  so a failure either MCP SDK manufactures above the vendor's handler was
+  invisible to it. Three emitted nothing at all — an unknown tool, a tool the
+  vendor disabled, and a rejected argument — and a fourth was worse than
+  nothing: when the SDK's own output-schema validation rejected what the
+  handler returned, this package filed `tool_call_end` for a call the CALLER
+  saw fail. All four now file `tool_call_error` carrying the kind the producer
+  named: `unknown_tool`, `tool_disabled`, `invalid_argument`,
+  `output_schema_mismatch`.
+
+  The two seams hand off on one fact — whether the inner wrapper ran — which
+  is also what decides the withholding rule, so there is no second signal.
+  Under `resultCaptureMode: "off"` the three request-side kinds KEEP their
+  `error_body` (a validator's rejection describes the request, not a result)
+  while `output_schema_mismatch` withholds it (the message quotes what the
+  tool returned), which leaves `failure_kind` as the only surviving signal for
+  that failure in that mode.
+
+  ⚠ **`error_type` differs per major for one failure, and that is correct
+  rather than a gap.** 1.x converts all three request-side rejections into a
+  returned `isError`, so it is `"tool_error"`; `@modelcontextprotocol/server`
+  2.x throws for an unknown or disabled tool, so it is `"ProtocolError"`.
+  §11.4.3 makes that member the RAISE/RETURN discriminator and it is reporting
+  the shape faithfully — `failure_kind` is what makes the two comparable.
+
 ### Changed
 
 - The `baton-spec` pin moves to `db27f3f`, which is what makes `result_capture`
   legal on the wire: both tool-call payload definitions are
   `additionalProperties: false`, so the schema had to learn the member before
-  any producer could send it.
+  any producer could send it. It then moves to **`4f9491f`**, which does the
+  same for `failure_kind`, and for the same reason.
 
 - `test/conformance.test.ts` now validates a MAXIMALLY-populated payload of each
   type against the pinned schema, and asserts each fixture's key set equals its

@@ -84,9 +84,11 @@
  * instead of the vendor's.
  */
 
+import { AsyncLocalStorage } from "node:async_hooks";
 import { v7 as uuidv7 } from "uuid";
 import {
   AnnotationEventSchema,
+  type Event,
   SurfaceSnapshotEventSchema,
   ToolCallEndEventSchema,
   ToolCallErrorEventSchema,
@@ -109,7 +111,13 @@ import { emit } from "./emit.js";
 import {
   ERROR_BODY_MAX_CODE_POINTS,
   endResultFields,
+  errorText,
+  type FailureKind,
+  OUTPUT_SCHEMA_MISMATCH,
+  requestSideErrorFields,
+  requestSideFailureKind,
   type ResultCaptureMode,
+  resultDerivedFields,
   returnedErrorFields,
   isErrorResult,
   TOOL_ERROR_TYPE,
@@ -204,6 +212,77 @@ interface WrapContext {
 const BATON_WRAPPED = Symbol("batonWrapped");
 const wired = new WeakSet<object>();
 
+/**
+ * What the OUTER `tools/call` seam saw once the request handler was done with
+ * it — the only thing the outer tells the inner.
+ *
+ * Both majors convert a thrown vendor handler into a returned `isError`
+ * INSIDE their `tools/call` handler, so `raised` here is NOT the vendor's
+ * raise: it is a failure the SDK threw out of the handler entirely, which on
+ * v2 is how an unknown or disabled tool arrives
+ * (`mcp-DXXb3Vv3.mjs:1394-1397`, both outside that handler's own `try`).
+ */
+interface OuterOutcome {
+  /** Did anything ABOVE the vendor's handler report a failure? */
+  failed: boolean;
+  /** Did `tools/call` THROW, as opposed to returning a flagged result? Its
+   * own member rather than `err !== undefined`, because `throw undefined` is
+   * legal and a thrown `undefined` must not read as a clean return. */
+  raised: boolean;
+  /** The value thrown out of `tools/call`. Meaningless unless `raised`. */
+  err: unknown;
+  /** What `tools/call` returned, when it returned. On a failure this is the
+   * SDK's own error envelope — `createToolError`'s on both majors — not the
+   * vendor's value. */
+  result: unknown;
+}
+
+/**
+ * The per-call hand-off between Baton's two seams (SPEC §11.4.3's
+ * `failure_kind`).
+ *
+ * ⚠ **`innerFired` is the whole discriminator, and it is the one the
+ * withholding rule needs too** — which is why there is no second signal
+ * here. `false` means the vendor's handler never ran, so the failure is
+ * REQUEST-side and nothing on the payload is derived from a result (`"off"`
+ * withholds nothing). `true` plus a failure at the outer means the handler
+ * returned and something above it rejected what came back, so the failure is
+ * RESULT-side and `"off"` withholds it. The hand-off and the provenance rule
+ * are one mechanism; measured 2026-10-01 on both majors.
+ *
+ * ⚠ **`flushTerminal` exists because two terminal events on one `call_id`
+ * would break pairing** (SPEC §11.5.4 tier 1). The inner has already decided
+ * which terminal event this call deserves by the time the outer learns the
+ * call failed, so it PARKS that decision as a closure instead of emitting it,
+ * and the outer flushes or replaces it. Parking a closure and not a built
+ * event is deliberate: `counter.next` and `captured_at` must run at FLUSH, or
+ * a replaced `tool_call_end` leaves an allocated sequence number behind and
+ * the session's numbering gains a hole no consumer can explain.
+ */
+interface CallSlot {
+  /** Set at the TOP of `batonWrap`, before anything that can throw.
+   *
+   * ⚠ The placement agrees with both majors by construction, not by luck:
+   * each runs `validateToolInput` OUTSIDE the executor this wraps
+   * (`mcp.js:125`, `mcp-DXXb3Vv3.mjs:1399`), so a rejected argument cannot
+   * reach here and mark the flag. `test/integrations/mcp/aboveTool.test.ts`
+   * pins that per major — a placement one line lower would still pass the
+   * happy path and silently relabel every `invalid_argument`. */
+  innerFired: boolean;
+  /** The inner's parked terminal event, or `null` when the inner never got
+   * far enough to decide on one (its own prelude threw — nothing to flush,
+   * and NOT a request-side failure). */
+  flushTerminal: ((outcome: OuterOutcome) => Promise<void>) | null;
+}
+
+/** Module-scoped rather than per-install, which is safe for one reason worth
+ * naming: a slot is only ever read inside the dynamic extent of the dispatch
+ * that created it, and `AsyncLocalStorage` nests — a tool whose handler calls
+ * a second seamed server in-process enters that server's slot first, so the
+ * inner wrapper there reads its own, not ours. Nothing is shared BETWEEN
+ * calls, so there is no per-install state to keep. */
+const callSlots = new AsyncLocalStorage<CallSlot>();
+
 /** Tracks the vendor-true (pre-injection) tool surface for this install, for
  * `surface_snapshot` capture. Built from data already in hand at wrap time
  * and lazily hashed+emitted on the next tool call — mirrors the official
@@ -289,6 +368,162 @@ function errorBody(ctx: WrapContext, text: string): string {
   return capCodePoints(String(ctx.scrubber(text)), ERROR_BODY_MAX_CODE_POINTS);
 }
 
+/** `error_type` for a THROWN value (SPEC §11.4.3's RAISE shape): the
+ * exception's class name, `"Error"` for anything that is not one. Shared by
+ * the inner wrapper's raise lane and the outer seam, which both have to spell
+ * it — two spellings would let the same thrown `ProtocolError` arrive under
+ * two labels depending on which seam reported it. */
+function errorTypeOf(err: unknown): string {
+  return err instanceof Error ? err.constructor.name : "Error";
+}
+
+/** The human-readable text of a thrown value, by the same rule. */
+function messageOf(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+/**
+ * Open a tool call: resolve everything the envelope needs, strip Baton's
+ * injected intent params out of `params` IN PLACE, and emit the opening
+ * events — the session's first proactive annotation, when there is one, then
+ * `tool_call_start`.
+ *
+ * ⚠ **Extracted so BOTH seams open a call the same way.** The inner executor
+ * wrapper opens a call that reached the vendor's handler; the outer
+ * `tools/call` seam opens one the SDK rejected before the handler ran (SPEC
+ * §11.4.3's three request-side `failure_kind`s), and those events must carry
+ * the same identity, the same `principal`, the same stripped `params` and the
+ * same `call_id` discipline. Two copies of this would be two chances for one
+ * of them to drift — which is the miss-mechanism this thread has already paid
+ * for twice.
+ *
+ * Returns what the TERMINAL event needs and nothing more: the envelope, the
+ * minted `call_id`, and the session the counter is keyed on.
+ */
+async function openCall(
+  ctx: WrapContext,
+  toolName: string,
+  extra: Extra,
+  params: Record<string, unknown>,
+): Promise<{ common: Record<string, unknown>; callId: string; sessionId: string }> {
+  const meta = extraMeta(extra);
+  const runtime =
+    detectAgentRuntime(meta, {
+      // v2 lifts the reserved `io.modelcontextprotocol/*` keys out of
+      // `_meta`; 1.x leaves them in. Both are handed over — see
+      // `mcpTypes.extraEnvelope`.
+      envelope: extraEnvelope(extra),
+      // Tier 2's carrier: neither peer puts client identity on the
+      // handler context, both expose the cached handshake on the server.
+      server: ctx.server,
+      scrubber: ctx.scrubber,
+    }) ?? UNKNOWN_AGENT_RUNTIME;
+  // Coordinates are coarsened here: after the ladder above has read the
+  // raw meta, and before the vendor's scrubber, so a vendor scrubber still
+  // gets the rule (handoff D5). `_meta` only; params and results keep
+  // full precision. The annotation tool does the same.
+  const scrubbedMeta = scrubOrNull(ctx.scrubber, meta ? roundMetaCoordinates(meta) : null, "_meta");
+  const sessionId = await resolveSessionId(ctx.fallbackSessionId, extra);
+
+  // Strip the injected goal params IN PLACE, before snapshotting params —
+  // `params` is the SAME object forwarded to the vendor handler, so the
+  // strip keeps user_goal/expected_result off the tool AND out of the
+  // captured `params` (which must equal the vendor-visible arguments).
+  const dispositions = ctx.paramRegistry.get(toolName);
+  const rawIntent = extractGoalParam(params, USER_GOAL_PARAM_NAME, toolName, dispositions);
+  const rawExpected = extractGoalParam(
+    params,
+    EXPECTED_RESULT_PARAM_NAME,
+    toolName,
+    dispositions,
+  );
+  const rawWorkflow = extractGoalParam(params, OVERALL_TASK_PARAM_NAME, toolName, dispositions);
+  // Guarded because `params` is already stripped in place above.
+  const scrubbedIntent = scrubOrNull(ctx.scrubber, rawIntent, USER_GOAL_PARAM_NAME);
+  const scrubbedExpected = scrubOrNull(ctx.scrubber, rawExpected, EXPECTED_RESULT_PARAM_NAME);
+  // Scrubbed like the other two. Deterministic redaction preserves the
+  // exact-string continuity rung 3b groups on: the same label scrubs to
+  // the same output on every call.
+  const scrubbedWorkflow = scrubOrNull(ctx.scrubber, rawWorkflow, OVERALL_TASK_PARAM_NAME);
+
+  // The per-call correlation key, minted HERE — in the one scope that emits
+  // both legs — so start and end carry the same value by construction. It
+  // is deliberately NOT part of `common`: `common` is also spread into the
+  // proactive annotation below, and SPEC defines no `call_id` for an
+  // annotation. Stamped onto the three tool-call events individually.
+  const callId = uuidv7();
+
+  // Resolved AFTER the intent-param strip, so the hook's `arguments` are
+  // exactly what the vendor's own handler receives — Baton's injected
+  // params are never a caller's input and must not look like one.
+  const principal = await resolveCallPrincipal(
+    ctx.resolvePrincipal,
+    { extra, toolName, arguments: params },
+    { mode: ctx.principalIdMode, tenantId: ctx.tenantId, key: ctx.principalIdHmacKey },
+  );
+
+  const common = {
+    tenant_id: ctx.tenantId,
+    vendor_id: ctx.vendorId,
+    session_id: sessionId,
+    consent_token: ctx.consentToken,
+    agent_runtime: runtime,
+    // The five `...common` sites below are the tool-call legs — start, end,
+    // and BOTH failure shapes (SPEC §11.4.3) — plus the proactive
+    // annotation, the same five Python stamps (`middleware.py`
+    // 503/547/586/644/674; it was four until the returned shape landed
+    // there too). `surface_snapshot` is deliberately NOT among them: it
+    // describes the SERVER and is captured outside any call, so there is no
+    // caller to name (register D5).
+    principal,
+    // Same five stamps, same exclusion: a surface_snapshot describes the
+    // SERVER and is captured outside any call, so it has no caller's
+    // transport to name any more than it has a caller to name.
+    transport_observed: observeTransport(extra),
+    runtime_meta: scrubbedMeta,
+  };
+
+  // The session's FIRST injected intent also becomes a proactive
+  // annotation (carrying expected_result too, if present), sequenced
+  // BEFORE the tool_call_start it explains. `claim` dedups per session
+  // and is suppressed when a real annotation-tool proactive already
+  // fired. Later param intents ride only the start event.
+  if (scrubbedIntent !== null && ctx.tracker.claim(sessionId)) {
+    await emit(ctx.sink, () =>
+      AnnotationEventSchema.parse({
+        ...common,
+        sequence_number: ctx.counter.next(sessionId),
+        captured_at: new Date().toISOString(),
+        payload: {
+          intent: scrubbedIntent,
+          expected_outcome: scrubbedExpected,
+          intent_source: INTENT_SOURCE_PARAM,
+          tool_name: toolName,
+        },
+      }),
+    );
+  }
+
+  await emit(ctx.sink, () =>
+    ToolCallStartEventSchema.parse({
+      ...common,
+      call_id: callId,
+      sequence_number: ctx.counter.next(sessionId),
+      captured_at: new Date().toISOString(),
+      payload: {
+        tool_name: toolName,
+        // eslint-disable-next-line no-restricted-syntax -- inside the emit() build thunk: a throw drops the event, which is correct for params
+        params: ctx.scrubber(params),
+        call_intent: scrubbedIntent,
+        call_expected: scrubbedExpected,
+        call_workflow: scrubbedWorkflow,
+        intent_source: scrubbedIntent !== null ? INTENT_SOURCE_PARAM : null,
+      },
+    }),
+  );
+  return { common, callId, sessionId };
+}
+
 /** `nameRef` is read on every call, not captured: v2's `update({name})`
  * renames a tool in place, keeping the same entry object AND the same
  * executor, so a wrapper that closed over the registration-time string would
@@ -298,6 +533,12 @@ function errorBody(ctx: WrapContext, text: string): string {
 function batonWrap(nameRef: { current: string }, original: AnyHandler, ctx: WrapContext): AnyHandler {
   return async (...callArgs: AnyArgs): Promise<unknown> => {
     const toolName = nameRef.current;
+    // ⚠ FIRST, ahead of every await below. The flag's whole job is to say the
+    // vendor's handler was REACHED, and a line of this prelude that threw
+    // after a later assignment would leave the outer seam reporting a
+    // request-side failure about a call that got this far. See `CallSlot`.
+    const slot = callSlots.getStore();
+    if (slot) slot.innerFired = true;
     await maybeEmitSurfaceSnapshot(ctx);
 
     const extra = callArgs[callArgs.length - 1] as Extra;
@@ -309,121 +550,38 @@ function batonWrap(nameRef: { current: string }, original: AnyHandler, ctx: Wrap
       string,
       unknown
     >;
-    const meta = extraMeta(extra);
-    const runtime =
-      detectAgentRuntime(meta, {
-        // v2 lifts the reserved `io.modelcontextprotocol/*` keys out of
-        // `_meta`; 1.x leaves them in. Both are handed over — see
-        // `mcpTypes.extraEnvelope`.
-        envelope: extraEnvelope(extra),
-        // Tier 2's carrier: neither peer puts client identity on the
-        // handler context, both expose the cached handshake on the server.
-        server: ctx.server,
-        scrubber: ctx.scrubber,
-      }) ?? UNKNOWN_AGENT_RUNTIME;
-    // Coordinates are coarsened here: after the ladder above has read the
-    // raw meta, and before the vendor's scrubber, so a vendor scrubber still
-    // gets the rule (handoff D5). `_meta` only; params and results keep
-    // full precision. The annotation tool does the same.
-    const scrubbedMeta = scrubOrNull(ctx.scrubber, meta ? roundMetaCoordinates(meta) : null, "_meta");
-    const sessionId = await resolveSessionId(ctx.fallbackSessionId, extra);
+    // ⚠ `params` is the SAME object forwarded to the vendor's handler, and
+    // `openCall` strips Baton's injected intent params out of it IN PLACE —
+    // which is what keeps `user_goal`/`expected_result` off the tool AND out
+    // of the captured `params`, since those must equal the vendor-visible
+    // arguments. The outer seam's request-side path passes a COPY instead,
+    // for the reason stated there.
+    const { common, callId, sessionId } = await openCall(ctx, toolName, extra, params);
 
-    // Strip the injected goal params IN PLACE, before snapshotting params —
-    // `params` is the SAME object forwarded to the vendor handler, so the
-    // strip keeps user_goal/expected_result off the tool AND out of the
-    // captured `params` (which must equal the vendor-visible arguments).
-    const dispositions = ctx.paramRegistry.get(toolName);
-    const rawIntent = extractGoalParam(params, USER_GOAL_PARAM_NAME, toolName, dispositions);
-    const rawExpected = extractGoalParam(
-      params,
-      EXPECTED_RESULT_PARAM_NAME,
-      toolName,
-      dispositions,
-    );
-    const rawWorkflow = extractGoalParam(params, OVERALL_TASK_PARAM_NAME, toolName, dispositions);
-    // Guarded because `params` is already stripped in place above.
-    const scrubbedIntent = scrubOrNull(ctx.scrubber, rawIntent, USER_GOAL_PARAM_NAME);
-    const scrubbedExpected = scrubOrNull(ctx.scrubber, rawExpected, EXPECTED_RESULT_PARAM_NAME);
-    // Scrubbed like the other two. Deterministic redaction preserves the
-    // exact-string continuity rung 3b groups on: the same label scrubs to
-    // the same output on every call.
-    const scrubbedWorkflow = scrubOrNull(ctx.scrubber, rawWorkflow, OVERALL_TASK_PARAM_NAME);
-
-    // The per-call correlation key, minted HERE — in the one scope that emits
-    // both legs — so start and end carry the same value by construction. It
-    // is deliberately NOT part of `common`: `common` is also spread into the
-    // proactive annotation below, and SPEC defines no `call_id` for an
-    // annotation. Stamped onto the three tool-call events individually.
-    const callId = uuidv7();
-
-    // Resolved AFTER the intent-param strip, so the hook's `arguments` are
-    // exactly what the vendor's own handler receives — Baton's injected
-    // params are never a caller's input and must not look like one.
-    const principal = await resolveCallPrincipal(
-      ctx.resolvePrincipal,
-      { extra, toolName, arguments: params },
-      { mode: ctx.principalIdMode, tenantId: ctx.tenantId, key: ctx.principalIdHmacKey },
-    );
-
-    const common = {
-      tenant_id: ctx.tenantId,
-      vendor_id: ctx.vendorId,
-      session_id: sessionId,
-      consent_token: ctx.consentToken,
-      agent_runtime: runtime,
-      // The five `...common` sites below are the tool-call legs — start, end,
-      // and BOTH failure shapes (SPEC §11.4.3) — plus the proactive
-      // annotation, the same five Python stamps (`middleware.py`
-      // 503/547/586/644/674; it was four until the returned shape landed
-      // there too). `surface_snapshot` is deliberately NOT among them: it
-      // describes the SERVER and is captured outside any call, so there is no
-      // caller to name (register D5).
-      principal,
-      // Same five stamps, same exclusion: a surface_snapshot describes the
-      // SERVER and is captured outside any call, so it has no caller's
-      // transport to name any more than it has a caller to name.
-      transport_observed: observeTransport(extra),
-      runtime_meta: scrubbedMeta,
+    /** Emit this call's terminal event, or PARK it for the outer `tools/call`
+     * seam when one is running (see `CallSlot`). `replacement` is passed by
+     * the SUCCESS lane alone: it is the only terminal event the outer may
+     * overwrite, because a parked FAILURE is already the vendor's own code
+     * speaking — it raised, or it returned the flag — and SPEC §11.4.3's two
+     * shapes own it. Relabelling that as `output_schema_mismatch` would blame
+     * our conversion for the vendor's failure. */
+    const terminate = async (
+      build: () => Event,
+      replacement: ((outcome: OuterOutcome) => () => Event) | null = null,
+    ): Promise<void> => {
+      if (!slot) {
+        // No outer seam: a direct executor call, or a server whose internals
+        // this package could not reach. Emit exactly as it always has — and
+        // SPEC §11.4.3 agrees that is the right degradation, since "a
+        // producer with only one seam cannot emit `failure_kind` correctly
+        // and MUST omit it".
+        await emit(ctx.sink, build);
+        return;
+      }
+      slot.flushTerminal = async (outcome) => {
+        await emit(ctx.sink, replacement !== null && outcome.failed ? replacement(outcome) : build);
+      };
     };
-
-    // The session's FIRST injected intent also becomes a proactive
-    // annotation (carrying expected_result too, if present), sequenced
-    // BEFORE the tool_call_start it explains. `claim` dedups per session
-    // and is suppressed when a real annotation-tool proactive already
-    // fired. Later param intents ride only the start event.
-    if (scrubbedIntent !== null && ctx.tracker.claim(sessionId)) {
-      await emit(ctx.sink, () =>
-        AnnotationEventSchema.parse({
-          ...common,
-          sequence_number: ctx.counter.next(sessionId),
-          captured_at: new Date().toISOString(),
-          payload: {
-            intent: scrubbedIntent,
-            expected_outcome: scrubbedExpected,
-            intent_source: INTENT_SOURCE_PARAM,
-            tool_name: toolName,
-          },
-        }),
-      );
-    }
-
-    await emit(ctx.sink, () =>
-      ToolCallStartEventSchema.parse({
-        ...common,
-        call_id: callId,
-        sequence_number: ctx.counter.next(sessionId),
-        captured_at: new Date().toISOString(),
-        payload: {
-          tool_name: toolName,
-          // eslint-disable-next-line no-restricted-syntax -- inside the emit() build thunk: a throw drops the event, which is correct for params
-          params: ctx.scrubber(params),
-          call_intent: scrubbedIntent,
-          call_expected: scrubbedExpected,
-          call_workflow: scrubbedWorkflow,
-          intent_source: scrubbedIntent !== null ? INTENT_SOURCE_PARAM : null,
-        },
-      }),
-    );
 
     const startedAt = performance.now();
     let result: unknown;
@@ -431,8 +589,7 @@ function batonWrap(nameRef: { current: string }, original: AnyHandler, ctx: Wrap
       result = await original(...callArgs);
     } catch (err) {
       const durationMs = Math.round(performance.now() - startedAt);
-      const message = err instanceof Error ? err.message : String(err);
-      await emit(ctx.sink, () =>
+      await terminate(() =>
         ToolCallErrorEventSchema.parse({
           ...common,
           call_id: callId,
@@ -440,14 +597,14 @@ function batonWrap(nameRef: { current: string }, original: AnyHandler, ctx: Wrap
           captured_at: new Date().toISOString(),
           payload: {
             tool_name: toolName,
-            error_type: err instanceof Error ? err.constructor.name : "Error",
+            error_type: errorTypeOf(err),
             // ⚠ KEPT under `resultCaptureMode: "off"`, and that is the rule's
             // shape rather than an exception to it: the rule is keyed on
             // PROVENANCE, and a thrown error's message is the vendor's own
             // code speaking about a call that returned nothing (SPEC
             // §11.4.3(1)). A switch written as "drop `error_body`" would
             // delete the highest-value diagnostic the product has.
-            error_body: errorBody(ctx, message),
+            error_body: errorBody(ctx, messageOf(err)),
             duration_ms: durationMs,
             // Explicit, though the field is `.optional()` and this is its
             // absent value. The schema is deliberately not an emitter (see
@@ -474,7 +631,7 @@ function batonWrap(nameRef: { current: string }, original: AnyHandler, ctx: Wrap
     // JSON-RPC error. It arrives here rather than through the catch above, and
     // filing it as `tool_call_end` is filing a failure as a success.
     if (isErrorResult(result)) {
-      await emit(ctx.sink, () =>
+      await terminate(() =>
         ToolCallErrorEventSchema.parse({
           ...common,
           call_id: callId,
@@ -508,18 +665,70 @@ function batonWrap(nameRef: { current: string }, original: AnyHandler, ctx: Wrap
       return result;
     }
 
-    await emit(ctx.sink, () =>
-      ToolCallEndEventSchema.parse({
-        ...common,
-        call_id: callId,
-        sequence_number: ctx.counter.next(sessionId),
-        captured_at: new Date().toISOString(),
-        payload: {
-          tool_name: toolName,
-          duration_ms: durationMs,
-          ...endResultFields(ctx.resultCaptureMode, result, ctx.scrubber),
-        },
-      }),
+    await terminate(
+      () =>
+        ToolCallEndEventSchema.parse({
+          ...common,
+          call_id: callId,
+          sequence_number: ctx.counter.next(sessionId),
+          captured_at: new Date().toISOString(),
+          payload: {
+            tool_name: toolName,
+            duration_ms: durationMs,
+            ...endResultFields(ctx.resultCaptureMode, result, ctx.scrubber),
+          },
+        }),
+      // The handler returned something this sensor reads as a success, and
+      // then the outer seam saw the call fail anyway — so what failed is the
+      // producer's own conversion of the output (SPEC §11.4.3's
+      // `output_schema_mismatch`). Correcting this is the whole point of the
+      // second seam: without it this is a `tool_call_end` for a call the
+      // CALLER saw fail, which is a success the product invented.
+      (outcome) => () =>
+        ToolCallErrorEventSchema.parse({
+          ...common,
+          call_id: callId,
+          sequence_number: ctx.counter.next(sessionId),
+          captured_at: new Date().toISOString(),
+          payload: {
+            tool_name: toolName,
+            // The lane the OUTER came back on, not this one's: on 2.x the
+            // conversion failure is converted to a returned `isError` inside
+            // `tools/call` (`mcp-DXXb3Vv3.mjs:1402`), so `"tool_error"` is
+            // right there. A throw out of the handler is unreachable on
+            // either major today for this lane; spelled anyway, because the
+            // alternative is a crash on the day it stops being.
+            error_type: outcome.raised ? errorTypeOf(outcome.err) : TOOL_ERROR_TYPE,
+            // ⚠ The INNER's measurement — the vendor's handler duration —
+            // not the outer's. Every other leg means the same thing by this
+            // member, and widening it here for one failure kind would make
+            // `duration_ms` mean two things in one column.
+            duration_ms: durationMs,
+            failure_kind: OUTPUT_SCHEMA_MISMATCH,
+            // ⚠ **WITHHELD under `"off"`, unlike the three request-side
+            // kinds.** The message quotes the value the tool returned
+            // ("`'not-an-int'` is not of type `integer`"), so it is
+            // result-derived by provenance and goes — which leaves
+            // `failure_kind` as the ONLY surviving signal for this failure
+            // under `"off"`, and is the measurement that justified putting
+            // the member on the wire at all.
+            //
+            // ⚠ `result` is what the CLIENT received — the SDK's own error
+            // envelope — not the vendor's rejected return value. §11.4.3
+            // asks for the envelope that holds the flag and the reason, and
+            // this package's own invariant is that it agrees with the
+            // caller. Recording the rejected output TOO would need a member
+            // nothing on the wire has; the loss is deliberate and worth
+            // knowing when debugging one of these.
+            ...resultDerivedFields(
+              ctx.resultCaptureMode,
+              () => (outcome.raised ? messageOf(outcome.err) : errorText(outcome.result)),
+              outcome.result,
+              (text) => errorBody(ctx, text),
+              ctx.scrubber,
+            ),
+          },
+        }),
     );
 
     return result;
@@ -628,47 +837,85 @@ function captureAndInject(name: string, entry: unknown, ctx: WrapContext): void 
   }
 }
 
-/** The two request-handler internals the `tools/list` seam reaches, shared
- * by both majors' `Protocol`: the per-method dispatch map, and the setter
- * that fills it. Typed `unknown` and checked at install, so a server laid out
+/** The two request-handler internals the request seams reach, shared by both
+ * majors' `Protocol`: the per-method dispatch map, and the setter that fills
+ * it. Typed `unknown` and checked at install, so a server laid out
  * differently gets no seam rather than a crash. */
-interface ToolsListInternals {
+interface RequestHandlerInternals {
   _requestHandlers?: unknown;
   setRequestHandler?: unknown;
 }
 
 const TOOLS_LIST_METHOD = "tools/list";
 const TOOLS_LIST_SEAM = Symbol("batonToolsListSeam");
-type SeamedHandler = AnyHandler & { [TOOLS_LIST_SEAM]?: boolean };
+const TOOLS_CALL_METHOD = "tools/call";
+const TOOLS_CALL_SEAM = Symbol("batonToolsCallSeam");
+type SeamedHandler = AnyHandler & { [tag: symbol]: boolean | undefined };
 
 /**
- * The `tools/list` RESPONSE seam, which is what lets `intentParamMode:
- * "required"` advertise `user_goal` as required without the validator
- * enforcing it (see `schemaCompat.buildIntentFields` for why zod cannot).
+ * Install a seam around ONE JSON-RPC method's request handler.
  *
  * Both majors dispatch requests through `server.server._requestHandlers`, a
  * `Map` keyed by method and read per request (1.x `shared/protocol.js`
  * `_onrequest`; v2 `Protocol._onrequest`), and both `McpServer`s install
- * their `tools/list` handler lazily, on the first `registerTool` (v2 also
- * eagerly, when constructed with a `tools` capability). So both orders are
- * covered: a handler already in the map is wrapped now, and
- * `setRequestHandler` is patched so one set later is wrapped as it lands.
- * Keyed on the map entry rather than on the setter's arguments, because the
- * majors spell the method differently (a zod schema on 1.x, a string on v2)
- * and both land in the same map.
+ * their tool handlers lazily, on the first `registerTool` (v2 also eagerly,
+ * when constructed with a `tools` capability). So both orders are covered: a
+ * handler already in the map is wrapped now, and `setRequestHandler` is
+ * patched so one set later is wrapped as it lands. Keyed on the map entry
+ * rather than on the setter's arguments, because the majors spell the method
+ * differently (a zod schema on 1.x, a string on v2) and both land in the same
+ * map.
  *
- * ⚠ Fail-open, twice. A throw from the transform is logged and the SDK's own
- * result goes out untouched, because a vendor's `tools/list` may never break
- * on Baton's account. And a server whose internals do not have this shape
- * gets no seam at all, which costs the advertisement and nothing else.
+ * ⚠ **Shared by both seams, which is what makes installing two of them
+ * safe.** Each one patches `setRequestHandler`, so the second install must
+ * reach the first's patch rather than the pristine setter — which it does,
+ * because `originalSet` is read at install time, after the earlier patch has
+ * landed. That composition held when this was one hand-written function per
+ * seam too; one helper makes it structural rather than a property of the call
+ * order in `withBaton`.
+ *
+ * ⚠ A server whose internals do not have this shape gets no seam at all.
+ * What that costs differs per seam and is stated at each call site.
  */
-function installToolsListSeam(lowLevel: ToolsListInternals, ctx: WrapContext): void {
+function installRequestSeam(
+  lowLevel: RequestHandlerInternals,
+  method: string,
+  seamTag: symbol,
+  wrap: (handler: AnyHandler) => AnyHandler,
+): void {
   const table = lowLevel._requestHandlers;
   const originalSet = lowLevel.setRequestHandler;
   if (!(table instanceof Map) || typeof originalSet !== "function") return;
   const handlers = table as Map<string, unknown>;
   const setRequestHandler = originalSet as AnyHandler;
 
+  const wrapCurrent = (): void => {
+    const handler = handlers.get(method) as SeamedHandler | undefined;
+    if (typeof handler !== "function" || handler[seamTag]) return;
+    const seamed = wrap(handler) as SeamedHandler;
+    seamed[seamTag] = true;
+    handlers.set(method, seamed);
+  };
+
+  wrapCurrent();
+  lowLevel.setRequestHandler = (...args: AnyArgs): unknown => {
+    const registered = setRequestHandler.apply(lowLevel, args);
+    wrapCurrent();
+    return registered;
+  };
+}
+
+/**
+ * The `tools/list` RESPONSE seam, which is what lets `intentParamMode:
+ * "required"` advertise `user_goal` as required without the validator
+ * enforcing it (see `schemaCompat.buildIntentFields` for why zod cannot).
+ *
+ * ⚠ Fail-open, twice. A throw from the transform is logged and the SDK's own
+ * result goes out untouched, because a vendor's `tools/list` may never break
+ * on Baton's account. And a server with no reachable handler map gets no seam,
+ * which costs the advertisement and nothing else.
+ */
+function installToolsListSeam(lowLevel: RequestHandlerInternals, ctx: WrapContext): void {
   const isInjected = (toolName: string): boolean =>
     ctx.paramRegistry.get(toolName)?.[USER_GOAL_PARAM_NAME] === "injected";
   const advertise = (result: unknown): unknown => {
@@ -682,23 +929,243 @@ function installToolsListSeam(lowLevel: ToolsListInternals, ctx: WrapContext): v
     }
   };
 
-  const wrapCurrent = (): void => {
-    const handler = handlers.get(TOOLS_LIST_METHOD) as SeamedHandler | undefined;
-    if (typeof handler !== "function" || handler[TOOLS_LIST_SEAM]) return;
-    const seamed: SeamedHandler = (...args: AnyArgs) => {
-      const out = handler(...args);
-      return isThenable(out) ? out.then(advertise) : advertise(out);
-    };
-    seamed[TOOLS_LIST_SEAM] = true;
-    handlers.set(TOOLS_LIST_METHOD, seamed);
-  };
+  installRequestSeam(lowLevel, TOOLS_LIST_METHOD, TOOLS_LIST_SEAM, (handler) => (...args) => {
+    const out = handler(...args);
+    return isThenable(out) ? out.then(advertise) : advertise(out);
+  });
+}
 
-  wrapCurrent();
-  lowLevel.setRequestHandler = (...args: AnyArgs): unknown => {
-    const registered = setRequestHandler.apply(lowLevel, args);
-    wrapCurrent();
-    return registered;
-  };
+/** One tool's registry entry, in the only three members either seam reads.
+ * `enabled` is the flag both majors' `tools/call` handler branches on;
+ * `handler`/`executor` are the dispatch targets `wrapIfNeeded` tags. */
+interface ToolEntry {
+  enabled?: unknown;
+  /** 1.x rejects a mis-declared task tool BEFORE argument validation, so the
+   * member's presence is what withdraws the `invalid_argument` claim — see
+   * `requestSideFailureKind`. */
+  execution?: { taskSupport?: unknown } | null;
+  handler?: unknown;
+  executor?: unknown;
+}
+
+/**
+ * The function an entry actually dispatches through, which differs by SDK
+ * major — 1.x invokes `entry.handler`, v2 a closure at `entry.executor`.
+ *
+ * Shared by `wrapIfNeeded`, which tags it, and the `tools/call` seam, which
+ * asks whether it is tagged. Two copies of this rule would let the seam
+ * answer "not ours" about a tool `wrapIfNeeded` had in fact wrapped, and the
+ * consequence is silent: the request-side `failure_kind` events for that tool
+ * would simply never be emitted. See {@link wrapIfNeeded} for why getting the
+ * per-major choice wrong fails quietly in the first place.
+ */
+function dispatchTarget(entry: ToolEntry): TaggedHandler | undefined {
+  if (typeof entry.executor === "function") return entry.executor as TaggedHandler;
+  if (typeof entry.handler === "function") return entry.handler as TaggedHandler;
+  return undefined;
+}
+
+/**
+ * The `tools/call` REQUEST seam — the second of Baton's two tool-call
+ * sensors, and the one that can see a failure the SDK manufactures ABOVE the
+ * vendor's handler (SPEC §11.4.3's `failure_kind`).
+ *
+ * Three of those four failures emit NOTHING from the inner wrapper, because
+ * the handler it wraps never runs: an unknown tool, a disabled tool and a
+ * rejected argument. The fourth is worse than nothing — the handler returns
+ * fine and the SDK's own output conversion rejects it, so the inner files
+ * `tool_call_end` for a call the CALLER saw fail. This seam closes both: it
+ * supplies the missing events itself, and it hands the inner's parked
+ * terminal event the outcome so a false success can be replaced.
+ *
+ * ⚠ **Unconditional, unlike the `tools/list` seam** (which only installs
+ * under `intentParamMode: "required"`): the correction it makes is not
+ * configurable. A server with no reachable handler map gets no seam, and then
+ * this producer has one seam again and correctly omits `failure_kind`
+ * entirely — `CallSlot` and `terminate` carry that degradation.
+ *
+ * ⚠ **Fail-open, as the whole capture path must be (SPEC §11.2).** Both the
+ * flush and the request-side emission go through `emit`, and `settleCall`'s
+ * own guard is below; the vendor's result and the vendor's exception pass
+ * through this seam untouched in every lane.
+ */
+function installToolsCallSeam(
+  lowLevel: RequestHandlerInternals,
+  toolEntry: (name: string) => ToolEntry | undefined,
+  ctx: WrapContext,
+): void {
+  installRequestSeam(
+    lowLevel,
+    TOOLS_CALL_METHOD,
+    TOOLS_CALL_SEAM,
+    (handler) =>
+      async (...args) => {
+        const slot: CallSlot = { innerFired: false, flushTerminal: null };
+        let outcome: OuterOutcome = {
+          failed: false,
+          raised: false,
+          err: undefined,
+          result: undefined,
+        };
+        try {
+          const result = await callSlots.run(slot, () => handler(...args));
+          outcome = { failed: isErrorResult(result), raised: false, err: undefined, result };
+          return result;
+        } catch (err) {
+          outcome = { failed: true, raised: true, err, result: undefined };
+          throw err;
+        } finally {
+          // ⚠ **`finally`, never a read after the `await`.** v2 THROWS a
+          // `ProtocolError` out of this handler for an unknown or a disabled
+          // tool (`mcp-DXXb3Vv3.mjs:1395-1397`), so a settle placed after the
+          // await is skipped on exactly the two legs this seam exists for. A
+          // probe made that mistake on 2026-10-01 and reported "the outer
+          // never ran" as a blocker; the trap is in the production seam too,
+          // which is why it is named here and not only in the design note.
+          await settleCall(slot, outcome, args, toolEntry, ctx);
+        }
+      },
+  );
+}
+
+/**
+ * Decide what this call owes the event stream, now that both seams have had
+ * their say.
+ *
+ * ⚠ Fail-open at the top level. Everything below is Baton's own bookkeeping
+ * about a call that has already finished — a throw here would surface to the
+ * agent as a failed tool call on work that succeeded, which SPEC §11.2
+ * forbids outright. `emit` guards each individual event; this guards the
+ * decision around them.
+ */
+async function settleCall(
+  slot: CallSlot,
+  outcome: OuterOutcome,
+  args: AnyArgs,
+  toolEntry: (name: string) => ToolEntry | undefined,
+  ctx: WrapContext,
+): Promise<void> {
+  try {
+    // The inner reached a terminal decision: flush it, or let the outcome
+    // replace it. This is the ONLY path that emits a terminal event for a
+    // call the vendor's handler actually ran.
+    if (slot.flushTerminal !== null) {
+      await slot.flushTerminal(outcome);
+      return;
+    }
+    // The handler ran but parked nothing — `openCall` itself threw. There is
+    // no terminal event to flush and this is NOT a request-side failure: the
+    // call got past the SDK's own checks. Saying nothing is the honest answer.
+    if (slot.innerFired) return;
+    // Nothing failed and the inner never fired: a tool this package does not
+    // capture (the annotate tool, a task-based tool) was called and worked.
+    if (!outcome.failed) return;
+    await emitRequestSideFailure(outcome, args, toolEntry, ctx);
+  } catch (err) {
+    process.stderr.write(`baton: settling a tool call failed; events dropped: ${String(err)}\n`);
+  }
+}
+
+/**
+ * Emit the pair of events for a failure the SDK raised BEFORE the vendor's
+ * handler ran (SPEC §11.4.3's three request-side `failure_kind`s).
+ *
+ * The inner wrapper emitted nothing at all for these, so this supplies both
+ * legs, through the same `openCall` the inner uses — identical envelope,
+ * identical `principal`, a minted `call_id` on the start so SPEC §11.5.4's
+ * tier 1 pairs them.
+ *
+ * ⚠ **The start is not cosmetic.** `baton-console`'s pairer does build a row
+ * from an orphan end (`correlate.py` emits `(None, i)`), but with no start it
+ * has no `params` — and the arguments are precisely the diagnostic for
+ * `invalid_argument`, the commonest of these three.
+ *
+ * Two callers get NO event, and both omissions are the point:
+ *
+ * - **Baton's own annotate tool.** It is excluded from `wrapIfNeeded` because
+ *   it emits `annotation`, not `tool_call_*`; a rejected argument on it would
+ *   otherwise file an `invalid_argument` about a tool the vendor does not own.
+ * - **A registered tool this package did not wrap** — task-based tools, whose
+ *   `.handler` is an object rather than a function. `wrapIfNeeded` leaves them
+ *   alone rather than guessing at a shape we capture no events for, and this
+ *   has to make the same choice or it would report failures for calls whose
+ *   successes are invisible.
+ *
+ * An entry that is ABSENT is the opposite case and does get an event: that is
+ * `unknown_tool`, where there is nothing to have wrapped.
+ */
+async function emitRequestSideFailure(
+  outcome: OuterOutcome,
+  args: AnyArgs,
+  toolEntry: (name: string) => ToolEntry | undefined,
+  ctx: WrapContext,
+): Promise<void> {
+  const request = args[0] as { params?: { name?: unknown; arguments?: unknown } } | undefined;
+  const toolName = request?.params?.name;
+  // A `tools/call` with no string tool name is not a call this sensor can
+  // name, and SPEC gives `tool_name` no null spelling on any payload.
+  if (typeof toolName !== "string") return;
+  if (toolName === ctx.annotationToolName) return;
+  const entry = toolEntry(toolName);
+  if (entry !== undefined && dispatchTarget(entry)?.[BATON_WRAPPED] !== true) return;
+
+  // ⚠ A COPY, unlike the inner wrapper's in-place strip. `openCall` removes
+  // Baton's injected intent params from whatever it is given, and here the
+  // object is the vendor's live `request.params.arguments` — already consumed
+  // by a validator that rejected it, so mutating it changes no outcome, but a
+  // sensor that edits the request it is observing is a habit to refuse rather
+  // than reason about once. The strip itself is required: these params ARE
+  // still in the arguments on this path (validation runs above the executor,
+  // and `captureAndInject` spliced the names into the schema), so without it
+  // Baton's own params would land in `tool_call_start.params`, which SPEC
+  // says equals the vendor-visible arguments.
+  const params = { ...((request?.params?.arguments as Record<string, unknown>) ?? {}) };
+  await maybeEmitSurfaceSnapshot(ctx);
+  const { common, callId, sessionId } = await openCall(
+    ctx,
+    toolName,
+    args[1] as Extra,
+    params,
+  );
+
+  // `undefined` where the SDK rejected the call for a reason this producer
+  // cannot attribute — SPEC §11.4.3 permits omitting the member and
+  // `requestSideFailureKind` says which shape that is. The event still goes:
+  // the call failed, and the SDK's own message is on it.
+  const failureKind: FailureKind | undefined = requestSideFailureKind(entry);
+  await emit(ctx.sink, () =>
+    ToolCallErrorEventSchema.parse({
+      ...common,
+      call_id: callId,
+      sequence_number: ctx.counter.next(sessionId),
+      captured_at: new Date().toISOString(),
+      payload: {
+        tool_name: toolName,
+        // The lane the SDK rejected on, which is NOT the same across majors
+        // for one failure: 1.x converts all three to a returned `isError`
+        // inside its own `try` (`mcp.js:101-108`), v2 THROWS the first two
+        // and returns the third. So the same customer-visible failure is
+        // `"tool_error"` on one major and `"ProtocolError"` on the other —
+        // measured 2026-10-01, and deliberately not special-cased: this
+        // member is §11.4.3's RAISE/RETURN discriminator and it is reporting
+        // the shape faithfully. `failure_kind` is what makes the two
+        // comparable, which is the member's whole justification.
+        error_type: outcome.raised ? errorTypeOf(outcome.err) : TOOL_ERROR_TYPE,
+        // ⚠ `null`, not 0. The vendor's handler never ran, so there is no
+        // handler duration to report; the time this call did spend was spent
+        // in the SDK's validator, which is not what any other event means by
+        // this member. §11.4 types it nullable for cases like this one.
+        duration_ms: null,
+        failure_kind: failureKind,
+        // KEPT under `"off"` — see `requestSideErrorFields`, which takes no
+        // capture mode because nothing here is derived from a result.
+        ...requestSideErrorFields(
+          outcome.raised ? messageOf(outcome.err) : errorText(outcome.result),
+          (text) => errorBody(ctx, text),
+        ),
+      },
+    }),
+  );
 }
 
 function isThenable(value: unknown): value is PromiseLike<unknown> {
@@ -732,26 +1199,20 @@ function isThenable(value: unknown): value is PromiseLike<unknown> {
  * executor over the untouched handler. */
 function wrapIfNeeded(nameRef: { current: string }, entry: unknown, ctx: WrapContext): void {
   if (!entry || typeof entry !== "object") return;
-  const mutable = entry as { handler: unknown; executor?: unknown };
-
-  if (typeof mutable.executor === "function") {
-    if ((mutable.executor as TaggedHandler)[BATON_WRAPPED]) return;
-    const originalExecutor = mutable.executor as AnyHandler;
-    const wrapper = batonWrap(nameRef, originalExecutor, ctx) as TaggedHandler;
-    wrapper[BATON_WRAPPED] = true;
-    mutable.executor = wrapper;
-    return;
-  }
+  const mutable = entry as ToolEntry;
 
   // Task-based tools (experimental) carry an object, not a function, at
-  // .handler — leave them untouched rather than guess at wrapping a shape
-  // we don't capture events for yet.
-  if (typeof mutable.handler !== "function") return;
-  if ((mutable.handler as TaggedHandler)[BATON_WRAPPED]) return;
-  const original = mutable.handler as AnyHandler;
-  const wrapper = batonWrap(nameRef, original, ctx) as TaggedHandler;
+  // .handler — `dispatchTarget` answers `undefined` for them, and leaving
+  // them untouched is deliberate rather than a gap: we capture no events for
+  // that shape, and the `tools/call` seam makes the SAME choice off the SAME
+  // predicate so it cannot report a failure for a tool whose successes are
+  // invisible.
+  const target = dispatchTarget(mutable);
+  if (target === undefined || target[BATON_WRAPPED]) return;
+  const wrapper = batonWrap(nameRef, target, ctx) as TaggedHandler;
   wrapper[BATON_WRAPPED] = true;
-  mutable.handler = wrapper;
+  if (typeof mutable.executor === "function") mutable.executor = wrapper;
+  else mutable.handler = wrapper;
 }
 
 function wireEntry(name: string, entry: unknown, ctx: WrapContext): void {
@@ -878,9 +1339,12 @@ export function withBaton(server: SupportedMcpServer, supplied: BatonConfig = {}
   // shape rather than an `any` per reach-in, so a future SDK rename is a
   // compile error here instead of a runtime surprise in five places.
   const internals = server as unknown as {
-    server: { _instructions?: string; _serverInfo?: { name?: unknown } } & ToolsListInternals;
+    server: { _instructions?: string; _serverInfo?: { name?: unknown } } & RequestHandlerInternals;
     registerTool: (...args: AnyArgs) => unknown;
-    _registeredTools?: Record<string, unknown>;
+    // `ToolEntry` and not `unknown`: the `tools/call` seam reads `enabled` and
+    // the dispatch target off these entries, so an upstream rename of either
+    // lands as a compile error here the way every other reach-in does.
+    _registeredTools?: Record<string, ToolEntry>;
     _toolInputSchemaJson?: Record<string, unknown>;
     toolInputSchemaJson?: (name: string) => Record<string, unknown> | undefined;
   };
@@ -1077,6 +1541,18 @@ export function withBaton(server: SupportedMcpServer, supplied: BatonConfig = {}
   // registration is what makes the SDK install its `tools/list` handler, and
   // the seam has to be in place to wrap it as it lands.
   if (intentParamMode === "required") installToolsListSeam(internals.server, ctx);
+
+  // The SECOND tool-call seam (SPEC §11.4.3's `failure_kind`) — unconditional,
+  // and installed here for the same reason the `tools/list` seam is: the
+  // annotate tool's registration below is what makes a toolless server install
+  // its tool handlers at all, so the seam has to be in place to wrap one as it
+  // lands.
+  //
+  // ⚠ The registry is read PER CALL, not captured, so a tool removed after
+  // install classifies as `unknown_tool` rather than against a stale snapshot
+  // — `update({name: null})` and `remove()` both delete the entry, and the
+  // whole point of this lookup is to agree with what the SDK itself just read.
+  installToolsCallSeam(internals.server, (name) => internals._registeredTools?.[name], ctx);
 
   const resolvedAnnotationToolName = registerAnnotationTool(server, {
     sink,

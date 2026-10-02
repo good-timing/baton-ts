@@ -33,14 +33,30 @@ export const TOOL_ERROR_TYPE = "tool_error";
  * for the same reason: a second hand-written list makes the guarantee "two
  * lists happen to agree".
  *
- * ⚠ **These are NOT the Console's error vocabulary, and exactly one of them
- * is spelled identically to its bucket.** `invalid_argument` matches
- * `worker/errors.py`'s value ON PURPOSE (Ujwal, 2026-10-01) — the plural
- * `invalid_arguments` was one letter from it, which is the drift that cost
- * two defects. The other three do not match (`unknown_tool` → `not_found`,
- * `tool_disabled` → `unclassified`, `output_schema_mismatch` →
- * `schema_violation`), so a reader who sees the one match and infers a
- * mapping is wrong. SPEC §11.4.3 carries the table for that reason.
+ * ⚠ **THREE of these four are spelled identically to the Console's error
+ * code, and one renames.** Measured in
+ * `baton-console/backend/src/baton_console/worker/errors.py`, whose
+ * `_FAILURE_KIND_TO_CODE` is mostly an ALLOW-LIST: `unknown_tool`,
+ * `tool_disabled` and `invalid_argument` map to codes of the same name
+ * (`27566c2` added the first two as codes no TEXT lane can reach), and only
+ * `output_schema_mismatch` renames, onto `schema_violation`, which already
+ * described it.
+ *
+ * ⚠ A first version of this paragraph had that INVERTED — one match, three
+ * renames — because it was copied from `iserror_sensor_probe.md`'s decision
+ * table, written 2026-10-01, which recorded the buckets as they stood BEFORE
+ * the Console side of this release landed the next day. Corrected rather than
+ * overwritten, because the mechanism is the useful part: a design note's
+ * "today" column goes stale the moment the thing it describes ships, and a
+ * code comment that copies one inherits the staleness silently.
+ *
+ * The consequence of getting it wrong is not cosmetic. That table is an
+ * allow-list, so an unregistered value is simply absent from it and falls
+ * through to prose classification — which for `tool_disabled` means
+ * `unclassified` with the full text in hand, the exact regression this member
+ * exists to remove. `invalid_argument` is SINGULAR for that reason (Ujwal,
+ * 2026-10-01): the plural was one letter off the Console's spelling, which is
+ * the drift that already cost two defects this week.
  *
  * Open, not closed: `events.ts` types the wire member as a plain string, so a
  * later registered value cannot red a conforming producer (SPEC §11.2's
@@ -59,9 +75,13 @@ export type FailureKind = (typeof FAILURE_KINDS)[number];
 /** The REQUEST-SIDE kinds: the vendor's handler never ran, so nothing on the
  * payload is derived from a result and the capture mode does not reach them.
  *
- * `satisfies` and not an annotation, for the reason `WITHHELD` records: an
- * annotation widens these to `FailureKind` and the `switch` below stops
- * narrowing, which costs the exhaustiveness that deriving the registry buys. */
+ * `satisfies` and not an annotation, which here buys MEMBERSHIP checking and
+ * nothing more — these literals are checked against the registry at compile
+ * time, so a typo cannot become a value this producer emits. ⚠ It does NOT
+ * buy what `WITHHELD`'s identical note claims for it: that one keeps a
+ * `switch` over `ResultCaptureMode` narrowing, and there is no `switch` over
+ * `FailureKind` anywhere. The rationale was copied with the idiom; the idiom
+ * is right and the reason was not. */
 export const UNKNOWN_TOOL = "unknown_tool" satisfies FailureKind;
 export const TOOL_DISABLED = "tool_disabled" satisfies FailureKind;
 export const INVALID_ARGUMENT = "invalid_argument" satisfies FailureKind;
@@ -91,15 +111,63 @@ export const OUTPUT_SCHEMA_MISMATCH = "output_schema_mismatch" satisfies Failure
  * excludes the annotate tool, and a tool registered before `withBaton` ran
  * reaches it only through the retroactive sweep.
  *
- * `undefined` entry → the tool does not exist. Present and disabled → the
- * vendor turned it off, which is a different remedy from a missing tool and
- * the case the Console cannot classify from text at all. Present and enabled
- * → the handler existed, was callable, and still never ran, which on both
- * majors leaves exactly one step: argument validation.
+ * Absent entry → the tool does not exist. Present and disabled → the vendor
+ * turned it off, which is a different remedy from a missing tool and the case
+ * the Console cannot classify from text at all. Present and enabled → the
+ * handler existed, was callable, and still never ran.
+ *
+ * ⚠ **That last step is NOT always argument validation, and a first version
+ * of this function said it was.** On v2 it is: `tools/call` checks existence,
+ * then `enabled`, then calls `validateToolInput`, with nothing in between
+ * (`mcp-DXXb3Vv3.mjs:1394-1399`). On `@modelcontextprotocol/sdk` 1.x — the
+ * pinned peer — TWO more pre-handler rejections sit in that gap
+ * (`mcp.js:112-122`), and one of them is reachable for a tool this package
+ * wraps: `execution.taskSupport` declared on a tool registered with an
+ * ordinary function callback throws `InternalError` before any argument is
+ * looked at. Labelling that `invalid_argument` tells the operator the agent
+ * sent bad arguments when the remedy is the VENDOR's own registration — the
+ * one failure mode this member exists to prevent, reintroduced by the
+ * producer instead of by a regex.
+ *
+ * So a tool whose entry declares one of those two task modes withdraws the
+ * claim: `undefined`, which SPEC §11.4.3 permits outright ("a producer that
+ * cannot emit this member correctly MUST omit it"). The caller still emits
+ * the event — the call failed and the SDK's own message says why — it just
+ * does not name a kind it cannot determine. ⚠ The small untruth that buys:
+ * §11.4.3 reads an absent member as "the vendor's handler spoke for itself",
+ * which is not what happened here. Keeping the call visible with its real
+ * message is the better of the two, and this is the one shape where that
+ * reading is wrong.
+ *
+ * ⚠ **The predicate is `TASK_MODES`, not "is `taskSupport` set" — which was
+ * the first version and would have cost `invalid_argument` on the ENTIRE
+ * pinned peer.** Measured: 1.x's `registerTool` hands
+ * `{taskSupport: "forbidden"}` to every ordinary tool it builds
+ * (`mcp.js:694,704`), so the member is populated on all of them and the
+ * presence test withdrew the claim universally. Caught by
+ * `aboveTool.test.ts`'s 1.x leg, which is why that case asserts the kind per
+ * major rather than once. The two values below are exactly the ones the SDK
+ * itself branches on, which is this function's whole discipline.
+ *
+ * ⚠ The predicate stays on the REGISTRY ENTRY's own configuration, never the
+ * message — and 1.x's OTHER branch (`"required"` without task augmentation)
+ * needs no clause of its own, because it is reachable only when the handler
+ * is a task OBJECT, which `dispatchTarget` already answers `undefined` for
+ * and the seam already declines to report on.
  */
-export function requestSideFailureKind(entry: { enabled?: unknown } | undefined): FailureKind {
-  if (entry === undefined) return UNKNOWN_TOOL;
-  return entry.enabled === false ? TOOL_DISABLED : INVALID_ARGUMENT;
+const TASK_MODES: ReadonlySet<unknown> = new Set(["required", "optional"]);
+
+export function requestSideFailureKind(
+  entry: { enabled?: unknown; execution?: { taskSupport?: unknown } | null } | null | undefined,
+): FailureKind | undefined {
+  // `== null`, not `=== undefined`: this entry comes out of a cast past the
+  // SDK's `private`, so its shape is a declaration rather than a runtime
+  // guarantee, and a null would otherwise raise a `TypeError` off a tool call
+  // that was going to return the SDK's own error (SPEC §11.2 fail-open —
+  // `settleCall`'s guard would catch it, but a sensor should not need one).
+  if (entry == null) return UNKNOWN_TOOL;
+  if (entry.enabled === false) return TOOL_DISABLED;
+  return TASK_MODES.has(entry.execution?.taskSupport) ? undefined : INVALID_ARGUMENT;
 }
 
 /** The `error_body` cap, in CODE POINTS, shared by both failure legs (SPEC
@@ -298,12 +366,41 @@ export function returnedErrorFields(
   errorBody: (text: string) => string,
   scrubber: (value: unknown) => unknown,
 ): { error_body: string; result: unknown; result_capture?: string } {
+  return resultDerivedFields(mode, () => errorText(result), result, errorBody, scrubber);
+}
+
+/**
+ * The same two members for ANY result-side failure, taking the text as a
+ * THUNK rather than unwrapping it here.
+ *
+ * `returnedErrorFields` above is this with `errorText(result)` as the thunk.
+ * The second caller is `failure_kind: "output_schema_mismatch"`, where the
+ * handler returned and something above it rejected the output: the text there
+ * may come off a THROWN value rather than off an envelope's `content`, so the
+ * unwrapping cannot live in here.
+ *
+ * ⚠ **A thunk and not a string, which is the whole reason this is shaped this
+ * way.** An eagerly-evaluated argument would unwrap a result the `"off"`
+ * branch is about to discard — harmless to SPEC §7, which forbids only the
+ * VENDOR's scrubber on a withheld result, but it would quietly retire the
+ * property this module documents and tests: under `"off"` neither `errorText`
+ * nor the scrubber touches the result at all.
+ */
+/** ⚠ PRECONDITION: call this ONLY from inside an `emit()` build thunk — same
+ * as its two siblings, and for the same reason. */
+export function resultDerivedFields(
+  mode: ResultCaptureMode,
+  text: () => string,
+  result: unknown,
+  errorBody: (value: string) => string,
+  scrubber: (value: unknown) => unknown,
+): { error_body: string; result: unknown; result_capture?: string } {
   switch (mode) {
     case WITHHELD:
       return { error_body: "", result: null, result_capture: WITHHELD };
     case "full":
-      // eslint-disable-next-line no-restricted-syntax -- inside the emit() build thunk (both callers are thunks): emit drops the event, which is correct for a result
-      return { error_body: errorBody(errorText(result)), result: scrubber(result) };
+      // eslint-disable-next-line no-restricted-syntax -- inside the emit() build thunk (every caller is a thunk): emit drops the event, which is correct for a result
+      return { error_body: errorBody(text()), result: scrubber(result) };
   }
 }
 

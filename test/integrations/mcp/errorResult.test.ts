@@ -139,14 +139,23 @@ describe.each(MAJORS)("returned isError — $label", (major) => {
     expect(event.payload.result).toEqual({ isError: true, rows: 0 });
   });
 
-  it("⚠ does NOT see a failure the SDK manufactures above the handler", async () => {
-    // The scope on `isErrorResult`'s invariant, pinned as a test rather than
-    // left as a sentence. `errorResult.ts` holds the explanation and the
-    // measurement; this is its enforcer.
+  it("files a failure the SDK manufactures above the handler, naming the kind", async () => {
+    // ⚠ **This test used to assert the OPPOSITE**, as the limit it was written
+    // to pin: `isErrorResult` sits at the executor and output-schema validation
+    // runs above it, so the sensor correctly saw a success and filed
+    // `tool_call_end` for a call the client saw fail. Its own note said "if it
+    // starts failing because `tool_call_error` is emitted, the gap closed and
+    // this should become the positive assertion." The `tools/call` seam closed
+    // it; this is that assertion.
     //
-    // ⚠ This asserts the CURRENT limit, not a desired behaviour. If it starts
-    // failing because `tool_call_error` is emitted, the gap closed and this
-    // should become the positive assertion.
+    // ⚠ **And flipping it corrected a measurement.** `iserror_sensor_probe.md`
+    // recorded this false success as 2.x-ONLY, from a 10-01 probe where the
+    // 1.x leg produced no caller-visible failure (and whose note said why was
+    // unmeasured). It fires on BOTH here — the two `expect`s below were in the
+    // old version of this test and have been green in CI throughout — so
+    // `@modelcontextprotocol/sdk` 1.x validates output too and the gap was
+    // never one major's. That makes this seam worth more than the note claims,
+    // not less.
     const sink = new CapturingSink();
     const server = major.make();
     major.tool(
@@ -167,7 +176,27 @@ describe.each(MAJORS)("returned isError — $label", (major) => {
 
     expect(wire.isError).toBe(true);
     expect(wire.content[0]!.text).toContain("Output validation error");
-    terminal(sink, "tool_call_end");
+    const event = terminal(sink, "tool_call_error");
+    // ONE terminal event on the call, not two: the inner wrapper parked its
+    // `tool_call_end` and the outer replaced it, rather than both emitting —
+    // which would put two terminals on one `call_id` and break SPEC §11.5.4's
+    // tier-1 pairing on every call of this kind.
+    expect(sink.events.map((e) => e.event_type)).toEqual([
+      "surface_snapshot",
+      "tool_call_start",
+      "tool_call_error",
+    ]);
+    expect(event.payload.failure_kind).toBe("output_schema_mismatch");
+    // The handler RETURNED and our conversion rejected what came back, so the
+    // reason is result-derived and the reason text is the SDK's own.
+    expect(event.payload.error_body).toContain("Output validation error");
+    expect(event.payload.error_type).toBe("tool_error");
+    // ⚠ The sequence numbers have no HOLE in them, which is the assertion
+    // that pins `terminate` parking a BUILDER rather than a built event. The
+    // replaced `tool_call_end` was never constructed, so it never called
+    // `counter.next` — had it, this session's numbering would read 1, 2, 4
+    // and no consumer could tell that from a dropped event.
+    expect(sink.events.map((e) => e.sequence_number)).toEqual([1, 2, 3]);
   });
 
   it("cuts `error_body` by code point, never through a surrogate pair", async () => {
