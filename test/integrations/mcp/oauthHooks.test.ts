@@ -222,6 +222,16 @@ describe("principalFromOAuthEmail", () => {
     expect(got?.principalId).toBe("alice@acme.com");
   });
 
+  it("decides blankness as Python's strip() does, so the twins agree under ??", () => {
+    // `\x1f` is stripped by Python and kept by `.trim()`; U+FEFF the reverse.
+    const hook: ResolvePrincipalHook = (c) => principalFromOAuthEmail(c) ?? principalFromOAuthSub(c);
+    expect(hook(ctx(authInfo({ email: "\x1f", sub: "opaque-123" }))) as unknown).toEqual({
+      principalId: "opaque-123",
+      issuer: null,
+    });
+    expect(principalFromOAuthEmail(ctx(authInfo({ email: "\uFEFF" })))?.principalId).toBe("\uFEFF");
+  });
+
   it("treats a blank or non-string email as a miss", () => {
     for (const email of ["", "  ", 7, undefined]) {
       expect(principalFromOAuthEmail(ctx(authInfo({ email })))).toBeNull();
@@ -264,6 +274,31 @@ describe.each(MAJORS)("end to end on $label", (major) => {
         form: PRINCIPAL_FORM_HASHED,
       });
     }
+  });
+
+  it("the annotation tool resolves the same principal as the tool call", async () => {
+    // The second `resolveCallPrincipal` site (annotation.ts). Python's parity
+    // file collapses both emit paths to one value for this reason.
+    const server = major.make();
+    major.tool(server, "lookup", { name: z.string() }, () => ({ content: [] }));
+    const sink = new CapturingSink();
+    const handle = install(server, sink, {
+      resolvePrincipal: principalFromOAuthEmail,
+      tenantId: TENANT,
+      principalIdHmacKey: KEY,
+    });
+    const client = await major.connect(server, { authInfo: authInfo(CLAIMS) });
+    await client.callTool({ name: "lookup", arguments: { name: "x" } });
+    await client.callTool({
+      name: handle.annotationToolName,
+      arguments: { user_goal: "look up", signal_type: "failure" },
+    });
+    const annotations = sink.events.filter((e) => e.event_type === "annotation");
+    expect(annotations.length).toBeGreaterThan(0);
+    const ids = new Set(
+      sink.events.filter((e) => e.event_type !== "surface_snapshot").map((e) => e.principal?.id ?? null),
+    );
+    expect([...ids]).toEqual(["7c2bd6eddc6679977e0ae2543f05922835a7cc0e28c86a518967e06b1c86f5ff"]);
   });
 
   it("an authenticated call with NO hook carries no principal", async () => {
