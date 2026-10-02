@@ -130,6 +130,29 @@ describe("baton-spec conformance", () => {
       tools: [{ name: "x" }],
       seam_augmentations: { injected_tools: ["baton_annotate"] },
     },
+
+    // ⚠ The twelve resource/prompt lifecycle payloads (SPEC §11.4.4). Their
+    // shapes came from `baton-proxy`, which has been emitting all twelve in
+    // production against no schema; these fixtures are what make them
+    // schema-CHECKED here for the first time. Case (b) below is why every one
+    // of them had to be written out rather than sampled.
+    resource_list_start: {},
+    resource_list_end: { count: 2, duration_ms: 3 },
+    resource_list_error: { error_type: "-32002", error_body: "boom", duration_ms: 3 },
+    resource_read_start: { uri: "file:///x", params: { uri: "file:///x" } },
+    resource_read_end: { uri: "file:///x", duration_ms: 3 },
+    resource_read_error: {
+      uri: "file:///x",
+      error_type: "-32002",
+      error_body: "boom",
+      duration_ms: 3,
+    },
+    prompt_list_start: {},
+    prompt_list_end: { count: 2, duration_ms: 3 },
+    prompt_list_error: { error_type: "-32602", error_body: "boom", duration_ms: 3 },
+    prompt_get_start: { name: "p", params: { a: 1 } },
+    prompt_get_end: { name: "p", duration_ms: 3 },
+    prompt_get_error: { name: "p", error_type: "-32602", error_body: "boom", duration_ms: 3 },
   };
 
   /** Each event type and its payload schema, DERIVED from `EventSchema` —
@@ -190,6 +213,22 @@ describe("baton-spec conformance", () => {
     tool_call_error: { tool_name: "x", error_type: "Error", error_body: "boom" },
     annotation: {},
     surface_snapshot: { surface_hash: "sha256:abc" },
+    // ⚠ The two `*_list_start` payloads are EMPTY in both tables, and that is
+    // not a copy of the maximal arm going stale — those schemas declare no
+    // members at all, so minimal and maximal genuinely coincide. The key-set
+    // assertions below are what keep that honest if either ever gains one.
+    resource_list_start: {},
+    resource_list_end: { count: 2 },
+    resource_list_error: { error_type: "-32002", error_body: "boom" },
+    resource_read_start: { uri: "file:///x" },
+    resource_read_end: { uri: "file:///x" },
+    resource_read_error: { uri: "file:///x", error_type: "-32002", error_body: "boom" },
+    prompt_list_start: {},
+    prompt_list_end: { count: 2 },
+    prompt_list_error: { error_type: "-32602", error_body: "boom" },
+    prompt_get_start: { name: "p" },
+    prompt_get_end: { name: "p" },
+    prompt_get_error: { name: "p", error_type: "-32602", error_body: "boom" },
   };
 
   /** ⚠ **(c).** Both fixture tables are literals, so something must force a new

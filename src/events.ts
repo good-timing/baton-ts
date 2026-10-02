@@ -304,8 +304,201 @@ export const EventTypeSchema = z.enum([
   "tool_call_error",
   "annotation",
   "surface_snapshot",
+  // The RESOURCE and PROMPT lifecycles (SPEC §11.4.4). Twelve types whose
+  // shapes were set by `baton-proxy`, which has been emitting all of them in
+  // production — see the payload schemas below.
+  "resource_list_start",
+  "resource_list_end",
+  "resource_list_error",
+  "resource_read_start",
+  "resource_read_end",
+  "resource_read_error",
+  "prompt_list_start",
+  "prompt_list_end",
+  "prompt_list_error",
+  "prompt_get_start",
+  "prompt_get_end",
+  "prompt_get_error",
 ]);
 export type EventType = z.infer<typeof EventTypeSchema>;
+
+
+// =============================================================================
+// Resource and prompt lifecycle payloads (SPEC §11.4.4)
+// =============================================================================
+//
+// ⚠ **Transcribed from `baton_proxy.emitter`, field for field, because that
+// producer SHIPPED FIRST.** All twelve types have been reaching the Console in
+// production — whose ingest `EventType` lists every one of them — and until
+// the `baton-spec` bump that accompanies this file they had no schema anywhere.
+// So these do not design a shape, they RECORD one, and where the proxy's
+// choices look inconsistent the inconsistency is preserved and annotated: a
+// second producer must copy the shape rather than infer a rule from half of it.
+//
+// ⚠ **No `result_capture` on any of the twelve, and SPEC §11.4.4 makes that
+// normative rather than incidental.** None of these payloads carries a body —
+// a read records its URI and its timing, a list records a count — so there is
+// nothing for `"off"` to withhold. The `*_start` payloads DO carry caller data
+// in `params`, which is scrubbed like any other payload; §11.4 says outright
+// that the member is not a statement about request data.
+//
+// ⚠ **No `result` and no `failure_kind` on the six error payloads.** The error
+// flag is a TOOL concept: a failing resource read comes back as a JSON-RPC
+// error, so these carry only §11.4.3's RAISE analogue and that subsection's
+// RETURN discriminator has no counterpart here.
+
+/** `resources/list` reached the server. Deliberately EMPTY — a list request
+ * has no subject, and the envelope already names the session, the tenant and
+ * the vendor. `.strict()` with no members is the claim, not an oversight. */
+export const ResourceListStartPayloadSchema = z.object({}).strict();
+export type ResourceListStartPayload = z.infer<typeof ResourceListStartPayloadSchema>;
+
+/** `resources/list` returned.
+ *
+ * ⚠ `count` counts the `resources` array ALONE. Resource TEMPLATES are a
+ * separate MCP method with their own result array and are not added in, so a
+ * template-only server reports `0` — correctly — and a consumer MUST NOT read
+ * that as "this server has no resources". */
+export const ResourceListEndPayloadSchema = z
+  .object({
+    count: z.number().int(),
+    duration_ms: z.number().int().nullable().default(null),
+  })
+  .strict();
+export type ResourceListEndPayload = z.infer<typeof ResourceListEndPayloadSchema>;
+
+/** `resources/list` failed. See `ResourceReadErrorPayloadSchema` for how
+ * `error_type` is spelled across producers and why `error_body` is kept. */
+export const ResourceListErrorPayloadSchema = z
+  .object({
+    error_type: z.string(),
+    error_body: z.string(),
+    duration_ms: z.number().int().nullable().default(null),
+  })
+  .strict();
+export type ResourceListErrorPayload = z.infer<typeof ResourceListErrorPayloadSchema>;
+
+/** `resources/read` reached the server.
+ *
+ * ⚠ **`uri` is ALSO inside `params`.** The proxy builds `params` by removing
+ * `_meta` from the request's params and nothing else, and `uri` is one of
+ * them — so the subject appears twice. Recorded rather than deduplicated: the
+ * dedicated member is what a consumer reads, the bag is what the caller
+ * actually sent, and a producer that stripped `uri` out of it would stop being
+ * able to say that. */
+export const ResourceReadStartPayloadSchema = z
+  .object({
+    uri: z.string(),
+    /** The caller's own request params, PII-scrubbed (SPEC §7). Null where the
+     * request carried nothing but `_meta`. */
+    params: z.record(z.string(), z.unknown()).nullable().default(null),
+  })
+  .strict();
+export type ResourceReadStartPayload = z.infer<typeof ResourceReadStartPayloadSchema>;
+
+/** `resources/read` returned.
+ *
+ * ⚠ **No content member, and that is the design.** The resource BODY is
+ * customer data of exactly the kind the response-capture switch exists to keep
+ * off the wire, and the only producer there was never sent it. URI plus timing
+ * is what makes a failing or slow read visible without it. */
+export const ResourceReadEndPayloadSchema = z
+  .object({
+    uri: z.string(),
+    duration_ms: z.number().int().nullable().default(null),
+  })
+  .strict();
+export type ResourceReadEndPayload = z.infer<typeof ResourceReadEndPayloadSchema>;
+
+/** `resources/read` failed.
+ *
+ * ⚠ **`error_type` is an unconstrained string and the producers do NOT agree
+ * on how to spell it** — stated here for all six error payloads.
+ * `baton-proxy` reads the WIRE, so it holds the upstream's JSON-RPC error and
+ * files the numeric `code` as a string; this package holds a live exception
+ * and files its class name, the way §11.4.3's RAISE shape already does for
+ * tools. Both conform — §11.4.3 says this member separates SHAPES and is not a
+ * closed set of values — and a consumer MUST NOT read one producer's spelling
+ * as the vocabulary.
+ *
+ * ⚠ **`error_body` is KEPT under every capture mode.** It is a failed FETCH's
+ * message, not anything a resource returned, so nothing here is
+ * result-derived. */
+export const ResourceReadErrorPayloadSchema = z
+  .object({
+    uri: z.string(),
+    error_type: z.string(),
+    error_body: z.string(),
+    duration_ms: z.number().int().nullable().default(null),
+  })
+  .strict();
+export type ResourceReadErrorPayload = z.infer<typeof ResourceReadErrorPayloadSchema>;
+
+/** `prompts/list` reached the server. Empty, for the reason
+ * `ResourceListStartPayloadSchema` carries. */
+export const PromptListStartPayloadSchema = z.object({}).strict();
+export type PromptListStartPayload = z.infer<typeof PromptListStartPayloadSchema>;
+
+/** `prompts/list` returned. `count` counts the `prompts` array. */
+export const PromptListEndPayloadSchema = z
+  .object({
+    count: z.number().int(),
+    duration_ms: z.number().int().nullable().default(null),
+  })
+  .strict();
+export type PromptListEndPayload = z.infer<typeof PromptListEndPayloadSchema>;
+
+/** `prompts/list` failed. See `ResourceReadErrorPayloadSchema`. */
+export const PromptListErrorPayloadSchema = z
+  .object({
+    error_type: z.string(),
+    error_body: z.string(),
+    duration_ms: z.number().int().nullable().default(null),
+  })
+  .strict();
+export type PromptListErrorPayload = z.infer<typeof PromptListErrorPayloadSchema>;
+
+/** `prompts/get` reached the server.
+ *
+ * ⚠ **`params` is the request's `arguments` member ALONE, not the whole params
+ * bag** — the opposite of `ResourceReadStartPayloadSchema`'s choice, measured
+ * in the proxy. The two are inconsistent in the only producer that existed;
+ * the inconsistency is recorded so a reader does not expect `name` inside
+ * `params` the way `uri` does appear there. */
+export const PromptGetStartPayloadSchema = z
+  .object({
+    name: z.string(),
+    /** The prompt's arguments, PII-scrubbed (SPEC §7). Null where the request
+     * supplied none. */
+    params: z.record(z.string(), z.unknown()).nullable().default(null),
+  })
+  .strict();
+export type PromptGetStartPayload = z.infer<typeof PromptGetStartPayloadSchema>;
+
+/** `prompts/get` returned.
+ *
+ * ⚠ **No rendered messages.** A prompt's text is authored by the SERVER rather
+ * than fetched by a tool, so whether it is customer content at all is a
+ * decision nobody has taken — and the standing answer, from the only producer,
+ * is that it does not egress. */
+export const PromptGetEndPayloadSchema = z
+  .object({
+    name: z.string(),
+    duration_ms: z.number().int().nullable().default(null),
+  })
+  .strict();
+export type PromptGetEndPayload = z.infer<typeof PromptGetEndPayloadSchema>;
+
+/** `prompts/get` failed. See `ResourceReadErrorPayloadSchema`. */
+export const PromptGetErrorPayloadSchema = z
+  .object({
+    name: z.string(),
+    error_type: z.string(),
+    error_body: z.string(),
+    duration_ms: z.number().int().nullable().default(null),
+  })
+  .strict();
+export type PromptGetErrorPayload = z.infer<typeof PromptGetErrorPayloadSchema>;
 
 // =============================================================================
 // Concrete event schemas
@@ -356,6 +549,120 @@ export const SurfaceSnapshotEventSchema = z
   .strict();
 export type SurfaceSnapshotEvent = z.infer<typeof SurfaceSnapshotEventSchema>;
 
+// ⚠ The twelve lifecycle events carry the SAME `envelopeShape` as the five
+// above, which is what lets one collector endpoint accept all seventeen and
+// one worker order them on `(session_id, sequence_number)`. `call_id` stays
+// absent on them: no producer mints one for these types, so SPEC §11.5.4's
+// FIFO floor is all a consumer has for pairing — recorded rather than fixed.
+
+export const ResourceListStartEventSchema = z
+  .object({
+    ...envelopeShape,
+    event_type: z.literal("resource_list_start").default("resource_list_start"),
+    payload: ResourceListStartPayloadSchema,
+  })
+  .strict();
+export type ResourceListStartEvent = z.infer<typeof ResourceListStartEventSchema>;
+
+export const ResourceListEndEventSchema = z
+  .object({
+    ...envelopeShape,
+    event_type: z.literal("resource_list_end").default("resource_list_end"),
+    payload: ResourceListEndPayloadSchema,
+  })
+  .strict();
+export type ResourceListEndEvent = z.infer<typeof ResourceListEndEventSchema>;
+
+export const ResourceListErrorEventSchema = z
+  .object({
+    ...envelopeShape,
+    event_type: z.literal("resource_list_error").default("resource_list_error"),
+    payload: ResourceListErrorPayloadSchema,
+  })
+  .strict();
+export type ResourceListErrorEvent = z.infer<typeof ResourceListErrorEventSchema>;
+
+export const ResourceReadStartEventSchema = z
+  .object({
+    ...envelopeShape,
+    event_type: z.literal("resource_read_start").default("resource_read_start"),
+    payload: ResourceReadStartPayloadSchema,
+  })
+  .strict();
+export type ResourceReadStartEvent = z.infer<typeof ResourceReadStartEventSchema>;
+
+export const ResourceReadEndEventSchema = z
+  .object({
+    ...envelopeShape,
+    event_type: z.literal("resource_read_end").default("resource_read_end"),
+    payload: ResourceReadEndPayloadSchema,
+  })
+  .strict();
+export type ResourceReadEndEvent = z.infer<typeof ResourceReadEndEventSchema>;
+
+export const ResourceReadErrorEventSchema = z
+  .object({
+    ...envelopeShape,
+    event_type: z.literal("resource_read_error").default("resource_read_error"),
+    payload: ResourceReadErrorPayloadSchema,
+  })
+  .strict();
+export type ResourceReadErrorEvent = z.infer<typeof ResourceReadErrorEventSchema>;
+
+export const PromptListStartEventSchema = z
+  .object({
+    ...envelopeShape,
+    event_type: z.literal("prompt_list_start").default("prompt_list_start"),
+    payload: PromptListStartPayloadSchema,
+  })
+  .strict();
+export type PromptListStartEvent = z.infer<typeof PromptListStartEventSchema>;
+
+export const PromptListEndEventSchema = z
+  .object({
+    ...envelopeShape,
+    event_type: z.literal("prompt_list_end").default("prompt_list_end"),
+    payload: PromptListEndPayloadSchema,
+  })
+  .strict();
+export type PromptListEndEvent = z.infer<typeof PromptListEndEventSchema>;
+
+export const PromptListErrorEventSchema = z
+  .object({
+    ...envelopeShape,
+    event_type: z.literal("prompt_list_error").default("prompt_list_error"),
+    payload: PromptListErrorPayloadSchema,
+  })
+  .strict();
+export type PromptListErrorEvent = z.infer<typeof PromptListErrorEventSchema>;
+
+export const PromptGetStartEventSchema = z
+  .object({
+    ...envelopeShape,
+    event_type: z.literal("prompt_get_start").default("prompt_get_start"),
+    payload: PromptGetStartPayloadSchema,
+  })
+  .strict();
+export type PromptGetStartEvent = z.infer<typeof PromptGetStartEventSchema>;
+
+export const PromptGetEndEventSchema = z
+  .object({
+    ...envelopeShape,
+    event_type: z.literal("prompt_get_end").default("prompt_get_end"),
+    payload: PromptGetEndPayloadSchema,
+  })
+  .strict();
+export type PromptGetEndEvent = z.infer<typeof PromptGetEndEventSchema>;
+
+export const PromptGetErrorEventSchema = z
+  .object({
+    ...envelopeShape,
+    event_type: z.literal("prompt_get_error").default("prompt_get_error"),
+    payload: PromptGetErrorPayloadSchema,
+  })
+  .strict();
+export type PromptGetErrorEvent = z.infer<typeof PromptGetErrorEventSchema>;
+
 // =============================================================================
 // Discriminated union — mirrors Python's `Event` (discriminator: event_type)
 // =============================================================================
@@ -366,10 +673,34 @@ export const EventSchema = z.discriminatedUnion("event_type", [
   ToolCallErrorEventSchema,
   AnnotationEventSchema,
   SurfaceSnapshotEventSchema,
+  ResourceListStartEventSchema,
+  ResourceListEndEventSchema,
+  ResourceListErrorEventSchema,
+  ResourceReadStartEventSchema,
+  ResourceReadEndEventSchema,
+  ResourceReadErrorEventSchema,
+  PromptListStartEventSchema,
+  PromptListEndEventSchema,
+  PromptListErrorEventSchema,
+  PromptGetStartEventSchema,
+  PromptGetEndEventSchema,
+  PromptGetErrorEventSchema,
 ]);
 export type Event =
   | ToolCallStartEvent
   | ToolCallEndEvent
   | ToolCallErrorEvent
   | AnnotationEvent
-  | SurfaceSnapshotEvent;
+  | SurfaceSnapshotEvent
+  | ResourceListStartEvent
+  | ResourceListEndEvent
+  | ResourceListErrorEvent
+  | ResourceReadStartEvent
+  | ResourceReadEndEvent
+  | ResourceReadErrorEvent
+  | PromptListStartEvent
+  | PromptListEndEvent
+  | PromptListErrorEvent
+  | PromptGetStartEvent
+  | PromptGetEndEvent
+  | PromptGetErrorEvent;
