@@ -63,6 +63,47 @@ Each affected event says so, in its own field (`result_capture: "off"`), rather 
 
 **What it costs you:** anything that needs to read a response body. A call that returns `200` with a useless body can no longer be detected, and those calls sit outside the denominator of body-level analysis rather than counting as passes or failures.
 
+## Failures your handler never saw
+
+A wrapper around your tool executor only sees calls that reach it. Three kinds
+never do — the MCP SDK rejects them above your handler — and a fourth used to be
+recorded as a success:
+
+| what happened | what you get |
+|---|---|
+| no tool by that name | `tool_call_error`, `failure_kind: "unknown_tool"` |
+| the tool exists and you disabled it | `tool_call_error`, `failure_kind: "tool_disabled"` |
+| the arguments failed your schema | `tool_call_error`, `failure_kind: "invalid_argument"` |
+| your output schema rejected what the tool returned | `tool_call_error`, `failure_kind: "output_schema_mismatch"` |
+
+The first three emitted **nothing at all** before `0.5.0`, and the fourth emitted
+`tool_call_end` — a success, for a call your caller saw fail. `failure_kind` says
+which of the four it was, so nothing downstream has to pattern-match the message.
+
+**Why a separate field and not `error_type`.** `error_type` reports the SHAPE the
+SDK handed us, and the two MCP majors disagree about it for the same failure: 1.x
+converts an unknown tool into a returned error flag (`"tool_error"`), v2 throws
+(`"ProtocolError"`). Both are accurate about what happened at the protocol level,
+and neither tells you a tool was missing. `failure_kind` is the same on both.
+
+**`failure_kind` survives `resultCaptureMode: "off"`.** It is this package's
+judgement about the shape of a failure, not anything derived from what your tool
+returned — so for the first three the SDK's own message is kept too, and for the
+fourth the message is withheld and the named kind is the only signal left.
+
+## Resources and prompts
+
+`registerResource` and `registerPrompt` are instrumented as well as tools, at the
+request level: `resources/list`, `resources/read`, `prompts/list` and
+`prompts/get` each emit a start and then an end or an error — twelve event types.
+
+**No body is captured on any of them.** Not a read's content, not a prompt's
+rendered messages. `resultCaptureMode` therefore does not apply and these events
+never carry it: there is nothing on them for it to withhold. A resource URI and a
+prompt name ARE captured, and both go through the scrubber whole — they are text
+your caller supplied, so they can carry paths, query strings and account
+identifiers.
+
 ## Turning capture off entirely
 
 Not the same thing as the section above: that one keeps the signal and drops the response bodies, this one emits nothing at all. It also belongs to a different person — `resultCaptureMode` is set by whoever WRAPS the server, in code; this is set by whoever RUNS it, in the environment.
@@ -77,7 +118,7 @@ None of it blocks the quickstart above.
 
 - Only `StdoutSink` and `HttpSink`. `FileSink` and `MultiSink` are deferred; the Python package has all four.
 - Only the high-level `McpServer`. The low-level `Server` is not wrapped.
-- **Task-based tools are not wrapped, and are not left alone either.** A 1.x tool registered with an object at `.handler` rather than a function produces no `tool_call_*` events at all, and nothing reports that. It still gets the intent parameters added to its advertised schema, because injection runs before the wrap is skipped and the strip only happens inside the wrapper. So `user_goal`, `expected_result` and `overall_task` can arrive in your own handler's arguments. Tools on the same server registered the ordinary way are unaffected.
+- **Task-based tools are not wrapped, and are not left alone either.** A 1.x tool registered with an object at `.handler` rather than a function produces no `tool_call_*` events at all, and nothing reports that. It still gets the intent parameters added to its advertised schema, because injection runs before the wrap is skipped and the strip only happens inside the wrapper. So `user_goal`, `expected_result` and `overall_task` can arrive in your own handler's arguments. Tools on the same server registered the ordinary way are unaffected. ⚠ **The request-level seam above does not rescue this one**: it reports only on tools this package wrapped, so a task-based tool emits nothing even for a rejected argument, where an unknown tool now emits a `tool_call_error`.
 - Intent parameters need a Zod schema. On the 2.x SDK a tool registered with a non-Zod standard schema is still wrapped and still emits `tool_call_*`; it just advertises no intent parameters.
 - The per-request `createMcpHandler` deployment shape is unscoped.
 
