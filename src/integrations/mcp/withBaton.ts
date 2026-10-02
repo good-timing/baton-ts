@@ -402,11 +402,14 @@ function messageOf(err: unknown): string {
  * call: there is no `principal` on those (see `installLifecycleSeam`), no
  * intent-param strip, and no `call_id`.
  *
- * ⚠ Returns the PARTS rather than an assembled `common`, so each caller spells
- * its own object literal. That keeps `principal` in the position it has always
- * had on a tool-call envelope instead of being spread on at the end — key order
- * is observable in the JSON a sink writes, and nothing is gained by churning
- * it. */
+ * Returns the PARTS rather than an assembled `common` so each caller spells its
+ * own literal, which keeps `openCall` reading as one object and keeps
+ * `principal` out of a shape that has no business resolving it.
+ *
+ * ⚠ **NOT for key order, which a first version of this paragraph claimed.**
+ * Zod v4 emits output keys in SHAPE order, not input order, so
+ * `envelopeShape` fixes the wire order however a caller spells its literal.
+ * Recorded because the wrong reason is the kind a later reader preserves. */
 async function resolveEnvelopeParts(
   ctx: WrapContext,
   extra: Extra,
@@ -1108,7 +1111,10 @@ function installLifecycleSeam(
           ...envelope,
           sequence_number: ctx.counter.next(parts.sessionId),
           captured_at: new Date().toISOString(),
-          payload: { ...subject, ...spec.startParams(requestParams) },
+          payload: scrubLifecyclePayload(ctx, {
+            ...subject,
+            ...spec.startParams(requestParams),
+          }),
         }),
       );
     } catch (err) {
@@ -1128,7 +1134,11 @@ function installLifecycleSeam(
             ...envelope,
             sequence_number: ctx.counter.next(sessionId),
             captured_at: new Date().toISOString(),
-            payload: { ...subject, ...spec.endExtra(result), duration_ms: durationMs },
+            payload: scrubLifecyclePayload(ctx, {
+              ...subject,
+              ...spec.endExtra(result),
+              duration_ms: durationMs,
+            }),
           }),
         );
       }
@@ -1142,16 +1152,16 @@ function installLifecycleSeam(
             ...envelope,
             sequence_number: ctx.counter.next(sessionId),
             captured_at: new Date().toISOString(),
-            payload: {
+            payload: scrubLifecyclePayload(ctx, {
               ...subject,
               error_type: errorTypeOf(err),
               // KEPT under every capture mode: a failed FETCH's message is the
               // producer's own diagnostic, not anything a resource returned, so
-              // nothing here is result-derived (SPEC §11.4.4). Scrubbed and
-              // capped like both tool-call failure legs.
-              error_body: errorBody(ctx, messageOf(err)),
+              // nothing here is result-derived (SPEC §11.4.4). The scrub and
+              // the cap are `scrubLifecyclePayload`'s, in that order.
+              error_body: messageOf(err),
               duration_ms: durationMs,
-            },
+            }),
           }),
         );
       }
@@ -1199,7 +1209,7 @@ function installLifecycleSeams(lowLevel: RequestHandlerInternals, ctx: WrapConte
     // the caller actually sent, and a producer that stripped `uri` out could no
     // longer say the second thing. `_meta` is excluded because it rides the
     // envelope as `runtime_meta` already.
-    startParams: (params) => ({ params: scrubbedBag(ctx, params) }),
+    startParams: (params) => ({ params: paramsBag(params) }),
     endExtra: NO_EXTRA,
   });
 
@@ -1231,7 +1241,7 @@ function installLifecycleSeams(lowLevel: RequestHandlerInternals, ctx: WrapConte
     // reproduced rather than tidied, because a consumer reading one producer
     // and a second producer reading the other must agree.
     startParams: (params) => ({
-      params: scrubbedBag(ctx, params["arguments"] as Record<string, unknown> | undefined),
+      params: paramsBag(params["arguments"] as Record<string, unknown> | undefined),
     }),
     endExtra: NO_EXTRA,
   });
@@ -1257,31 +1267,65 @@ function countOf(result: unknown, key: string): number {
   return Array.isArray(list) ? list.length : 0;
 }
 
-/** A `*_start` payload's `params` member: the caller's own request data, which
- * SPEC §7 and §11.2 require to be scrubbed like any other payload. `null`
- * where there is nothing to record, which is the member's own absent value.
+/** A `*_start` payload's `params` member: the caller's own request data.
  *
- * `_meta` is always dropped: it rides the envelope as `runtime_meta`, where it
- * is coordinate-coarsened first (`roundMetaCoordinates`), so recording it here
- * too would put the same data on one event twice under two different
- * treatments — the coarsening would be the one a consumer could not rely on.
+ * ⚠ **Does NOT scrub — `scrubLifecyclePayload` does, over the whole payload.**
+ * A first version scrubbed only here, and the result was the worst of both: a
+ * resource read of `file:///alice@corp.com/doc.txt` shipped the path REDACTED
+ * inside `params` and RAW in the sibling `uri` member, in one event, so the
+ * redaction was worthless for that value. Found by review, reproduced on both
+ * majors. Scrubbing the whole payload is also what the producer these shapes
+ * came from does (`emitter.py`: `payload = self._scrubber(payload)`), so it is
+ * the parity position as well as the correct one.
  *
- * ⚠ **PRECONDITION: call this ONLY from inside an `emit()` build thunk**, and
- * NOT through `scrubOrNull`. That helper is for scrubber calls OUTSIDE a thunk
- * and its own docstring refuses this position, because `null` from a swallowed
- * failure can mean something a payload did not intend. Here the right
- * behaviour is `emit`'s: drop the event. This is the identical treatment
- * `tool_call_start.params` already gets — same member name, same kind of data,
- * same ruling — and keeping the two the same is the point. */
-function scrubbedBag(
+ * `_meta` is dropped: it rides the envelope as `runtime_meta`, where it is
+ * coordinate-coarsened first (`roundMetaCoordinates`), so recording it here too
+ * would put the same data on one event twice under two treatments — and the
+ * coarsening would be the one a consumer could not rely on.
+ *
+ * ⚠ `{}` and not `null` for an absent bag, which is the proxy's spelling
+ * (`dict(params) if params else {}` — it never emits null). The schema permits
+ * both, so this is parity rather than conformance. */
+function paramsBag(bag: Record<string, unknown> | undefined): Record<string, unknown> {
+  if (!bag || typeof bag !== "object") return {};
+  return Object.fromEntries(Object.entries(bag).filter(([key]) => key !== "_meta"));
+}
+
+/**
+ * Scrub a lifecycle payload WHOLE, then cap, and nothing else.
+ *
+ * ⚠ **Whole, not member by member** — the one rule this family needs and the
+ * one a first version got wrong. `uri` and `name` are CALLER-supplied free
+ * text (file paths, query strings, account ids, emails), not vendor-registered
+ * identifiers like `tool_name`, and they ride all three legs. Scrubbing only
+ * `params` left them raw while the same value was redacted one key over.
+ *
+ * It is also exactly what `baton_proxy.emitter._enqueue` does — one scrubber
+ * pass over the whole payload dict — so the Console cannot receive a redacted
+ * URI from one producer and a raw one from the other.
+ *
+ * ⚠ **Cap AFTER the scrub**, which is why the cap lives here rather than in a
+ * caller: a PII value straddling `ERROR_BODY_MAX_CODE_POINTS` must reach the
+ * scrubber whole, or the surviving half ships unredacted. Same ruling, same
+ * reason, as `errorBody` for the tool-call legs — and the reason this path does
+ * NOT call `errorBody`, which would scrub that one member a second time.
+ *
+ * ⚠ PRECONDITION: call this ONLY from inside an `emit()` build thunk. The bare
+ * scrubber call is correct there — a throw drops the event, which is the right
+ * answer for a payload — and wrong anywhere else (SPEC §11.2: a sensor never
+ * breaks the vendor's call).
+ */
+function scrubLifecyclePayload(
   ctx: WrapContext,
-  bag: Record<string, unknown> | undefined,
-): Record<string, unknown> | null {
-  if (!bag || typeof bag !== "object") return null;
-  const kept = Object.fromEntries(Object.entries(bag).filter(([key]) => key !== "_meta"));
-  if (Object.keys(kept).length === 0) return null;
-  // eslint-disable-next-line no-restricted-syntax -- inside the emit() build thunk: a throw drops the event, which is correct for params
-  return ctx.scrubber(kept) as Record<string, unknown> | null;
+  raw: Record<string, unknown>,
+): Record<string, unknown> {
+  // eslint-disable-next-line no-restricted-syntax -- inside the emit() build thunk: a throw drops the event, which is correct for a payload
+  const scrubbed = ctx.scrubber(raw) as Record<string, unknown>;
+  const body = scrubbed?.["error_body"];
+  if (typeof body !== "string") return scrubbed;
+  // Spread rather than assign: the scrubber is the vendor's and may hand back
+  // a frozen object. Key order does not matter — Zod emits in SHAPE order.
+  return { ...scrubbed, error_body: capCodePoints(body, ERROR_BODY_MAX_CODE_POINTS) };
 }
 
 /** One tool's registry entry, in the only three members either seam reads.
@@ -1915,13 +1959,6 @@ export function withBaton(server: SupportedMcpServer, supplied: BatonConfig = {}
   // install classifies as `unknown_tool` rather than against a stale snapshot
   // — `update({name: null})` and `remove()` both delete the entry, and the
   // whole point of this lookup is to agree with what the SDK itself just read.
-  // The four resource/prompt lifecycle seams (SPEC §11.4.4), unconditional for
-  // the same reason as the one above: what they capture is not configurable.
-  // Installed BEFORE the annotate-tool registration below, which is what makes
-  // a toolless server install its handlers at all — the same ordering the
-  // `tools/list` seam needs.
-  installLifecycleSeams(internals.server, ctx);
-
   installToolsCallSeam(
     internals.server,
     // ⚠ `Object.hasOwn`, never a bare index. `_registeredTools` is a plain
@@ -1937,6 +1974,19 @@ export function withBaton(server: SupportedMcpServer, supplied: BatonConfig = {}
     },
     ctx,
   );
+
+  // The four resource/prompt lifecycle seams (SPEC §11.4.4) — unconditional,
+  // like the seam above, because what they capture is not configurable.
+  //
+  // ⚠ **Install ORDER is irrelevant for these four, unlike the two above.**
+  // `resources/*` and `prompts/*` handlers are installed by the vendor's own
+  // `registerResource` / `registerPrompt`, not by the annotate-tool
+  // registration below — and `installRequestSeam` patches `setRequestHandler`,
+  // so a primitive registered AFTER `withBaton` is seamed as its handler
+  // lands. Verified on both majors. This paragraph used to claim the
+  // annotate-tool ordering mattered here, which was the `tools/*` seams'
+  // reason copied one function too far.
+  installLifecycleSeams(internals.server, ctx);
 
   const resolvedAnnotationToolName = registerAnnotationTool(server, {
     sink,

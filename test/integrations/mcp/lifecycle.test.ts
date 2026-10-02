@@ -144,6 +144,101 @@ describe.each(MAJORS)("resource and prompt lifecycles — $label", (major) => {
     expect(JSON.stringify(sink.events)).not.toContain("do it");
   });
 
+  it("scrubs the URI in EVERY member that carries it, not just `params`", async () => {
+    // ⚠ **The leak this family shipped with, caught by review.** `uri` and
+    // `name` are CALLER-supplied free text — paths, query strings, account
+    // ids, emails — not vendor-registered identifiers like `tool_name`. A
+    // first version scrubbed only `params`, so a read of
+    // `file:///alice@corp.com/doc.txt` put the path REDACTED inside `params`
+    // and RAW in the sibling `uri`, in one event, which makes the redaction
+    // worthless for that value. The payload is now scrubbed WHOLE, which is
+    // also what the proxy does (`emitter.py`: `payload = self._scrubber(payload)`).
+    //
+    // ⚠ Why 619 green tests missed it: every other fixture URI in this file is
+    // PII-free, so no assertion could fire. The default scrubber redacts
+    // emails, so one PII-bearing URI is all the detector needs.
+    const sink = new CapturingSink();
+    const server = major.make();
+    const uri = "file:///alice@corp.com/doc.txt";
+    prims.resource(server, "doc", uri, () => ({ contents: [{ uri, text: "x" }] }));
+    withBaton(server as never, {
+      vendorId: "acme",
+      vendorDisplayName: "Acme",
+      consentToken: "ct",
+      sink,
+    });
+    const client = await major.connect(server);
+    await client.readResource({ uri });
+
+    // Nowhere, on any leg, in any member.
+    expect(JSON.stringify(sink.events)).not.toContain("alice@corp.com");
+    for (const type of ["resource_read_start", "resource_read_end"] as const) {
+      expect(payloadOf(sink, type)["uri"]).toContain("REDACTED");
+    }
+  });
+
+  it("scrubs the error leg too, and still caps AFTER scrubbing", async () => {
+    // Both halves matter and the ORDER is the point: a PII value straddling
+    // the cap must reach the scrubber whole, or the surviving half ships
+    // unredacted. Same ruling as `errorBody` for the tool-call legs.
+    const sink = new CapturingSink();
+    const server = major.make();
+    prims.resource(server, "doc", "file:///doc.txt", () => {
+      throw new Error("could not reach alice@corp.com for file:///doc.txt");
+    });
+    withBaton(server as never, {
+      vendorId: "acme",
+      vendorDisplayName: "Acme",
+      consentToken: "ct",
+      sink,
+    });
+    const client = await major.connect(server);
+    await client.readResource({ uri: "file:///doc.txt" }).catch(() => {});
+
+    const error = payloadOf(sink, "resource_read_error");
+    expect(error["error_body"]).toContain("REDACTED");
+    expect(error["error_body"]).not.toContain("alice@corp.com");
+    expect([...(error["error_body"] as string)].length).toBeLessThanOrEqual(2000);
+  });
+
+  it("spells an absent `params` as `{}`, which is the proxy's spelling", async () => {
+    // ⚠ Parity, not conformance: the schema permits object OR null, and the
+    // proxy never emits null (`dict(params) if params else {}`). A Console
+    // consumer doing `Object.keys(payload.params)` is safe against that
+    // producer and would throw on a null from this one.
+    const sink = new CapturingSink();
+    const { client } = await connected(sink);
+    await client.getPrompt({ name: "summarize" }).catch(() => {});
+
+    expect(payloadOf(sink, "prompt_get_start")["params"]).toEqual({});
+  });
+
+  it("seams a resource registered AFTER withBaton ran", async () => {
+    // ⚠ Install ORDER is irrelevant for these four seams, unlike the two
+    // `tools/*` ones: `installRequestSeam` patches `setRequestHandler`, so the
+    // handler `registerResource` installs later is wrapped as it lands. The
+    // install-site comment claimed the annotate-tool ordering mattered here,
+    // which was the tool seams' reason copied one function too far.
+    const sink = new CapturingSink();
+    const server = major.make();
+    withBaton(server as never, {
+      vendorId: "acme",
+      vendorDisplayName: "Acme",
+      consentToken: "ct",
+      sink,
+    });
+    prims.resource(server, "late", "file:///late.txt", () => ({
+      contents: [{ uri: "file:///late.txt", text: "x" }],
+    }));
+    const client = await major.connect(server);
+    await client.readResource({ uri: "file:///late.txt" });
+
+    expect(sink.events.map((e) => e.event_type)).toEqual([
+      "resource_read_start",
+      "resource_read_end",
+    ]);
+  });
+
   it("counts the `resources` array on a list, never resource templates", async () => {
     const sink = new CapturingSink();
     const { client } = await connected(sink);
