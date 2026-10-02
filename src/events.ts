@@ -347,6 +347,18 @@ export type EventType = z.infer<typeof EventTypeSchema>;
 // error, so these carry only §11.4.3's RAISE analogue and that subsection's
 // RETURN discriminator has no counterpart here.
 
+/** `duration_ms`, written once. SPEC defines the member once and eight of the
+ * twelve lifecycle payloads carry it, so widening it (to a float, say, or to
+ * non-nullable) must not be an eight-site edit where a miss leaves two payload
+ * families disagreeing about a member the spec gives one definition. Same
+ * spread idiom `envelopeShape` already establishes below. */
+const timingShape = { duration_ms: z.number().int().nullable().default(null) };
+
+/** The two members every lifecycle FAILURE payload carries, plus its timing.
+ * See `ResourceReadErrorPayloadSchema` for how `error_type` is spelled across
+ * producers and why `error_body` is kept under every capture mode. */
+const failureShape = { error_type: z.string(), error_body: z.string(), ...timingShape };
+
 /** `resources/list` reached the server. Deliberately EMPTY — a list request
  * has no subject, and the envelope already names the session, the tenant and
  * the vendor. `.strict()` with no members is the claim, not an oversight. */
@@ -362,7 +374,7 @@ export type ResourceListStartPayload = z.infer<typeof ResourceListStartPayloadSc
 export const ResourceListEndPayloadSchema = z
   .object({
     count: z.number().int(),
-    duration_ms: z.number().int().nullable().default(null),
+    ...timingShape,
   })
   .strict();
 export type ResourceListEndPayload = z.infer<typeof ResourceListEndPayloadSchema>;
@@ -371,9 +383,7 @@ export type ResourceListEndPayload = z.infer<typeof ResourceListEndPayloadSchema
  * `error_type` is spelled across producers and why `error_body` is kept. */
 export const ResourceListErrorPayloadSchema = z
   .object({
-    error_type: z.string(),
-    error_body: z.string(),
-    duration_ms: z.number().int().nullable().default(null),
+    ...failureShape,
   })
   .strict();
 export type ResourceListErrorPayload = z.infer<typeof ResourceListErrorPayloadSchema>;
@@ -389,8 +399,13 @@ export type ResourceListErrorPayload = z.infer<typeof ResourceListErrorPayloadSc
 export const ResourceReadStartPayloadSchema = z
   .object({
     uri: z.string(),
-    /** The caller's own request params, PII-scrubbed (SPEC §7). Null where the
-     * request carried nothing but `_meta`. */
+    /** The caller's own request params, PII-scrubbed (SPEC §7).
+     *
+     * ⚠ Nullable because the SCHEMA permits it, not because this producer
+     * emits it: `withBaton`'s `paramsBag` answers `{}` for an absent bag,
+     * matching `baton-proxy` (`dict(params) if params else {}` — it never
+     * emits null). A consumer must still read both, since the schema admits
+     * both and a third producer may choose either. */
     params: z.record(z.string(), z.unknown()).nullable().default(null),
   })
   .strict();
@@ -405,7 +420,7 @@ export type ResourceReadStartPayload = z.infer<typeof ResourceReadStartPayloadSc
 export const ResourceReadEndPayloadSchema = z
   .object({
     uri: z.string(),
-    duration_ms: z.number().int().nullable().default(null),
+    ...timingShape,
   })
   .strict();
 export type ResourceReadEndPayload = z.infer<typeof ResourceReadEndPayloadSchema>;
@@ -427,9 +442,7 @@ export type ResourceReadEndPayload = z.infer<typeof ResourceReadEndPayloadSchema
 export const ResourceReadErrorPayloadSchema = z
   .object({
     uri: z.string(),
-    error_type: z.string(),
-    error_body: z.string(),
-    duration_ms: z.number().int().nullable().default(null),
+    ...failureShape,
   })
   .strict();
 export type ResourceReadErrorPayload = z.infer<typeof ResourceReadErrorPayloadSchema>;
@@ -443,7 +456,7 @@ export type PromptListStartPayload = z.infer<typeof PromptListStartPayloadSchema
 export const PromptListEndPayloadSchema = z
   .object({
     count: z.number().int(),
-    duration_ms: z.number().int().nullable().default(null),
+    ...timingShape,
   })
   .strict();
 export type PromptListEndPayload = z.infer<typeof PromptListEndPayloadSchema>;
@@ -451,9 +464,7 @@ export type PromptListEndPayload = z.infer<typeof PromptListEndPayloadSchema>;
 /** `prompts/list` failed. See `ResourceReadErrorPayloadSchema`. */
 export const PromptListErrorPayloadSchema = z
   .object({
-    error_type: z.string(),
-    error_body: z.string(),
-    duration_ms: z.number().int().nullable().default(null),
+    ...failureShape,
   })
   .strict();
 export type PromptListErrorPayload = z.infer<typeof PromptListErrorPayloadSchema>;
@@ -468,8 +479,9 @@ export type PromptListErrorPayload = z.infer<typeof PromptListErrorPayloadSchema
 export const PromptGetStartPayloadSchema = z
   .object({
     name: z.string(),
-    /** The prompt's arguments, PII-scrubbed (SPEC §7). Null where the request
-     * supplied none. */
+    /** The prompt's arguments, PII-scrubbed (SPEC §7). `{}` from this producer
+     * where the request supplied none — see `ResourceReadStartPayloadSchema`'s
+     * `params` for why the schema is nullable anyway. */
     params: z.record(z.string(), z.unknown()).nullable().default(null),
   })
   .strict();
@@ -484,7 +496,7 @@ export type PromptGetStartPayload = z.infer<typeof PromptGetStartPayloadSchema>;
 export const PromptGetEndPayloadSchema = z
   .object({
     name: z.string(),
-    duration_ms: z.number().int().nullable().default(null),
+    ...timingShape,
   })
   .strict();
 export type PromptGetEndPayload = z.infer<typeof PromptGetEndPayloadSchema>;
@@ -493,9 +505,7 @@ export type PromptGetEndPayload = z.infer<typeof PromptGetEndPayloadSchema>;
 export const PromptGetErrorPayloadSchema = z
   .object({
     name: z.string(),
-    error_type: z.string(),
-    error_body: z.string(),
-    duration_ms: z.number().int().nullable().default(null),
+    ...failureShape,
   })
   .strict();
 export type PromptGetErrorPayload = z.infer<typeof PromptGetErrorPayloadSchema>;
@@ -686,21 +696,14 @@ export const EventSchema = z.discriminatedUnion("event_type", [
   PromptGetEndEventSchema,
   PromptGetErrorEventSchema,
 ]);
-export type Event =
-  | ToolCallStartEvent
-  | ToolCallEndEvent
-  | ToolCallErrorEvent
-  | AnnotationEvent
-  | SurfaceSnapshotEvent
-  | ResourceListStartEvent
-  | ResourceListEndEvent
-  | ResourceListErrorEvent
-  | ResourceReadStartEvent
-  | ResourceReadEndEvent
-  | ResourceReadErrorEvent
-  | PromptListStartEvent
-  | PromptListEndEvent
-  | PromptListErrorEvent
-  | PromptGetStartEvent
-  | PromptGetEndEvent
-  | PromptGetErrorEvent;
+/** ⚠ DERIVED, not hand-listed. It used to be a third list of the same
+ * seventeen members, after `EventTypeSchema` and `EventSchema`'s own branches,
+ * and the twelve lifecycle types made that visible: three lists to keep in
+ * step. `EventSchema` is the discriminated union over exactly these schemas,
+ * so its inferred output type IS this union — verified mutually assignable
+ * against the hand-written version before the switch.
+ *
+ * `EventTypeSchema` stays hand-written on purpose: `test/packaging.test.ts`
+ * derives its export guard FROM it, which makes it the source of truth rather
+ * than a fourth copy. */
+export type Event = z.infer<typeof EventSchema>;

@@ -72,20 +72,6 @@ export const FAILURE_KINDS = [
  * the registry cannot drift. */
 export type FailureKind = (typeof FAILURE_KINDS)[number];
 
-/** The REQUEST-SIDE kinds: the vendor's handler never ran, so nothing on the
- * payload is derived from a result and the capture mode does not reach them.
- *
- * `satisfies` and not an annotation, which here buys MEMBERSHIP checking and
- * nothing more — these literals are checked against the registry at compile
- * time, so a typo cannot become a value this producer emits. ⚠ It does NOT
- * buy what `WITHHELD`'s identical note claims for it: that one keeps a
- * `switch` over `ResultCaptureMode` narrowing, and there is no `switch` over
- * `FailureKind` anywhere. The rationale was copied with the idiom; the idiom
- * is right and the reason was not. */
-export const UNKNOWN_TOOL = "unknown_tool" satisfies FailureKind;
-export const TOOL_DISABLED = "tool_disabled" satisfies FailureKind;
-export const INVALID_ARGUMENT = "invalid_argument" satisfies FailureKind;
-
 /** The one RESULT-SIDE kind: the handler returned and the producer's own
  * conversion of its output rejected it, so `error_body` and `result` are
  * result-derived and `"off"` withholds both. */
@@ -152,22 +138,53 @@ export const OUTPUT_SCHEMA_MISMATCH = "output_schema_mismatch" satisfies Failure
  * ⚠ The predicate stays on the REGISTRY ENTRY's own configuration, never the
  * message — and 1.x's OTHER branch (`"required"` without task augmentation)
  * needs no clause of its own, because it is reachable only when the handler
- * is a task OBJECT, which `dispatchTarget` already answers `undefined` for
- * and the seam already declines to report on.
+ * is a task OBJECT, which `dispatchSlot` already answers `undefined` for and
+ * the seam already declines to report on.
+ *
+ * ⚠ **`TASK_MODES` is a PIN, not a principle, and that is the honest reading.**
+ * The other two kinds rest on POSITIVE evidence — an absent entry, an
+ * `enabled: false` flag — which is why they are stable across majors.
+ * `invalid_argument` is the ELSE branch: an inference from the absence of any
+ * other explanation. This `Set` patches that inference by enumerating the two
+ * values of one major's `taskSupport` that sit in the gap TODAY, and the SDK
+ * does not branch on `taskSupport` to decide THIS question — it branches on it
+ * to decide something else, which the code is reading as a proxy. So the next
+ * pre-handler rejection either major adds lands in `invalid_argument`
+ * silently, with nothing going red, because the elimination still "succeeds".
+ *
+ * The real fix is positive evidence: a THIRD seam around the SDK's own input
+ * validation, setting a `validatorRejected` fact on `CallSlot` the way
+ * `innerFired` is set, after which this function is three positive tests and
+ * no `else` and `TASK_MODES` disappears. Not taken here — it is another
+ * per-major internals reach-in and the two majors spell validation
+ * differently. Recorded so the `Set` is read as the version pin it is.
  */
 const TASK_MODES: ReadonlySet<unknown> = new Set(["required", "optional"]);
 
+/** The registry-entry members this decision reads, declared ONCE.
+ *
+ * `withBaton.ts`'s `ToolEntry` extends this with the two dispatch-target
+ * members the seam needs. Declared here rather than hand-copied as a structural
+ * literal because the next flag either SDK branches on has to be added in one
+ * place, and `tsc` would not have noticed a second copy going stale. */
+export interface ToolEntryFacts {
+  enabled?: unknown;
+  /** 1.x rejects a mis-declared task tool BEFORE argument validation, so this
+   * member's VALUE is what withdraws the `invalid_argument` claim. */
+  execution?: { taskSupport?: unknown } | null;
+}
+
 export function requestSideFailureKind(
-  entry: { enabled?: unknown; execution?: { taskSupport?: unknown } | null } | null | undefined,
+  entry: ToolEntryFacts | null | undefined,
 ): FailureKind | undefined {
   // `== null`, not `=== undefined`: this entry comes out of a cast past the
   // SDK's `private`, so its shape is a declaration rather than a runtime
   // guarantee, and a null would otherwise raise a `TypeError` off a tool call
   // that was going to return the SDK's own error (SPEC §11.2 fail-open —
   // `settleCall`'s guard would catch it, but a sensor should not need one).
-  if (entry == null) return UNKNOWN_TOOL;
-  if (entry.enabled === false) return TOOL_DISABLED;
-  return TASK_MODES.has(entry.execution?.taskSupport) ? undefined : INVALID_ARGUMENT;
+  if (entry == null) return "unknown_tool";
+  if (entry.enabled === false) return "tool_disabled";
+  return TASK_MODES.has(entry.execution?.taskSupport) ? undefined : "invalid_argument";
 }
 
 /** The `error_body` cap, in CODE POINTS, shared by both failure legs (SPEC

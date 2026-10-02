@@ -18,23 +18,14 @@
 
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
-import { withBaton } from "../../../src/integrations/mcp/withBaton.js";
 import {
   ERROR_BODY_MAX_CODE_POINTS,
   errorText,
   isErrorResult,
 } from "../../../src/integrations/mcp/errorResult.js";
-import { MAJORS, CapturingSink, terminal } from "./_majors.js";
+import { MAJORS, CapturingSink, install, terminal } from "./_majors.js";
 
 describe.each(MAJORS)("returned isError — $label", (major) => {
-  const install = (server: unknown, sink: CapturingSink) =>
-    withBaton(server as never, {
-      vendorId: "acme",
-      vendorDisplayName: "Acme",
-      consentToken: "ct",
-      sink,
-    });
-
   it("files a RETURNED error flag as tool_call_error, not tool_call_end", async () => {
     const sink = new CapturingSink();
     const server = major.make();

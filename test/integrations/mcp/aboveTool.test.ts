@@ -26,12 +26,11 @@
 
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
-import { withBaton } from "../../../src/integrations/mcp/withBaton.js";
 import {
   FAILURE_KINDS,
   requestSideFailureKind,
 } from "../../../src/integrations/mcp/errorResult.js";
-import { MAJORS, CapturingSink, terminal } from "./_majors.js";
+import { MAJORS, CapturingSink, install, terminal } from "./_majors.js";
 
 /** The registered vocabulary, pinned as literals.
  *
@@ -92,14 +91,6 @@ describe("the registered failure_kind vocabulary", () => {
 });
 
 describe.each(MAJORS)("failures above the handler — $label", (major) => {
-  const install = (server: unknown, sink: CapturingSink) =>
-    withBaton(server as never, {
-      vendorId: "acme",
-      vendorDisplayName: "Acme",
-      consentToken: "ct",
-      sink,
-    });
-
   /** One registered, working tool plus a connected client — the baseline every
    * case below departs from in exactly one way. */
   const connected = async (sink: CapturingSink, outputShape?: Record<string, z.ZodType>) => {
@@ -201,13 +192,11 @@ describe.each(MAJORS)("failures above the handler — $label", (major) => {
     major.tool(server, "works", { name: z.string() }, () => ({
       content: [{ type: "text" as const, text: "ok" }],
     }));
-    withBaton(server as never, {
-      vendorId: "acme",
-      vendorDisplayName: "Acme",
-      consentToken: "ct",
-      sink,
-      resultCaptureMode: "off",
-    });
+    // ⚠ Through the shared helper's `extra`, not a forked literal. The whole
+    // point of `install(server, sink, extra)` taking options is that a case
+    // varying ONE of them does not re-spell the config — which is how this
+    // very site drifted before.
+    install(server, sink, { resultCaptureMode: "off" });
     const client = await major.connect(server);
     await client.callTool({ name: "works", arguments: { name: 7 } }).catch(() => {});
 

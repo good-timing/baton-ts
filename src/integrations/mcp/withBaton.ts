@@ -129,6 +129,7 @@ import {
   requestSideErrorFields,
   requestSideFailureKind,
   type ResultCaptureMode,
+  type ToolEntryFacts,
   resultDerivedFields,
   returnedErrorFields,
   isErrorResult,
@@ -234,33 +235,48 @@ const wired = new WeakSet<object>();
  * v2 is how an unknown or disabled tool arrives
  * (`mcp-DXXb3Vv3.mjs:1394-1397`, both outside that handler's own `try`).
  */
-interface OuterOutcome {
-  /** Did anything ABOVE the vendor's handler report a failure? */
-  failed: boolean;
-  /** Did `tools/call` THROW, as opposed to returning a flagged result? Its
-   * own member rather than `err !== undefined`, because `throw undefined` is
-   * legal and a thrown `undefined` must not read as a clean return. */
-  raised: boolean;
-  /** The value thrown out of `tools/call`. Meaningless unless `raised`. */
-  err: unknown;
-  /** What `tools/call` returned, when it returned. On a failure this is the
-   * SDK's own error envelope — `createToolError`'s on both majors — not the
-   * vendor's value. */
-  result: unknown;
-}
+type OuterOutcome = { failed: boolean } & (
+  | {
+      /** `tools/call` THREW. Its own member rather than `err !== undefined`,
+       * because `throw undefined` is legal and must not read as a return. */
+      raised: true;
+      /** The value thrown out of `tools/call`. */
+      err: unknown;
+    }
+  | {
+      raised: false;
+      /** What `tools/call` returned. On a failure this is the SDK's own error
+       * envelope — `createToolError`'s on both majors — not the vendor's
+       * value. */
+      result: unknown;
+    }
+);
+
+/** `tools/call` came back cleanly. A constant because it is the initial value
+ * AND the outcome handed to a flush that is not the outer's to judge — two
+ * sites, and a fifth member on `OuterOutcome` must not reach only one. */
+const CLEAN_OUTCOME: OuterOutcome = { failed: false, raised: false, result: undefined };
 
 /**
  * The per-call hand-off between Baton's two seams (SPEC §11.4.3's
  * `failure_kind`).
  *
- * ⚠ **`innerFired` is the whole discriminator, and it is the one the
- * withholding rule needs too** — which is why there is no second signal
- * here. `false` means the vendor's handler never ran, so the failure is
+ * ⚠ **`innerFired` is the discriminator for REQUEST-side vs result-side, and
+ * it is the one the withholding rule needs too** — which is why the slot
+ * carries no second field for it. `false` means the vendor's handler never ran, so the failure is
  * REQUEST-side and nothing on the payload is derived from a result (`"off"`
  * withholds nothing). `true` plus a failure at the outer means the handler
  * returned and something above it rejected what came back, so the failure is
  * RESULT-side and `"off"` withholds it. The hand-off and the provenance rule
  * are one mechanism; measured 2026-10-01 on both majors.
+ *
+ * ⚠ **It is not, however, the ONLY fact the settle reads, and an earlier
+ * version of this paragraph said it was.** `settleCall` reads
+ * `flushTerminal !== null` FIRST, so the real state space has three members —
+ * inner unreached, inner reached but parked nothing (`openCall` threw), inner
+ * reached and parked — and the third is subdivided by WHICH lane parked. That
+ * last fact travels as the choice between `parkFailure` and `parkSuccess`
+ * rather than as a field, which is what let the claim read as true.
  *
  * ⚠ **`flushTerminal` exists because two terminal events on one `call_id`
  * would break pairing** (SPEC §11.5.4 tier 1). The inner has already decided
@@ -463,6 +479,13 @@ async function openCall(
    * whose diagnosis would be wrong there — see `extractGoalParam`. */
   registered = true,
 ): Promise<{ common: Record<string, unknown>; callId: string; sessionId: string }> {
+  // ⚠ HERE, not in the callers. It was a caller obligation in both of them,
+  // and this function exists precisely so the two cannot drift — a third
+  // caller inheriting "remember the snapshot first" would silently stop
+  // emitting it, which is the drift `openCall` was extracted to prevent. The
+  // ordering invariant (snapshot BEFORE `tool_call_start`) is preserved and is
+  // now structural.
+  await maybeEmitSurfaceSnapshot(ctx);
   const { sessionId, runtime, scrubbedMeta } = await resolveEnvelopeParts(ctx, extra);
 
   // Strip the injected goal params IN PLACE, before snapshotting params —
@@ -580,7 +603,6 @@ function batonWrap(nameRef: { current: string }, original: AnyHandler, ctx: Wrap
     // request-side failure about a call that got this far. See `CallSlot`.
     const slot = callSlots.getStore();
     if (slot) slot.innerFired = true;
-    await maybeEmitSurfaceSnapshot(ctx);
 
     const extra = callArgs[callArgs.length - 1] as Extra;
     // 1.x calls a schema-less tool as `(extra)`; v2 always calls its
@@ -608,7 +630,7 @@ function batonWrap(nameRef: { current: string }, original: AnyHandler, ctx: Wrap
      * our conversion for the vendor's failure. */
     const terminate = async (
       build: () => Event,
-      replacement: ((outcome: OuterOutcome) => () => Event) | null = null,
+      replacement: ((outcome: OuterOutcome) => Event) | null,
     ): Promise<void> => {
       if (!slot) {
         // No outer seam: a direct executor call, or a server whose internals
@@ -641,11 +663,34 @@ function batonWrap(nameRef: { current: string }, original: AnyHandler, ctx: Wrap
       // Relabelling an inner call's success `output_schema_mismatch` would
       // blame whichever round happened to finish first.
       const earlier = slot.flushTerminal;
-      if (earlier !== null) await earlier({ failed: false, raised: false, err: undefined, result: undefined });
+      if (earlier !== null) await earlier(CLEAN_OUTCOME);
       slot.flushTerminal = async (outcome) => {
-        await emit(ctx.sink, replacement !== null && outcome.failed ? replacement(outcome) : build);
+        // The choice is made INSIDE the thunk, so either branch allocates its
+        // sequence number at flush — the property `CallSlot` exists to keep.
+        await emit(ctx.sink, () =>
+          replacement !== null && outcome.failed ? replacement(outcome) : build(),
+        );
       };
     };
+
+    /** Park a terminal event the outer seam may NOT overwrite — the vendor's
+     * own code spoke, by raising or by returning the flag, and SPEC §11.4.3's
+     * two shapes own it. */
+    const parkFailure = (build: () => Event): Promise<void> => terminate(build, null);
+
+    /** Park the SUCCESS terminal, with what to emit instead if the outer seam
+     * saw the call fail anyway.
+     *
+     * ⚠ Two functions rather than one optional parameter, so "only the success
+     * lane is replaceable" is a thing the type system enforces instead of a
+     * paragraph a future caller can skip. The invariant used to live only in
+     * `terminate`'s docstring, where adding a replacement to the `isError`
+     * lane would have compiled, passed every test, and relabelled the
+     * vendor's own exception as our conversion's. */
+    const parkSuccess = (
+      build: () => Event,
+      replacement: (outcome: OuterOutcome) => Event,
+    ): Promise<void> => terminate(build, replacement);
 
     const startedAt = performance.now();
     let result: unknown;
@@ -653,7 +698,7 @@ function batonWrap(nameRef: { current: string }, original: AnyHandler, ctx: Wrap
       result = await original(...callArgs);
     } catch (err) {
       const durationMs = Math.round(performance.now() - startedAt);
-      await terminate(() =>
+      await parkFailure(() =>
         ToolCallErrorEventSchema.parse({
           ...common,
           call_id: callId,
@@ -695,7 +740,7 @@ function batonWrap(nameRef: { current: string }, original: AnyHandler, ctx: Wrap
     // JSON-RPC error. It arrives here rather than through the catch above, and
     // filing it as `tool_call_end` is filing a failure as a success.
     if (isErrorResult(result)) {
-      await terminate(() =>
+      await parkFailure(() =>
         ToolCallErrorEventSchema.parse({
           ...common,
           call_id: callId,
@@ -729,7 +774,7 @@ function batonWrap(nameRef: { current: string }, original: AnyHandler, ctx: Wrap
       return result;
     }
 
-    await terminate(
+    await parkSuccess(
       () =>
         ToolCallEndEventSchema.parse({
           ...common,
@@ -748,7 +793,7 @@ function batonWrap(nameRef: { current: string }, original: AnyHandler, ctx: Wrap
       // `output_schema_mismatch`). Correcting this is the whole point of the
       // second seam: without it this is a `tool_call_end` for a call the
       // CALLER saw fail, which is a success the product invented.
-      (outcome) => () =>
+      (outcome) =>
         ToolCallErrorEventSchema.parse({
           ...common,
           call_id: callId,
@@ -787,13 +832,13 @@ function batonWrap(nameRef: { current: string }, original: AnyHandler, ctx: Wrap
             ...resultDerivedFields(
               ctx.resultCaptureMode,
               () => (outcome.raised ? messageOf(outcome.err) : errorText(outcome.result)),
-              // ⚠ `?? null`. On the `raised` lane there is no returned value,
-              // and `undefined` here would make the scrubber answer
-              // `undefined` and DROP the key — where the sibling raise lane a
-              // few lines up declares `result: null` explicitly, for the
-              // reason `ToolCallErrorPayloadSchema` records. One shape for
-              // "no result object existed", not two.
-              outcome.result ?? null,
+              // ⚠ `null` on the `raised` lane, never `undefined`, and the
+              // union is what forces the branch rather than a comment: the
+              // scrubber would answer `undefined` and DROP the key, where the
+              // sibling raise lane a few lines up declares `result: null`
+              // explicitly, for the reason `ToolCallErrorPayloadSchema`
+              // records. One shape for "no result object existed", not two.
+              outcome.raised ? null : outcome.result ?? null,
               (text) => errorBody(ctx, text),
               ctx.scrubber,
             ),
@@ -1064,39 +1109,119 @@ interface LifecycleSchemas {
  * JSON-RPC numeric code instead, because the wire is what it holds. §11.4.4
  * states the divergence; both conform, and the member is an open string.
  */
+/** One lifecycle family's three event schemas plus the two facts that differ
+ * between families. A DATA table, so adding `resources/templates/list` or
+ * `completion/complete` is a row rather than a copied block.
+ *
+ * ⚠ `startParams` stays a CALLBACK while the other two are keys, and the
+ * asymmetry is the point: the three `*_start` shapes are genuinely different
+ * (none / the whole bag minus `_meta` / the `arguments` member alone) and that
+ * difference is the proxy's own inconsistency, which §11.4.4 records. Encoding
+ * it as a mode string would only relocate the switch. */
+interface LifecycleSpec {
+  method: string;
+  seamTag: symbol;
+  schemas: LifecycleSchemas;
+  /** The dedicated subject member's key — `"uri"` for a read, `"name"` for a
+   * prompt get, absent for either list, which has no subject. It rides all
+   * three legs, so one key decides it for the family. */
+  subjectKey?: "uri" | "name";
+  /** Which array of the `*_list` result `count` counts. Absent for the two
+   * families that have no count. */
+  countKey?: "resources" | "prompts";
+  /** The `*_start` payload's `params` member, or `{}` where the family has
+   * none. */
+  startParams: (params: Record<string, unknown>) => Record<string, unknown>;
+}
+
 function installLifecycleSeam(
   lowLevel: RequestHandlerInternals,
   ctx: WrapContext,
-  spec: {
-    method: string;
-    seamTag: symbol;
-    schemas: LifecycleSchemas;
-    /** The dedicated subject member, read off the request's own params —
-     * `{uri}` for a read, `{name}` for a prompt get, `{}` for either list. It
-     * rides all three legs, so one reader decides it for the family. */
-    subject: (params: Record<string, unknown>) => Record<string, unknown>;
-    /** The `*_start` payload's `params` member, or `{}` where the family has
-     * none. ⚠ The two that HAVE one build it differently — the whole params
-     * bag minus `_meta` for a resource read, the `arguments` member alone for
-     * a prompt get — which is the proxy's own inconsistency, preserved. */
-    startParams: (params: Record<string, unknown>) => Record<string, unknown>;
-    /** The `*_end` payload's `count`, or `{}` where the family has none. */
-    endExtra: (result: unknown) => Record<string, unknown>;
-  },
+  spec: LifecycleSpec,
 ): void {
   installRequestSeam(lowLevel, spec.method, spec.seamTag, (handler) => async (...args) => {
     const request = args[0] as { params?: Record<string, unknown> } | undefined;
     const requestParams = request?.params ?? {};
     const extra = args[1] as Extra;
 
-    let common: Record<string, unknown> | null = null;
-    let sessionId = "";
-    let subject: Record<string, unknown> = {};
+    // ⚠ ONE `const`, not three `let`s with placeholder values. `emit`'s build
+    // thunks capture this, and TypeScript will not narrow a captured MUTABLE
+    // binding — which is what the three `const envelope = common` aliases an
+    // earlier version carried were working around. `null` means the start
+    // capture failed, and there is then nothing to stamp the later legs with.
+    const opened = await openLifecycleCall(ctx, spec, requestParams, extra);
+
+    /** Every leg is the same envelope with a different schema and payload, so
+     * one builder owns the parts that must not drift: the stamp, the clock and
+     * the sequence number — which `counter.next` must allocate at EMIT time,
+     * not before. */
+    const fire = async (
+      schema: { parse(value: unknown): Event },
+      payload: Record<string, unknown>,
+    ): Promise<void> => {
+      if (opened === null) return;
+      await emit(ctx.sink, () =>
+        schema.parse({
+          ...opened.common,
+          sequence_number: ctx.counter.next(opened.sessionId),
+          captured_at: new Date().toISOString(),
+          payload: scrubLifecyclePayload(ctx, { ...opened.subject, ...payload }),
+        }),
+      );
+    };
+
+    await fire(spec.schemas.start, spec.startParams(requestParams));
+
+    const startedAt = performance.now();
+    const elapsed = (): number => Math.round(performance.now() - startedAt);
     try {
-      const parts = await resolveEnvelopeParts(ctx, extra);
-      sessionId = parts.sessionId;
-      subject = spec.subject(requestParams);
-      common = {
+      const result = await handler(...args);
+      await fire(spec.schemas.end, {
+        ...(spec.countKey === undefined ? {} : { count: countOf(result, spec.countKey) }),
+        duration_ms: elapsed(),
+      });
+      return result;
+    } catch (err) {
+      await fire(spec.schemas.error, {
+        error_type: errorTypeOf(err),
+        // KEPT under every capture mode: a failed FETCH's message is the
+        // producer's own diagnostic, not anything a resource returned, so
+        // nothing here is result-derived (SPEC §11.4.4). The scrub and the cap
+        // are `scrubLifecyclePayload`'s, in that order.
+        error_body: messageOf(err),
+        duration_ms: elapsed(),
+      });
+      // Rethrown unchanged — a sensor does not change what the caller sees.
+      throw err;
+    }
+  });
+}
+
+/** Resolve the envelope and the subject for one lifecycle request, or `null`
+ * when that failed.
+ *
+ * Separate from the seam so the three legs share ONE immutable result. Guarded
+ * here rather than at each leg because the vendor's request has not run yet:
+ * losing the capture costs the pairing, never the call (SPEC §11.2). */
+async function openLifecycleCall(
+  ctx: WrapContext,
+  spec: LifecycleSpec,
+  requestParams: Record<string, unknown>,
+  extra: Extra,
+): Promise<{
+  common: Record<string, unknown>;
+  sessionId: string;
+  subject: Record<string, unknown>;
+} | null> {
+  try {
+    const parts = await resolveEnvelopeParts(ctx, extra);
+    return {
+      sessionId: parts.sessionId,
+      subject:
+        spec.subjectKey === undefined
+          ? {}
+          : { [spec.subjectKey]: stringSubject(requestParams[spec.subjectKey]) },
+      common: {
         tenant_id: ctx.tenantId,
         vendor_id: ctx.vendorId,
         session_id: parts.sessionId,
@@ -1104,80 +1229,28 @@ function installLifecycleSeam(
         agent_runtime: parts.runtime,
         transport_observed: observeTransport(extra),
         runtime_meta: parts.scrubbedMeta,
-      };
-      const envelope = common;
-      await emit(ctx.sink, () =>
-        spec.schemas.start.parse({
-          ...envelope,
-          sequence_number: ctx.counter.next(parts.sessionId),
-          captured_at: new Date().toISOString(),
-          payload: scrubLifecyclePayload(ctx, {
-            ...subject,
-            ...spec.startParams(requestParams),
-          }),
-        }),
-      );
-    } catch (err) {
-      // The vendor's request has not run yet, so nothing it does depends on
-      // this having worked. Losing the start costs the pairing, never the call.
-      process.stderr.write(`baton: ${spec.method} start capture failed: ${String(err)}\n`);
-    }
-
-    const startedAt = performance.now();
-    try {
-      const result = await handler(...args);
-      if (common !== null) {
-        const envelope = common;
-        const durationMs = Math.round(performance.now() - startedAt);
-        await emit(ctx.sink, () =>
-          spec.schemas.end.parse({
-            ...envelope,
-            sequence_number: ctx.counter.next(sessionId),
-            captured_at: new Date().toISOString(),
-            payload: scrubLifecyclePayload(ctx, {
-              ...subject,
-              ...spec.endExtra(result),
-              duration_ms: durationMs,
-            }),
-          }),
-        );
-      }
-      return result;
-    } catch (err) {
-      if (common !== null) {
-        const envelope = common;
-        const durationMs = Math.round(performance.now() - startedAt);
-        await emit(ctx.sink, () =>
-          spec.schemas.error.parse({
-            ...envelope,
-            sequence_number: ctx.counter.next(sessionId),
-            captured_at: new Date().toISOString(),
-            payload: scrubLifecyclePayload(ctx, {
-              ...subject,
-              error_type: errorTypeOf(err),
-              // KEPT under every capture mode: a failed FETCH's message is the
-              // producer's own diagnostic, not anything a resource returned, so
-              // nothing here is result-derived (SPEC §11.4.4). The scrub and
-              // the cap are `scrubLifecyclePayload`'s, in that order.
-              error_body: messageOf(err),
-              duration_ms: durationMs,
-            }),
-          }),
-        );
-      }
-      // Rethrown unchanged — a sensor does not change what the caller sees.
-      throw err;
-    }
-  });
+      },
+    };
+  } catch (err) {
+    process.stderr.write(`baton: ${spec.method} capture failed: ${String(err)}\n`);
+    return null;
+  }
 }
 
-/** Install all four lifecycle seams. Separate from `withBaton`'s body so the
- * four specs read as one table rather than four scattered calls. */
-function installLifecycleSeams(lowLevel: RequestHandlerInternals, ctx: WrapContext): void {
-  const NO_EXTRA = (): Record<string, unknown> => ({});
-  const NO_SUBJECT = (): Record<string, unknown> => ({});
+/** Every lifecycle family, as one table.
+ *
+ * ⚠ The two `startParams` builders that DO something are deliberately
+ * different, and §11.4.4 records why: `baton-proxy` built them differently and
+ * these shapes are transcribed from it, not designed. */
+const NO_PARAMS = (): Record<string, unknown> => EMPTY_PARAMS;
 
-  installLifecycleSeam(lowLevel, ctx, {
+/** Shared because it is only ever SPREAD, never mutated. The thunk used to
+ * allocate a throwaway object on every `resources/list` and `prompts/list`
+ * request to produce nothing. */
+const EMPTY_PARAMS: Record<string, unknown> = Object.freeze({});
+
+const LIFECYCLE_SPECS: readonly LifecycleSpec[] = [
+  {
     method: "resources/list",
     seamTag: LIFECYCLE_SEAMS.resourceList,
     schemas: {
@@ -1185,16 +1258,14 @@ function installLifecycleSeams(lowLevel: RequestHandlerInternals, ctx: WrapConte
       end: ResourceListEndEventSchema,
       error: ResourceListErrorEventSchema,
     },
-    subject: NO_SUBJECT,
-    startParams: NO_EXTRA,
     // ⚠ `resources` ALONE. Resource TEMPLATES are a separate MCP method with
     // their own result array and are deliberately not added in, matching the
     // proxy — so a template-only server reports 0, which §11.4.4 says a
     // consumer MUST NOT read as "this server has no resources".
-    endExtra: (result) => ({ count: countOf(result, "resources") }),
-  });
-
-  installLifecycleSeam(lowLevel, ctx, {
+    countKey: "resources",
+    startParams: NO_PARAMS,
+  },
+  {
     method: "resources/read",
     seamTag: LIFECYCLE_SEAMS.resourceRead,
     schemas: {
@@ -1202,7 +1273,7 @@ function installLifecycleSeams(lowLevel: RequestHandlerInternals, ctx: WrapConte
       end: ResourceReadEndEventSchema,
       error: ResourceReadErrorEventSchema,
     },
-    subject: (params) => ({ uri: stringSubject(params["uri"]) }),
+    subjectKey: "uri",
     // ⚠ The whole params bag MINUS `_meta`, so `uri` lands here as well as in
     // its own member. That duplication is the proxy's and is reproduced on
     // purpose: the dedicated member is what a consumer reads, the bag is what
@@ -1210,10 +1281,8 @@ function installLifecycleSeams(lowLevel: RequestHandlerInternals, ctx: WrapConte
     // longer say the second thing. `_meta` is excluded because it rides the
     // envelope as `runtime_meta` already.
     startParams: (params) => ({ params: paramsBag(params) }),
-    endExtra: NO_EXTRA,
-  });
-
-  installLifecycleSeam(lowLevel, ctx, {
+  },
+  {
     method: "prompts/list",
     seamTag: LIFECYCLE_SEAMS.promptList,
     schemas: {
@@ -1221,12 +1290,10 @@ function installLifecycleSeams(lowLevel: RequestHandlerInternals, ctx: WrapConte
       end: PromptListEndEventSchema,
       error: PromptListErrorEventSchema,
     },
-    subject: NO_SUBJECT,
-    startParams: NO_EXTRA,
-    endExtra: (result) => ({ count: countOf(result, "prompts") }),
-  });
-
-  installLifecycleSeam(lowLevel, ctx, {
+    countKey: "prompts",
+    startParams: NO_PARAMS,
+  },
+  {
     method: "prompts/get",
     seamTag: LIFECYCLE_SEAMS.promptGet,
     schemas: {
@@ -1234,7 +1301,7 @@ function installLifecycleSeams(lowLevel: RequestHandlerInternals, ctx: WrapConte
       end: PromptGetEndEventSchema,
       error: PromptGetErrorEventSchema,
     },
-    subject: (params) => ({ name: stringSubject(params["name"]) }),
+    subjectKey: "name",
     // ⚠ `arguments` ALONE, NOT the whole bag — the opposite of the resource
     // read above, so `name` does NOT appear inside `params`. The two are
     // inconsistent in the producer the shapes came from; the inconsistency is
@@ -1243,8 +1310,12 @@ function installLifecycleSeams(lowLevel: RequestHandlerInternals, ctx: WrapConte
     startParams: (params) => ({
       params: paramsBag(params["arguments"] as Record<string, unknown> | undefined),
     }),
-    endExtra: NO_EXTRA,
-  });
+  },
+];
+
+/** Install every lifecycle seam. */
+function installLifecycleSeams(lowLevel: RequestHandlerInternals, ctx: WrapContext): void {
+  for (const spec of LIFECYCLE_SPECS) installLifecycleSeam(lowLevel, ctx, spec);
 }
 
 /** The subject member a `*_read` / `*_get` payload requires, as a string.
@@ -1288,7 +1359,15 @@ function countOf(result: unknown, key: string): number {
  * both, so this is parity rather than conformance. */
 function paramsBag(bag: Record<string, unknown> | undefined): Record<string, unknown> {
   if (!bag || typeof bag !== "object") return {};
-  return Object.fromEntries(Object.entries(bag).filter(([key]) => key !== "_meta"));
+  // One loop rather than `Object.entries().filter().fromEntries()`, which
+  // allocated a pair array per key plus two arrays and a closure to produce
+  // what is usually a one-key copy — this runs on every `resources/read` and
+  // every `prompts/get`.
+  const out: Record<string, unknown> = {};
+  for (const key of Object.keys(bag)) {
+    if (key !== "_meta") out[key] = bag[key];
+  }
+  return out;
 }
 
 /**
@@ -1328,15 +1407,14 @@ function scrubLifecyclePayload(
   return { ...scrubbed, error_body: capCodePoints(body, ERROR_BODY_MAX_CODE_POINTS) };
 }
 
-/** One tool's registry entry, in the only three members either seam reads.
- * `enabled` is the flag both majors' `tools/call` handler branches on;
- * `handler`/`executor` are the dispatch targets `wrapIfNeeded` tags. */
-interface ToolEntry {
-  enabled?: unknown;
-  /** 1.x rejects a mis-declared task tool BEFORE argument validation, so the
-   * member's presence is what withdraws the `invalid_argument` claim — see
-   * `requestSideFailureKind`. */
-  execution?: { taskSupport?: unknown } | null;
+/** One tool's registry entry, in the only members either seam reads.
+ *
+ * The CLASSIFICATION members (`enabled`, `execution`) come from
+ * `ToolEntryFacts` in `errorResult.ts`, which is where the decision that reads
+ * them lives; this adds the two DISPATCH members, which only this module
+ * touches. One declaration per fact, so the next flag either SDK branches on
+ * cannot be added to one copy and missed in the other. */
+interface ToolEntry extends ToolEntryFacts {
   handler?: unknown;
   executor?: unknown;
 }
@@ -1352,10 +1430,16 @@ interface ToolEntry {
  * would simply never be emitted. See {@link wrapIfNeeded} for why getting the
  * per-major choice wrong fails quietly in the first place.
  */
-function dispatchTarget(entry: ToolEntry): TaggedHandler | undefined {
-  if (typeof entry.executor === "function") return entry.executor as TaggedHandler;
-  if (typeof entry.handler === "function") return entry.handler as TaggedHandler;
+function dispatchSlot(entry: ToolEntry): "executor" | "handler" | undefined {
+  if (typeof entry.executor === "function") return "executor";
+  if (typeof entry.handler === "function") return "handler";
   return undefined;
+}
+
+/** The dispatch target itself, for a caller that only needs to inspect it. */
+function dispatchTarget(entry: ToolEntry): TaggedHandler | undefined {
+  const slot = dispatchSlot(entry);
+  return slot === undefined ? undefined : (entry[slot] as TaggedHandler);
 }
 
 /**
@@ -1394,18 +1478,15 @@ function installToolsCallSeam(
     (handler) =>
       async (...args) => {
         const slot: CallSlot = { innerFired: false, flushTerminal: null };
-        let outcome: OuterOutcome = {
-          failed: false,
-          raised: false,
-          err: undefined,
-          result: undefined,
-        };
+        // Reassigned by both the try and the catch before `finally` reads it;
+        // the initializer is for definite assignment, not a live default.
+        let outcome: OuterOutcome = CLEAN_OUTCOME;
         try {
           const result = await callSlots.run(slot, () => handler(...args));
-          outcome = { failed: isErrorResult(result), raised: false, err: undefined, result };
+          outcome = { failed: isErrorResult(result), raised: false, result };
           return result;
         } catch (err) {
-          outcome = { failed: true, raised: true, err, result: undefined };
+          outcome = { failed: true, raised: true, err };
           throw err;
         } finally {
           // ⚠ **`finally`, never a read after the `await`.** v2 THROWS a
@@ -1443,7 +1524,17 @@ async function settleCall(
     // replace it. This is the ONLY path that emits a terminal event for a
     // call the vendor's handler actually ran.
     if (slot.flushTerminal !== null) {
-      await slot.flushTerminal(outcome);
+      const flush = slot.flushTerminal;
+      // ⚠ **Released BEFORE the await, not after — and not left set at all.**
+      // The parked thunk captures this call's `result`, `params` and `extra`,
+      // and on an `async_hooks`-backed `AsyncLocalStorage` the slot is copied
+      // onto every async resource created inside `run`. So a vendor handler
+      // that lazily makes a LONG-LIVED resource during the call (a pool, an
+      // interval, a cached promise) pins the slot — and a slot still holding
+      // the thunk drags that whole scope along for the resource's lifetime.
+      // Clearing it bounds the retention to the dispatch.
+      slot.flushTerminal = null;
+      await flush(outcome);
       return;
     }
     // The handler ran but parked nothing — `openCall` itself threw. There is
@@ -1519,7 +1610,6 @@ async function emitRequestSideFailure(
   // Baton's own params would land in `tool_call_start.params`, which SPEC
   // says equals the vendor-visible arguments.
   const params = { ...((request?.params?.arguments as Record<string, unknown>) ?? {}) };
-  await maybeEmitSurfaceSnapshot(ctx);
   const { common, callId, sessionId } = await openCall(
     ctx,
     toolName,
@@ -1614,12 +1704,18 @@ function wrapIfNeeded(nameRef: { current: string }, entry: unknown, ctx: WrapCon
   // that shape, and the `tools/call` seam makes the SAME choice off the SAME
   // predicate so it cannot report a failure for a tool whose successes are
   // invisible.
-  const target = dispatchTarget(mutable);
-  if (target === undefined || target[BATON_WRAPPED]) return;
+  // ⚠ The SLOT, not the target, so the rule is decided ONCE. An earlier
+  // version called `dispatchTarget` and then re-tested
+  // `typeof mutable.executor === "function"` to pick where to assign — which
+  // is the rule in two spellings, in the one function whose docstring says
+  // that is the failure mode.
+  const slot = dispatchSlot(mutable);
+  if (slot === undefined) return;
+  const target = mutable[slot] as TaggedHandler;
+  if (target[BATON_WRAPPED]) return;
   const wrapper = batonWrap(nameRef, target, ctx) as TaggedHandler;
   wrapper[BATON_WRAPPED] = true;
-  if (typeof mutable.executor === "function") mutable.executor = wrapper;
-  else mutable.handler = wrapper;
+  mutable[slot] = wrapper;
 }
 
 function wireEntry(name: string, entry: unknown, ctx: WrapContext): void {

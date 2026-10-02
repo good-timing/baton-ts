@@ -25,9 +25,7 @@ import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { identityScrub } from "../../../src/scrub.js";
 import { withBaton } from "../../../src/integrations/mcp/withBaton.js";
-import { MAJORS, CapturingSink, terminal } from "./_majors.js";
-
-const CFG = { vendorId: "acme", vendorDisplayName: "Acme", consentToken: "ct" };
+import { MAJORS, CapturingSink, CFG, terminal } from "./_majors.js";
 const ANSWER = "the-vendors-real-answer";
 const GOAL = "find the row";
 

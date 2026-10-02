@@ -18,6 +18,7 @@ import { z } from "zod";
 
 import type { Event } from "../../../src/events.js";
 import type { Sink } from "../../../src/sinks.js";
+import { withBaton } from "../../../src/integrations/mcp/withBaton.js";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -69,6 +70,34 @@ export interface Major {
     outputShape?: Record<string, z.ZodType>,
   ): void;
   connect(server: any): Promise<any>;
+  /** Register a static resource. The two majors agree here, which is itself
+   * worth keeping in ONE place: a future divergence lands on the interface
+   * rather than in whichever test noticed. */
+  resource(server: any, name: string, uri: string, read: () => unknown): void;
+  /** Register a prompt. ⚠ `argsSchema` takes the same raw-shape-vs-`z.object`
+   * rule as `inputSchema` above, and for the same reason it belongs here: a
+   * caller re-deriving it would have to branch on `label`, a string whose job
+   * is rendering `describe.each` titles. */
+  prompt(server: any, name: string, args: Record<string, z.ZodType>, get: () => unknown): void;
+}
+
+/** The three `BatonConfig` members every test in this directory supplies.
+ *
+ * Shared for the reason `terminal` below is: four files had grown the same
+ * literal, and a new required member — or a default worth pinning — then has
+ * to be found in all four. */
+export const CFG = { vendorId: "acme", vendorDisplayName: "Acme", consentToken: "ct" } as const;
+
+/** `withBaton` with this directory's standard config. `extra` is for the one
+ * thing a case is actually varying (`resultCaptureMode`, a `scrubber`, a
+ * `resolvePrincipal`) — without it a case that needs one option forks the whole
+ * helper, which is what happened before this existed. */
+export function install(
+  server: unknown,
+  sink: CapturingSink,
+  extra: Partial<Parameters<typeof withBaton>[1]> = {},
+): ReturnType<typeof withBaton> {
+  return withBaton(server as never, { ...CFG, sink, ...extra });
 }
 
 const V1: Major = {
@@ -90,6 +119,12 @@ const V1: Major = {
     const client = new ClientV1({ name: "test-client", version: "1.0.0" });
     await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
     return client;
+  },
+  resource: (server, name, uri, read) => {
+    server.registerResource(name, uri, {}, read);
+  },
+  prompt: (server, name, args, get) => {
+    server.registerPrompt(name, { argsSchema: args }, get);
   },
 };
 
@@ -114,6 +149,12 @@ const V2: Major = {
     const client = new ClientV2({ name: "test-client", version: "1.0.0" });
     await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
     return client;
+  },
+  resource: (server, name, uri, read) => {
+    server.registerResource(name, uri, {}, read);
+  },
+  prompt: (server, name, args, get) => {
+    server.registerPrompt(name, { argsSchema: z.object(args) }, get);
   },
 };
 

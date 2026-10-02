@@ -17,54 +17,10 @@
 
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
-import { withBaton } from "../../../src/integrations/mcp/withBaton.js";
-import { MAJORS, CapturingSink } from "./_majors.js";
+import { MAJORS, CapturingSink, install } from "./_majors.js";
 import type { Event } from "../../../src/events.js";
 
-/** Per-major registration for the two primitives this file needs. Not in
- * `_majors.ts` because nothing else needs them yet, and the shapes differ
- * enough that folding them in would put a second branch on `label`. */
-interface Primitives {
-  resource(server: unknown, name: string, uri: string, read: () => unknown): void;
-  prompt(server: unknown, name: string, get: (args: unknown) => unknown): void;
-}
-
-const PRIMITIVES: Record<string, Primitives> = {
-  "@modelcontextprotocol/sdk 1.x": {
-    resource: (server, name, uri, read) =>
-      (server as { registerResource: (...a: unknown[]) => unknown }).registerResource(
-        name,
-        uri,
-        {},
-        read,
-      ),
-    prompt: (server, name, get) =>
-      (server as { registerPrompt: (...a: unknown[]) => unknown }).registerPrompt(
-        name,
-        { argsSchema: { topic: z.string() } },
-        get,
-      ),
-  },
-  "@modelcontextprotocol/server 2.x": {
-    resource: (server, name, uri, read) =>
-      (server as { registerResource: (...a: unknown[]) => unknown }).registerResource(
-        name,
-        uri,
-        {},
-        read,
-      ),
-    prompt: (server, name, get) =>
-      (server as { registerPrompt: (...a: unknown[]) => unknown }).registerPrompt(
-        name,
-        { argsSchema: z.object({ topic: z.string() }) },
-        get,
-      ),
-  },
-};
-
 describe.each(MAJORS)("resource and prompt lifecycles — $label", (major) => {
-  const prims = PRIMITIVES[major.label]!;
-
   const payloadOf = (sink: CapturingSink, type: Event["event_type"]): Record<string, unknown> => {
     const event = sink.events.find((e) => e.event_type === type);
     expect(event, `no ${type} was emitted`).toBeDefined();
@@ -73,21 +29,16 @@ describe.each(MAJORS)("resource and prompt lifecycles — $label", (major) => {
 
   const connected = async (sink: CapturingSink, read?: () => unknown) => {
     const server = major.make();
-    prims.resource(
+    major.resource(
       server,
       "doc",
       "file:///doc.txt",
       read ?? (() => ({ contents: [{ uri: "file:///doc.txt", text: "the body" }] })),
     );
-    prims.prompt(server, "summarize", () => ({
+    major.prompt(server, "summarize", { topic: z.string() }, () => ({
       messages: [{ role: "user", content: { type: "text", text: "do it" } }],
     }));
-    withBaton(server as never, {
-      vendorId: "acme",
-      vendorDisplayName: "Acme",
-      consentToken: "ct",
-      sink,
-    });
+    install(server, sink);
     return { server, client: await major.connect(server) };
   };
 
@@ -160,13 +111,8 @@ describe.each(MAJORS)("resource and prompt lifecycles — $label", (major) => {
     const sink = new CapturingSink();
     const server = major.make();
     const uri = "file:///alice@corp.com/doc.txt";
-    prims.resource(server, "doc", uri, () => ({ contents: [{ uri, text: "x" }] }));
-    withBaton(server as never, {
-      vendorId: "acme",
-      vendorDisplayName: "Acme",
-      consentToken: "ct",
-      sink,
-    });
+    major.resource(server, "doc", uri, () => ({ contents: [{ uri, text: "x" }] }));
+    install(server, sink);
     const client = await major.connect(server);
     await client.readResource({ uri });
 
@@ -183,15 +129,10 @@ describe.each(MAJORS)("resource and prompt lifecycles — $label", (major) => {
     // unredacted. Same ruling as `errorBody` for the tool-call legs.
     const sink = new CapturingSink();
     const server = major.make();
-    prims.resource(server, "doc", "file:///doc.txt", () => {
+    major.resource(server, "doc", "file:///doc.txt", () => {
       throw new Error("could not reach alice@corp.com for file:///doc.txt");
     });
-    withBaton(server as never, {
-      vendorId: "acme",
-      vendorDisplayName: "Acme",
-      consentToken: "ct",
-      sink,
-    });
+    install(server, sink);
     const client = await major.connect(server);
     await client.readResource({ uri: "file:///doc.txt" }).catch(() => {});
 
@@ -221,13 +162,8 @@ describe.each(MAJORS)("resource and prompt lifecycles — $label", (major) => {
     // which was the tool seams' reason copied one function too far.
     const sink = new CapturingSink();
     const server = major.make();
-    withBaton(server as never, {
-      vendorId: "acme",
-      vendorDisplayName: "Acme",
-      consentToken: "ct",
-      sink,
-    });
-    prims.resource(server, "late", "file:///late.txt", () => ({
+    install(server, sink);
+    major.resource(server, "late", "file:///late.txt", () => ({
       contents: [{ uri: "file:///late.txt", text: "x" }],
     }));
     const client = await major.connect(server);
@@ -317,14 +253,10 @@ describe.each(MAJORS)("resource and prompt lifecycles — $label", (major) => {
     // and was wrong about the package, not about the design.
     const sink = new CapturingSink();
     const server = major.make();
-    prims.resource(server, "doc", "file:///doc.txt", () => ({
+    major.resource(server, "doc", "file:///doc.txt", () => ({
       contents: [{ uri: "file:///doc.txt", text: "x" }],
     }));
-    withBaton(server as never, {
-      vendorId: "acme",
-      vendorDisplayName: "Acme",
-      consentToken: "ct",
-      sink,
+    install(server, sink, {
       // A hook that would THROW if the seam called it — the assertion is that
       // it never does, which an absent-`principal` check alone would not prove
       // (an absent hook also yields an absent principal).
@@ -364,18 +296,13 @@ describe.each(MAJORS)("resource and prompt lifecycles — $label", (major) => {
     // session that mixes them.
     const sink = new CapturingSink();
     const server = major.make();
-    prims.resource(server, "doc", "file:///doc.txt", () => ({
+    major.resource(server, "doc", "file:///doc.txt", () => ({
       contents: [{ uri: "file:///doc.txt", text: "x" }],
     }));
     major.tool(server, "works", { name: z.string() }, () => ({
       content: [{ type: "text" as const, text: "ok" }],
     }));
-    withBaton(server as never, {
-      vendorId: "acme",
-      vendorDisplayName: "Acme",
-      consentToken: "ct",
-      sink,
-    });
+    install(server, sink);
     const client = await major.connect(server);
     await client.readResource({ uri: "file:///doc.txt" });
     await client.callTool({ name: "works", arguments: { name: "p1" } });
