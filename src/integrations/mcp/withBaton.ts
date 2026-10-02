@@ -89,6 +89,18 @@ import { v7 as uuidv7 } from "uuid";
 import {
   AnnotationEventSchema,
   type Event,
+  PromptGetEndEventSchema,
+  PromptGetErrorEventSchema,
+  PromptGetStartEventSchema,
+  PromptListEndEventSchema,
+  PromptListErrorEventSchema,
+  PromptListStartEventSchema,
+  ResourceListEndEventSchema,
+  ResourceListErrorEventSchema,
+  ResourceListStartEventSchema,
+  ResourceReadEndEventSchema,
+  ResourceReadErrorEventSchema,
+  ResourceReadStartEventSchema,
   SurfaceSnapshotEventSchema,
   ToolCallEndEventSchema,
   ToolCallErrorEventSchema,
@@ -382,6 +394,44 @@ function messageOf(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+/** The envelope members every event shares, resolved off one MCP request —
+ * everything except `principal`, which is deliberately not in here.
+ *
+ * Split out of `openCall` so the resource and prompt lifecycle seams (SPEC
+ * §11.4.4) can build an envelope without the parts that are specific to a tool
+ * call: there is no `principal` on those (see `installLifecycleSeam`), no
+ * intent-param strip, and no `call_id`.
+ *
+ * ⚠ Returns the PARTS rather than an assembled `common`, so each caller spells
+ * its own object literal. That keeps `principal` in the position it has always
+ * had on a tool-call envelope instead of being spread on at the end — key order
+ * is observable in the JSON a sink writes, and nothing is gained by churning
+ * it. */
+async function resolveEnvelopeParts(
+  ctx: WrapContext,
+  extra: Extra,
+): Promise<{ sessionId: string; runtime: string; scrubbedMeta: unknown }> {
+  const meta = extraMeta(extra);
+  const runtime =
+    detectAgentRuntime(meta, {
+      // v2 lifts the reserved `io.modelcontextprotocol/*` keys out of
+      // `_meta`; 1.x leaves them in. Both are handed over — see
+      // `mcpTypes.extraEnvelope`.
+      envelope: extraEnvelope(extra),
+      // Tier 2's carrier: neither peer puts client identity on the
+      // handler context, both expose the cached handshake on the server.
+      server: ctx.server,
+      scrubber: ctx.scrubber,
+    }) ?? UNKNOWN_AGENT_RUNTIME;
+  // Coordinates are coarsened here: after the ladder above has read the
+  // raw meta, and before the vendor's scrubber, so a vendor scrubber still
+  // gets the rule (handoff D5). `_meta` only; params and results keep
+  // full precision. The annotation tool does the same.
+  const scrubbedMeta = scrubOrNull(ctx.scrubber, meta ? roundMetaCoordinates(meta) : null, "_meta");
+  const sessionId = await resolveSessionId(ctx.fallbackSessionId, extra);
+  return { sessionId, runtime, scrubbedMeta };
+}
+
 /**
  * Open a tool call: resolve everything the envelope needs, strip Baton's
  * injected intent params out of `params` IN PLACE, and emit the opening
@@ -410,24 +460,7 @@ async function openCall(
    * whose diagnosis would be wrong there — see `extractGoalParam`. */
   registered = true,
 ): Promise<{ common: Record<string, unknown>; callId: string; sessionId: string }> {
-  const meta = extraMeta(extra);
-  const runtime =
-    detectAgentRuntime(meta, {
-      // v2 lifts the reserved `io.modelcontextprotocol/*` keys out of
-      // `_meta`; 1.x leaves them in. Both are handed over — see
-      // `mcpTypes.extraEnvelope`.
-      envelope: extraEnvelope(extra),
-      // Tier 2's carrier: neither peer puts client identity on the
-      // handler context, both expose the cached handshake on the server.
-      server: ctx.server,
-      scrubber: ctx.scrubber,
-    }) ?? UNKNOWN_AGENT_RUNTIME;
-  // Coordinates are coarsened here: after the ladder above has read the
-  // raw meta, and before the vendor's scrubber, so a vendor scrubber still
-  // gets the rule (handoff D5). `_meta` only; params and results keep
-  // full precision. The annotation tool does the same.
-  const scrubbedMeta = scrubOrNull(ctx.scrubber, meta ? roundMetaCoordinates(meta) : null, "_meta");
-  const sessionId = await resolveSessionId(ctx.fallbackSessionId, extra);
+  const { sessionId, runtime, scrubbedMeta } = await resolveEnvelopeParts(ctx, extra);
 
   // Strip the injected goal params IN PLACE, before snapshotting params —
   // `params` is the SAME object forwarded to the vendor handler, so the
@@ -974,6 +1007,281 @@ function installToolsListSeam(lowLevel: RequestHandlerInternals, ctx: WrapContex
     const out = handler(...args);
     return isThenable(out) ? out.then(advertise) : advertise(out);
   });
+}
+
+const LIFECYCLE_SEAMS = {
+  resourceList: Symbol("batonResourceListSeam"),
+  resourceRead: Symbol("batonResourceReadSeam"),
+  promptList: Symbol("batonPromptListSeam"),
+  promptGet: Symbol("batonPromptGetSeam"),
+} as const;
+
+/** The three event schemas one lifecycle family needs, structurally rather
+ * than by Zod generics: all twelve `.parse` to something assignable to
+ * `Event`, and that is the only thing the seam does with them. */
+interface LifecycleSchemas {
+  start: { parse(value: unknown): Event };
+  end: { parse(value: unknown): Event };
+  error: { parse(value: unknown): Event };
+}
+
+/**
+ * The RESOURCE and PROMPT lifecycle seams (SPEC §11.4.4) — `baton-ts`'s first
+ * instrumentation of anything but a tool call.
+ *
+ * ⚠ **At the REQUEST handler, not at registration**, and that is the whole
+ * design rather than a convenience. The vantage point the twelve shapes were
+ * defined from is `baton-proxy`'s, which reads the wire: subject, timing,
+ * failure, no body. The request handler is the in-process position that sees
+ * the same four facts — and it needs no per-family registration patch, since
+ * both majors install all four handlers through the one `_requestHandlers` map
+ * `installRequestSeam` already handles, lazily and in either order.
+ *
+ * ⚠ **No `principal` on any of the twelve, and it is a decision.** The vendor's
+ * `resolvePrincipal` hook is TOOL-shaped — it takes `{extra, toolName,
+ * arguments}` — so calling it with a URI in `toolName` would stretch a contract
+ * a vendor's hook cannot anticipate. The proxy stamps no principal on these
+ * types either (its twelve enqueue methods take none), so omitting it is parity
+ * with the producer the shapes came from rather than a gap this package
+ * invented. A later release that wants identity here needs a hook shape first.
+ *
+ * ⚠ **No `call_id` either**, same reason: no producer mints one for these, so
+ * a consumer pairing a start with its end has only SPEC §11.5.4's FIFO floor.
+ * §11.4.4 records that rather than leaving it to be discovered.
+ *
+ * ⚠ **Fail-open throughout (SPEC §11.2).** Every event goes through `emit`,
+ * the whole settle is wrapped, and the vendor's result and the vendor's
+ * exception pass through untouched in both lanes. A server with no reachable
+ * handler map gets no seam, which costs these twelve events and nothing else.
+ *
+ * ⚠ **The error leg is THROW-ONLY, which is why there is no returned-flag
+ * branch here.** `isError` is a `CallToolResult` member; a failing resource
+ * read or prompt get comes back as a JSON-RPC error, so `error_type` is the
+ * exception's class name — §11.4.3's RAISE spelling. `baton-proxy` files the
+ * JSON-RPC numeric code instead, because the wire is what it holds. §11.4.4
+ * states the divergence; both conform, and the member is an open string.
+ */
+function installLifecycleSeam(
+  lowLevel: RequestHandlerInternals,
+  ctx: WrapContext,
+  spec: {
+    method: string;
+    seamTag: symbol;
+    schemas: LifecycleSchemas;
+    /** The dedicated subject member, read off the request's own params —
+     * `{uri}` for a read, `{name}` for a prompt get, `{}` for either list. It
+     * rides all three legs, so one reader decides it for the family. */
+    subject: (params: Record<string, unknown>) => Record<string, unknown>;
+    /** The `*_start` payload's `params` member, or `{}` where the family has
+     * none. ⚠ The two that HAVE one build it differently — the whole params
+     * bag minus `_meta` for a resource read, the `arguments` member alone for
+     * a prompt get — which is the proxy's own inconsistency, preserved. */
+    startParams: (params: Record<string, unknown>) => Record<string, unknown>;
+    /** The `*_end` payload's `count`, or `{}` where the family has none. */
+    endExtra: (result: unknown) => Record<string, unknown>;
+  },
+): void {
+  installRequestSeam(lowLevel, spec.method, spec.seamTag, (handler) => async (...args) => {
+    const request = args[0] as { params?: Record<string, unknown> } | undefined;
+    const requestParams = request?.params ?? {};
+    const extra = args[1] as Extra;
+
+    let common: Record<string, unknown> | null = null;
+    let sessionId = "";
+    let subject: Record<string, unknown> = {};
+    try {
+      const parts = await resolveEnvelopeParts(ctx, extra);
+      sessionId = parts.sessionId;
+      subject = spec.subject(requestParams);
+      common = {
+        tenant_id: ctx.tenantId,
+        vendor_id: ctx.vendorId,
+        session_id: parts.sessionId,
+        consent_token: ctx.consentToken,
+        agent_runtime: parts.runtime,
+        transport_observed: observeTransport(extra),
+        runtime_meta: parts.scrubbedMeta,
+      };
+      const envelope = common;
+      await emit(ctx.sink, () =>
+        spec.schemas.start.parse({
+          ...envelope,
+          sequence_number: ctx.counter.next(parts.sessionId),
+          captured_at: new Date().toISOString(),
+          payload: { ...subject, ...spec.startParams(requestParams) },
+        }),
+      );
+    } catch (err) {
+      // The vendor's request has not run yet, so nothing it does depends on
+      // this having worked. Losing the start costs the pairing, never the call.
+      process.stderr.write(`baton: ${spec.method} start capture failed: ${String(err)}\n`);
+    }
+
+    const startedAt = performance.now();
+    try {
+      const result = await handler(...args);
+      if (common !== null) {
+        const envelope = common;
+        const durationMs = Math.round(performance.now() - startedAt);
+        await emit(ctx.sink, () =>
+          spec.schemas.end.parse({
+            ...envelope,
+            sequence_number: ctx.counter.next(sessionId),
+            captured_at: new Date().toISOString(),
+            payload: { ...subject, ...spec.endExtra(result), duration_ms: durationMs },
+          }),
+        );
+      }
+      return result;
+    } catch (err) {
+      if (common !== null) {
+        const envelope = common;
+        const durationMs = Math.round(performance.now() - startedAt);
+        await emit(ctx.sink, () =>
+          spec.schemas.error.parse({
+            ...envelope,
+            sequence_number: ctx.counter.next(sessionId),
+            captured_at: new Date().toISOString(),
+            payload: {
+              ...subject,
+              error_type: errorTypeOf(err),
+              // KEPT under every capture mode: a failed FETCH's message is the
+              // producer's own diagnostic, not anything a resource returned, so
+              // nothing here is result-derived (SPEC §11.4.4). Scrubbed and
+              // capped like both tool-call failure legs.
+              error_body: errorBody(ctx, messageOf(err)),
+              duration_ms: durationMs,
+            },
+          }),
+        );
+      }
+      // Rethrown unchanged — a sensor does not change what the caller sees.
+      throw err;
+    }
+  });
+}
+
+/** Install all four lifecycle seams. Separate from `withBaton`'s body so the
+ * four specs read as one table rather than four scattered calls. */
+function installLifecycleSeams(lowLevel: RequestHandlerInternals, ctx: WrapContext): void {
+  const NO_EXTRA = (): Record<string, unknown> => ({});
+  const NO_SUBJECT = (): Record<string, unknown> => ({});
+
+  installLifecycleSeam(lowLevel, ctx, {
+    method: "resources/list",
+    seamTag: LIFECYCLE_SEAMS.resourceList,
+    schemas: {
+      start: ResourceListStartEventSchema,
+      end: ResourceListEndEventSchema,
+      error: ResourceListErrorEventSchema,
+    },
+    subject: NO_SUBJECT,
+    startParams: NO_EXTRA,
+    // ⚠ `resources` ALONE. Resource TEMPLATES are a separate MCP method with
+    // their own result array and are deliberately not added in, matching the
+    // proxy — so a template-only server reports 0, which §11.4.4 says a
+    // consumer MUST NOT read as "this server has no resources".
+    endExtra: (result) => ({ count: countOf(result, "resources") }),
+  });
+
+  installLifecycleSeam(lowLevel, ctx, {
+    method: "resources/read",
+    seamTag: LIFECYCLE_SEAMS.resourceRead,
+    schemas: {
+      start: ResourceReadStartEventSchema,
+      end: ResourceReadEndEventSchema,
+      error: ResourceReadErrorEventSchema,
+    },
+    subject: (params) => ({ uri: stringSubject(params["uri"]) }),
+    // ⚠ The whole params bag MINUS `_meta`, so `uri` lands here as well as in
+    // its own member. That duplication is the proxy's and is reproduced on
+    // purpose: the dedicated member is what a consumer reads, the bag is what
+    // the caller actually sent, and a producer that stripped `uri` out could no
+    // longer say the second thing. `_meta` is excluded because it rides the
+    // envelope as `runtime_meta` already.
+    startParams: (params) => ({ params: scrubbedBag(ctx, params) }),
+    endExtra: NO_EXTRA,
+  });
+
+  installLifecycleSeam(lowLevel, ctx, {
+    method: "prompts/list",
+    seamTag: LIFECYCLE_SEAMS.promptList,
+    schemas: {
+      start: PromptListStartEventSchema,
+      end: PromptListEndEventSchema,
+      error: PromptListErrorEventSchema,
+    },
+    subject: NO_SUBJECT,
+    startParams: NO_EXTRA,
+    endExtra: (result) => ({ count: countOf(result, "prompts") }),
+  });
+
+  installLifecycleSeam(lowLevel, ctx, {
+    method: "prompts/get",
+    seamTag: LIFECYCLE_SEAMS.promptGet,
+    schemas: {
+      start: PromptGetStartEventSchema,
+      end: PromptGetEndEventSchema,
+      error: PromptGetErrorEventSchema,
+    },
+    subject: (params) => ({ name: stringSubject(params["name"]) }),
+    // ⚠ `arguments` ALONE, NOT the whole bag — the opposite of the resource
+    // read above, so `name` does NOT appear inside `params`. The two are
+    // inconsistent in the producer the shapes came from; the inconsistency is
+    // reproduced rather than tidied, because a consumer reading one producer
+    // and a second producer reading the other must agree.
+    startParams: (params) => ({
+      params: scrubbedBag(ctx, params["arguments"] as Record<string, unknown> | undefined),
+    }),
+    endExtra: NO_EXTRA,
+  });
+}
+
+/** The subject member a `*_read` / `*_get` payload requires, as a string.
+ *
+ * ⚠ `String()` on a non-string would put `"[object Object]"` on the wire for a
+ * malformed request — a value that reads like a real URI name and is not. The
+ * empty string is what `baton-proxy` emits for an absent subject
+ * (`str(params.get("uri") or "")`), so an unreadable one takes the same
+ * spelling rather than inventing a third. The member is REQUIRED on all three
+ * legs, so dropping it is not an option. */
+function stringSubject(value: unknown): string {
+  return typeof value === "string" ? value : "";
+}
+
+/** `len(result[key])`, fail-safe. A result this seam cannot read is a count of
+ * 0 rather than a dropped event: the call happened and its timing is the part
+ * no other signal carries. */
+function countOf(result: unknown, key: string): number {
+  const list = (result as Record<string, unknown> | null | undefined)?.[key];
+  return Array.isArray(list) ? list.length : 0;
+}
+
+/** A `*_start` payload's `params` member: the caller's own request data, which
+ * SPEC §7 and §11.2 require to be scrubbed like any other payload. `null`
+ * where there is nothing to record, which is the member's own absent value.
+ *
+ * `_meta` is always dropped: it rides the envelope as `runtime_meta`, where it
+ * is coordinate-coarsened first (`roundMetaCoordinates`), so recording it here
+ * too would put the same data on one event twice under two different
+ * treatments — the coarsening would be the one a consumer could not rely on.
+ *
+ * ⚠ **PRECONDITION: call this ONLY from inside an `emit()` build thunk**, and
+ * NOT through `scrubOrNull`. That helper is for scrubber calls OUTSIDE a thunk
+ * and its own docstring refuses this position, because `null` from a swallowed
+ * failure can mean something a payload did not intend. Here the right
+ * behaviour is `emit`'s: drop the event. This is the identical treatment
+ * `tool_call_start.params` already gets — same member name, same kind of data,
+ * same ruling — and keeping the two the same is the point. */
+function scrubbedBag(
+  ctx: WrapContext,
+  bag: Record<string, unknown> | undefined,
+): Record<string, unknown> | null {
+  if (!bag || typeof bag !== "object") return null;
+  const kept = Object.fromEntries(Object.entries(bag).filter(([key]) => key !== "_meta"));
+  if (Object.keys(kept).length === 0) return null;
+  // eslint-disable-next-line no-restricted-syntax -- inside the emit() build thunk: a throw drops the event, which is correct for params
+  return ctx.scrubber(kept) as Record<string, unknown> | null;
 }
 
 /** One tool's registry entry, in the only three members either seam reads.
@@ -1607,6 +1915,13 @@ export function withBaton(server: SupportedMcpServer, supplied: BatonConfig = {}
   // install classifies as `unknown_tool` rather than against a stale snapshot
   // — `update({name: null})` and `remove()` both delete the entry, and the
   // whole point of this lookup is to agree with what the SDK itself just read.
+  // The four resource/prompt lifecycle seams (SPEC §11.4.4), unconditional for
+  // the same reason as the one above: what they capture is not configurable.
+  // Installed BEFORE the annotate-tool registration below, which is what makes
+  // a toolless server install its handlers at all — the same ordering the
+  // `tools/list` seam needs.
+  installLifecycleSeams(internals.server, ctx);
+
   installToolsCallSeam(
     internals.server,
     // ⚠ `Object.hasOwn`, never a bare index. `_registeredTools` is a plain
