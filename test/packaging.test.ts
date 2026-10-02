@@ -11,6 +11,8 @@ import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
+import { EventTypeSchema } from "../src/events.js";
+
 const SRC = new URL("../src/", import.meta.url).pathname;
 
 function sourceFiles(dir: string): string[] {
@@ -20,6 +22,38 @@ function sourceFiles(dir: string): string[] {
     return name.endsWith(".ts") ? [full] : [];
   });
 }
+
+describe("public surface", () => {
+  /** Every event type the SDK can emit has its schema and its two types
+   * EXPORTED from `src/index.ts`.
+   *
+   * ⚠ **Derived from `EventTypeSchema`, so a new event type acquires this
+   * requirement by existing.** The way this regresses is the way it already
+   * did twice: the rolled-up `dist/index.d.ts` carries a type transitively
+   * whenever `Event` references it, but WITHOUT `export` — so `tsc` is green,
+   * every test is green, and the only person who finds out is a vendor trying
+   * to name it. `ResultCaptureMode` cost `f1b7ab2` exactly that way, and the
+   * twelve lifecycle types cost it again one commit after they landed.
+   *
+   * Read as TEXT rather than by importing `index.js` and checking keys,
+   * because a TYPE export leaves no runtime key to check — and the types are
+   * half of what a vendor needs. */
+  it("exports a schema and both types for every event type in the enum", () => {
+    const index = readFileSync(join(SRC, "index.ts"), "utf8");
+    const pascal = (type: string): string =>
+      type
+        .split("_")
+        .map((part) => part[0]!.toUpperCase() + part.slice(1))
+        .join("");
+    const missing = EventTypeSchema.options.flatMap((type) => {
+      const base = pascal(type);
+      return [`${base}Event`, `${base}Payload`, `${base}EventSchema`, `${base}PayloadSchema`].filter(
+        (name) => !new RegExp(`^\\s*${name},$`, "m").test(index),
+      );
+    });
+    expect(missing).toEqual([]);
+  });
+});
 
 describe("packaging", () => {
   it("no module under src/ imports either SDK major, as a value OR as a type", () => {

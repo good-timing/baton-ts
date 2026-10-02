@@ -37,6 +37,35 @@ export type {
   AnnotationPayload,
   SurfaceSnapshotEvent,
   SurfaceSnapshotPayload,
+  // The twelve resource/prompt lifecycle types (SPEC §11.4.4). Exported for
+  // the reason `f1b7ab2` exported `ResultCaptureMode`: the rolled-up
+  // `dist/index.d.ts` carries them transitively, because `Event` references
+  // them, but WITHOUT `export` — so a vendor could not name one and had to
+  // spell `Extract<Event, {event_type: "resource_read_start"}>` instead.
+  ResourceListStartEvent,
+  ResourceListStartPayload,
+  ResourceListEndEvent,
+  ResourceListEndPayload,
+  ResourceListErrorEvent,
+  ResourceListErrorPayload,
+  ResourceReadStartEvent,
+  ResourceReadStartPayload,
+  ResourceReadEndEvent,
+  ResourceReadEndPayload,
+  ResourceReadErrorEvent,
+  ResourceReadErrorPayload,
+  PromptListStartEvent,
+  PromptListStartPayload,
+  PromptListEndEvent,
+  PromptListEndPayload,
+  PromptListErrorEvent,
+  PromptListErrorPayload,
+  PromptGetStartEvent,
+  PromptGetStartPayload,
+  PromptGetEndEvent,
+  PromptGetEndPayload,
+  PromptGetErrorEvent,
+  PromptGetErrorPayload,
 } from "./events.js";
 
 export { DEFAULT_CONSENT_TOKEN } from "./events.js";
@@ -55,6 +84,30 @@ export {
   SurfaceSnapshotEventSchema,
   SurfaceSnapshotPayloadSchema,
   PrincipalWireSchema,
+  ResourceListStartEventSchema,
+  ResourceListStartPayloadSchema,
+  ResourceListEndEventSchema,
+  ResourceListEndPayloadSchema,
+  ResourceListErrorEventSchema,
+  ResourceListErrorPayloadSchema,
+  ResourceReadStartEventSchema,
+  ResourceReadStartPayloadSchema,
+  ResourceReadEndEventSchema,
+  ResourceReadEndPayloadSchema,
+  ResourceReadErrorEventSchema,
+  ResourceReadErrorPayloadSchema,
+  PromptListStartEventSchema,
+  PromptListStartPayloadSchema,
+  PromptListEndEventSchema,
+  PromptListEndPayloadSchema,
+  PromptListErrorEventSchema,
+  PromptListErrorPayloadSchema,
+  PromptGetStartEventSchema,
+  PromptGetStartPayloadSchema,
+  PromptGetEndEventSchema,
+  PromptGetEndPayloadSchema,
+  PromptGetErrorEventSchema,
+  PromptGetErrorPayloadSchema,
 } from "./events.js";
 
 export { Scrubber, identityScrub, DEPTH_LIMIT } from "./scrub.js";
