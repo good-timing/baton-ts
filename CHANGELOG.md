@@ -10,7 +10,7 @@
   compose with `??`. The sub hook keys on `(sub, iss)`; the email hook on the
   WHOLE address with no issuer (an address is unique on its own, and an issuer
   URL change must not split a person), returning the part before the last `@`
-  as `Principal.userName`, which nothing sends anywhere. Neither consults
+  as `Principal.displayName`, which IS sent (below). Neither consults
   `email_verified`. They agree digest-for-digest with `baton-sdk`'s
   `principal_from_oauth_sub` / `principal_from_oauth_email`.
 
@@ -20,8 +20,15 @@
 - **`PrincipalResolutionContext.authInfo`** — the validated access token for the
   call, read from `extra.authInfo` on SDK 1.x and `ctx.http.authInfo` on v2, or
   `null` on stdio and unauthenticated requests. `AuthInfo` is exported.
-- **`Principal.userName`** (optional), for parity with Python's `user_name`.
-  Never emitted.
+- **`principal.display_name` on the wire** (SPEC §11.4, §13) — what a page
+  shows for the principal. Your hook sets `Principal.displayName` and it is
+  sent VERBATIM in every mode, hashed included, and never through your
+  scrubber: you choose what is safe to show. A non-string, blank (only Unicode
+  whitespace), over-128-code-point or lone-surrogate name is dropped on its
+  own; the id still ships. A principal with no name is unchanged on the wire.
+  ⚠ **The email hook sends the local part** — `alice` for `alice@acme.com` —
+  even when ids are hashed; write your own hook if you don't want that.
+  ⚠ Needs a collector that accepts the member: a strict one rejects the event.
 
 Nothing changes for an install with no `resolvePrincipal`: this SDK never read
 the token itself, and SPEC §11.4 now says no producer does.

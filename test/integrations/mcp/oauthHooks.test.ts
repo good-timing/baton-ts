@@ -92,14 +92,15 @@ describe("cross-SDK parity: the SAME digest Python's twin produces", () => {
     "7c2bd6eddc6679977e0ae2543f05922835a7cc0e28c86a518967e06b1c86f5ff";
 
   it.each([
-    ["sub", principalFromOAuthSub, PY_SUB],
-    ["email", principalFromOAuthEmail, PY_EMAIL],
-  ] as const)("%s, on both majors", async (_label, hook, expected) => {
+    ["sub", principalFromOAuthSub, PY_SUB, {}],
+    ["email", principalFromOAuthEmail, PY_EMAIL, { display_name: "Alice" }],
+  ] as const)("%s, on both majors", async (_label, hook, expected, named) => {
     for (const shape of [extraV1, extraV2]) {
       expect(await resolve(hook, shape(authInfo(CLAIMS)))).toEqual({
         id: expected,
         source: PRINCIPAL_SOURCE_ASSERTED,
         form: PRINCIPAL_FORM_HASHED,
+        ...named,
       });
     }
   });
@@ -152,7 +153,7 @@ describe("principalFromOAuthEmail", () => {
       ),
     ).toEqual({
       principalId: "alice@acme.com",
-      userName: "alice",
+      displayName: "alice",
     });
   });
 
@@ -171,14 +172,15 @@ describe("principalFromOAuthEmail", () => {
     expect(a?.id).not.toBe(b?.id);
   });
 
-  it("never puts the address or its local part on the wire", async () => {
+  it("sends the local part as display_name, hashed mode included, and never the address", async () => {
+    // Ruled 2026-10-02: the name rides every mode; a vendor who wants none
+    // writes their own hook. The address itself stays hashed.
     const got = await resolve(
       principalFromOAuthEmail,
       extraV2(authInfo({ email: "alice@acme.com" })),
     );
-    const blob = JSON.stringify(got);
-    expect(blob).not.toContain("alice");
-    expect(blob).not.toContain("acme");
+    expect(got!.display_name).toBe("alice");
+    expect(JSON.stringify(got)).not.toContain("acme");
   });
 
   it("keeps one pseudonym when the issuer URL changes — no issuer is folded in", async () => {
@@ -210,14 +212,14 @@ describe("principalFromOAuthEmail", () => {
   it("splits on the LAST @, and names nobody when there is no local part", () => {
     expect(
       principalFromOAuthEmail(ctx(authInfo({ email: '"a@b"@acme.com' })))
-        ?.userName,
+        ?.displayName,
     ).toBe('"a@b"');
     expect(principalFromOAuthEmail(ctx(authInfo({ email: "alice" })))).toEqual({
       principalId: "alice",
-      userName: null,
+      displayName: null,
     });
     expect(
-      principalFromOAuthEmail(ctx(authInfo({ email: "@acme.com" })))?.userName,
+      principalFromOAuthEmail(ctx(authInfo({ email: "@acme.com" })))?.displayName,
     ).toBeNull();
   });
 
@@ -278,6 +280,7 @@ describe.each(MAJORS)("end to end on $label", (major) => {
         id: "7c2bd6eddc6679977e0ae2543f05922835a7cc0e28c86a518967e06b1c86f5ff",
         source: PRINCIPAL_SOURCE_ASSERTED,
         form: PRINCIPAL_FORM_HASHED,
+        display_name: "Alice",
       });
     }
   });

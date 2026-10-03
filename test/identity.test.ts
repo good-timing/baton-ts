@@ -5,6 +5,7 @@ import {
   PRINCIPAL_FORM_RAW,
   PRINCIPAL_SOURCE_ASSERTED,
   RAW_PRINCIPAL_ID_MAX_LEN,
+  DISPLAY_NAME_MAX_LEN,
   hashPrincipalId,
   normalizePrincipal,
   principalFor,
@@ -324,5 +325,50 @@ describe("principalFor", () => {
     // value and STILL names its provenance.
     const raw = principalFor({ principalId: "e-1" }, { mode: "raw", tenantId: "t" });
     expect(raw).toEqual({ id: "e-1", source: PRINCIPAL_SOURCE_ASSERTED, form: PRINCIPAL_FORM_RAW });
+  });
+});
+
+describe("display_name on the wire (SPEC §11.4)", () => {
+  const named = (displayName: unknown) =>
+    principalFor(normalizePrincipal({ principalId: "alice", displayName })!, {
+      mode: "hashed",
+      tenantId: "t",
+      key: "k",
+    });
+
+  it.each(["hashed", "raw"] as const)("rides %s mode", (mode) => {
+    const got = principalFor({ principalId: "alice", displayName: "Alice" }, { mode, tenantId: "t", key: "k" });
+    expect(got!.display_name).toBe("Alice");
+    expect(PrincipalWireSchema.safeParse(got).success).toBe(true);
+  });
+
+  it("is OMITTED, never null, when there is none — a nameless principal is unchanged", () => {
+    expect(Object.keys(named(null)!)).toEqual(["id", "source", "form"]);
+  });
+
+  it.each([
+    ["undefined", undefined],
+    ["empty", ""],
+    ["ascii space", " \t\n"],
+    ["NEL and ideographic space", "\u0085\u3000"],
+    ["non-string", 7],
+    ["over cap", "a".repeat(DISPLAY_NAME_MAX_LEN + 1)],
+    ["lone surrogate", "a\uD800"],
+  ])("drops an unusable name (%s) and keeps the id", (_label, value) => {
+    const got = named(value);
+    expect(got!.id).toBeTruthy();
+    expect(got!.display_name).toBeUndefined();
+  });
+
+  it.each([
+    ["padded", " Alice "],
+    ["info separator", "\u001c"],
+    ["BOM", "\uFEFF"],
+    ["at cap", "a".repeat(DISPLAY_NAME_MAX_LEN)],
+    ["astral at cap, counted in code points", "😀".repeat(DISPLAY_NAME_MAX_LEN)],
+  ])("sends a usable name (%s) verbatim", (_label, value) => {
+    // Blank is Unicode White_Space exactly: `.trim()` would drop U+FEFF,
+    // Python's `strip()` would drop U+001C, and the two SDKs must agree.
+    expect(named(value)!.display_name).toBe(value);
   });
 });

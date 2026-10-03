@@ -57,6 +57,29 @@ export const PRINCIPAL_FORM_RAW = "raw";
  * is the realistic shape, not a hostile one. */
 export const RAW_PRINCIPAL_ID_MAX_LEN = 128;
 
+/** Cap on `displayName`, in CODE POINTS (Python's `len`). Over it the name is
+ * DROPPED, not truncated: SPEC §11.4 forbids rewriting it, so both SDKs send
+ * the same bytes for one resolver output. */
+export const DISPLAY_NAME_MAX_LEN = 128;
+
+// Unicode `White_Space`, exactly (SPEC §11.4's blank rule). Not `.trim()`:
+// that also removes U+FEFF and keeps U+0085, which Python's `strip()` does the
+// other way round, so the two SDKs would disagree on what is blank.
+const ALL_WHITE_SPACE = /^\p{White_Space}*$/u;
+
+/** The resolver's `displayName` as it goes on the wire, or `null`. Verbatim
+ * when usable. A non-string, a blank (only Unicode `White_Space`), an
+ * over-long value or one holding a lone surrogate is dropped ALONE — the rest
+ * of the principal still ships, because a bad label is no reason to lose a
+ * good id. Mirrors Python's `wire_display_name`. */
+export function wireDisplayName(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  if (LONE_SURROGATE.test(value)) return null;
+  if (ALL_WHITE_SPACE.test(value)) return null;
+  if (value.length > DISPLAY_NAME_MAX_LEN && [...value].length > DISPLAY_NAME_MAX_LEN) return null;
+  return value;
+}
+
 export const PRINCIPAL_ID_MODE_HASHED = "hashed";
 export const PRINCIPAL_ID_MODE_RAW = "raw";
 export type PrincipalIdMode = typeof PRINCIPAL_ID_MODE_HASHED | typeof PRINCIPAL_ID_MODE_RAW;
@@ -141,13 +164,12 @@ export interface Principal {
    * it, so two identity providers behind one vendor can hand the same subject
    * to different people. */
   issuer?: string | null | undefined;
-  /** A human-readable name for the principal — `principalFromOAuthEmail` puts
-   * the part of the address before the last `@` here. ⚠ **Never emitted.** The
-   * envelope's `principal` carries `id`, `source` and `form` only, and
-   * `normalizePrincipal` drops this, exactly as Python's `Principal.user_name`
-   * stays out of the console path. Carried so a hook's return reads the same
-   * in both SDKs. */
-  userName?: string | null | undefined;
+  /** What a page shows for this principal — `principalFromOAuthEmail` puts
+   * the part of the address before the last `@` here. **Sent verbatim, in
+   * every mode, hashed included, and never through the scrubber** (SPEC
+   * §11.4): the vendor chooses what is safe to show. An unusable value is
+   * dropped alone — see `wireDisplayName`. */
+  displayName?: string | null | undefined;
 }
 
 /** HMAC-SHA256 a raw principal into a console-safe, per-tenant `principal.id`.
@@ -212,7 +234,7 @@ export function hashPrincipalId(
  */
 export function normalizePrincipal(result: unknown): Principal | null {
   if (result === null || typeof result !== "object") return null;
-  const candidate = result as { principalId?: unknown; issuer?: unknown };
+  const candidate = result as { principalId?: unknown; issuer?: unknown; displayName?: unknown };
   if (typeof candidate.principalId !== "string") return null;
   // ⚠ **A lone surrogate MERGES distinct people, so it is a miss.** Node's
   // `update(…, "utf8")` does not throw on an unpaired surrogate — it replaces
@@ -250,7 +272,10 @@ export function normalizePrincipal(result: unknown): Principal | null {
   // corpus cannot carry this case: Python's generator cannot produce a vector
   // for an input that raises.
   const issuer = issuerRaw !== null && !LONE_SURROGATE.test(issuerRaw) ? issuerRaw : null;
-  return { principalId: candidate.principalId, issuer };
+  const displayName = wireDisplayName(candidate.displayName);
+  return displayName === null
+    ? { principalId: candidate.principalId, issuer }
+    : { principalId: candidate.principalId, issuer, displayName };
 }
 
 /** The principal AS EMITTED — the finished envelope value (SPEC §11.4).
@@ -280,6 +305,10 @@ export interface PrincipalWire {
   source: typeof PRINCIPAL_SOURCE_ASSERTED;
   /** WHAT it is. */
   form: PrincipalForm;
+  /** What a page shows; personal data whenever present, whatever `form`
+   * says. OMITTED, never `null`, when there is none — so a nameless principal
+   * is byte-identical to one from before the member existed. */
+  display_name?: string;
 }
 
 // ⚠ **Literal types here, `z.string()` on `PrincipalWireSchema` — and the
@@ -343,5 +372,10 @@ export function principalFor(
   }
   // Unconditional `source`: every principal comes from the vendor's hook
   // (SPEC §11.4), so an option here would be an argument no caller can vary.
-  return { id, source: PRINCIPAL_SOURCE_ASSERTED, form: FORM_BY_MODE[options.mode] };
+  const wire: PrincipalWire = { id, source: PRINCIPAL_SOURCE_ASSERTED, form: FORM_BY_MODE[options.mode] };
+  // Re-checked here, not trusted from `normalizePrincipal`: this function is
+  // public and takes a `Principal` a caller may have built by hand.
+  const displayName = wireDisplayName(principal.displayName);
+  if (displayName !== null) wire.display_name = displayName;
+  return wire;
 }

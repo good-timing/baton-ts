@@ -75,9 +75,11 @@ export function principalFromOAuthSub(
 
 /** The token's `email`, as the WHOLE address and with NO issuer.
  *
- * `principalId` is the whole address and `userName` the part before the last
- * `@`. The local part alone is not an id — `alice@acme.com` and
- * `alice@contoso.com` are two people — and `userName` is sent nowhere.
+ * `principalId` is the whole address and `displayName` the part before the
+ * last `@`. The local part alone is not an id — `alice@acme.com` and
+ * `alice@contoso.com` are two people. `displayName` IS sent, in every mode: a
+ * vendor who hashes ids and does not want `alice` on the wire writes their
+ * own hook.
  *
  * No issuer, unlike the `sub` hook: a subject is unique only per issuer, an
  * address on its own, and folding `iss` in would give one person a new
@@ -97,6 +99,6 @@ export function principalFromOAuthEmail(
   const at = email.lastIndexOf("@");
   return {
     principalId: email,
-    userName: at > 0 ? email.slice(0, at) : null,
+    displayName: at > 0 ? email.slice(0, at) : null,
   };
 }

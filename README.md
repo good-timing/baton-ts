@@ -62,7 +62,7 @@ withBaton(server, {
 });
 ```
 
-`principalFromOAuthEmail` keys on the token's `email` claim (the whole address); `principalFromOAuthSub` on its subject and issuer. Each returns `null` when the claim is missing, so they compose: `(ctx) => principalFromOAuthEmail(ctx) ?? principalFromOAuthSub(ctx)`.
+`principalFromOAuthEmail` keys on the token's `email` claim (the whole address); `principalFromOAuthSub` on its subject and issuer. Each returns `null` when the claim is missing, so they compose: `(ctx) => principalFromOAuthEmail(ctx) ?? principalFromOAuthSub(ctx)`. Set `displayName` on the returned `Principal` to choose what your dashboard shows for a person; it is sent as-is, even when ids are hashed. The email hook sets it to the part before `@`.
 
 ⚠ **They read the claims from `authInfo.extra`.** The MCP SDK's `AuthInfo` has no `claims` field, so these hooks expect your token verifier to put the decoded JWT claims (`sub`, `iss`, `email`) at the top level of `extra`. If yours keeps them elsewhere, write the three-line hook that reads them from there. A token exists only on HTTP with auth configured; on stdio, write a hook that names the user from whatever you authenticated them with.
 
