@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.6.0: the vendor's hook can name a person, and two OAuth hooks ship ready-made
+## 0.5.1: the vendor's hook can name a person, and two OAuth hooks ship ready-made
 
 ### Added
 
