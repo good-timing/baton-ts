@@ -329,15 +329,15 @@ describe("principalFor", () => {
 });
 
 describe("display_name on the wire (SPEC §11.4)", () => {
-  const named = (displayName: unknown) =>
+  const named = (displayName: unknown, mode: "hashed" | "raw" = "hashed") =>
     principalFor(normalizePrincipal({ principalId: "alice", displayName })!, {
-      mode: "hashed",
+      mode,
       tenantId: "t",
       key: "k",
     });
 
   it.each(["hashed", "raw"] as const)("rides %s mode", (mode) => {
-    const got = principalFor({ principalId: "alice", displayName: "Alice" }, { mode, tenantId: "t", key: "k" });
+    const got = named("Alice", mode);
     expect(got!.display_name).toBe("Alice");
     expect(PrincipalWireSchema.safeParse(got).success).toBe(true);
   });

@@ -20,7 +20,7 @@
 
 import { createHmac } from "node:crypto";
 
-import { capCodePoints } from "./_text.js";
+import { capCodePoints, exceedsCodePoints } from "./_text.js";
 
 // ⚠ **`HASH_SCHEME = "h1"` lived here and is GONE at 0.4.1** (SPEC §11.4, §13
 // entry 0.8.11), together with `hashPrincipalId`'s `scheme` option. A hashed
@@ -73,10 +73,8 @@ const ALL_WHITE_SPACE = /^\p{White_Space}*$/u;
  * of the principal still ships, because a bad label is no reason to lose a
  * good id. Mirrors Python's `wire_display_name`. */
 export function wireDisplayName(value: unknown): string | null {
-  if (typeof value !== "string") return null;
-  if (LONE_SURROGATE.test(value)) return null;
-  if (ALL_WHITE_SPACE.test(value)) return null;
-  if (value.length > DISPLAY_NAME_MAX_LEN && [...value].length > DISPLAY_NAME_MAX_LEN) return null;
+  if (typeof value !== "string" || exceedsCodePoints(value, DISPLAY_NAME_MAX_LEN)) return null;
+  if (LONE_SURROGATE.test(value) || ALL_WHITE_SPACE.test(value)) return null;
   return value;
 }
 
@@ -272,10 +270,10 @@ export function normalizePrincipal(result: unknown): Principal | null {
   // corpus cannot carry this case: Python's generator cannot produce a vector
   // for an input that raises.
   const issuer = issuerRaw !== null && !LONE_SURROGATE.test(issuerRaw) ? issuerRaw : null;
-  const displayName = wireDisplayName(candidate.displayName);
-  return displayName === null
-    ? { principalId: candidate.principalId, issuer }
-    : { principalId: candidate.principalId, issuer, displayName };
+  // Shape only; the name's own rules run once, in `principalFor`.
+  return typeof candidate.displayName === "string"
+    ? { principalId: candidate.principalId, issuer, displayName: candidate.displayName }
+    : { principalId: candidate.principalId, issuer };
 }
 
 /** The principal AS EMITTED — the finished envelope value (SPEC §11.4).
@@ -372,9 +370,12 @@ export function principalFor(
   }
   // Unconditional `source`: every principal comes from the vendor's hook
   // (SPEC §11.4), so an option here would be an argument no caller can vary.
-  const wire: PrincipalWire = { id, source: PRINCIPAL_SOURCE_ASSERTED, form: FORM_BY_MODE[options.mode] };
-  // Re-checked here, not trusted from `normalizePrincipal`: this function is
-  // public and takes a `Principal` a caller may have built by hand.
+  const wire: PrincipalWire = {
+    id,
+    source: PRINCIPAL_SOURCE_ASSERTED,
+    form: FORM_BY_MODE[options.mode],
+  };
+  // Checked HERE, where every wire object is built (Python: `_finish_principal`).
   const displayName = wireDisplayName(principal.displayName);
   if (displayName !== null) wire.display_name = displayName;
   return wire;

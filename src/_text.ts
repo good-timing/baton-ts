@@ -21,6 +21,15 @@
  * home, so the next capped field inherits the rule instead of rediscovering
  * it.
  */
+/** Whether `value` is longer than `max` CODE POINTS — the check form of
+ * `capCodePoints`, for a field that is dropped rather than cut. */
+export function exceedsCodePoints(value: string, max: number): boolean {
+  // Each code point is one or two UTF-16 units, so the unit count brackets it.
+  if (value.length <= max) return false;
+  if (value.length > 2 * max) return true;
+  return [...value].length > max;
+}
+
 export function capCodePoints(value: string, max: number): string {
   // Fast path: `[...value]` allocates an array of every code point, and the
   // overwhelming majority of values are already under the cap.

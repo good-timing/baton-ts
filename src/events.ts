@@ -208,7 +208,8 @@ export type SurfaceSnapshotPayload = z.infer<typeof SurfaceSnapshotPayloadSchema
 export const DEFAULT_CONSENT_TOKEN = "customer-consented";
 
 /** The principal as emitted — `{id, source, form}`, all three REQUIRED
- * together, plus an optional `display_name` (SPEC §11.4). The runtime shape of `identity.PrincipalWire`.
+ * together, plus an optional `display_name` (SPEC §11.4). The runtime shape
+ * of `identity.PrincipalWire`.
  *
  * `.strict()` mirrors Python's `extra="forbid"`: a member this producer does
  * not know about is a malformed object, not a richer one.
