@@ -24,7 +24,7 @@
   shows for the principal. Your hook sets `Principal.displayName` and it is
   sent VERBATIM in every mode, hashed included, and never through your
   scrubber: you choose what is safe to show. A non-string, blank (only Unicode
-  whitespace), over-128-code-point or lone-surrogate name is dropped on its
+  whitespace), over-128-code-point, lone-surrogate or NUL-bearing name is dropped on its
   own; the id still ships. A principal with no name is unchanged on the wire.
   ⚠ **The email hook sends the local part** — `alice` for `alice@acme.com` —
   even when ids are hashed; write your own hook if you don't want that.

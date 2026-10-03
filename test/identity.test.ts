@@ -358,6 +358,7 @@ describe("display_name on the wire (SPEC §11.4)", () => {
     ["non-string", 7],
     ["over cap", "a".repeat(DISPLAY_NAME_MAX_LEN + 1)],
     ["lone surrogate", "a\uD800"],
+    ["NUL", "jane\u0000"],
   ])("drops an unusable name (%s) and keeps the id", (_label, value) => {
     const got = named(value);
     expect(got!.id).toBeTruthy();

@@ -69,12 +69,13 @@ const ALL_WHITE_SPACE = /^\p{White_Space}*$/u;
 
 /** The resolver's `displayName` as it goes on the wire, or `null`. Verbatim
  * when usable. A non-string, a blank (only Unicode `White_Space`), an
- * over-long value or one holding a lone surrogate is dropped ALONE — the rest
+ * over-long value or one holding a lone surrogate or U+0000 is dropped ALONE — the rest
  * of the principal still ships, because a bad label is no reason to lose a
  * good id. Mirrors Python's `wire_display_name`. */
 export function wireDisplayName(value: unknown): string | null {
   if (typeof value !== "string" || exceedsCodePoints(value, DISPLAY_NAME_MAX_LEN)) return null;
-  if (LONE_SURROGATE.test(value) || ALL_WHITE_SPACE.test(value)) return null;
+  // U+0000: Postgres text refuses it, costing a collector the whole event.
+  if (LONE_SURROGATE.test(value) || value.includes("\u0000") || ALL_WHITE_SPACE.test(value)) return null;
   return value;
 }
 
