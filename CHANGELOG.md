@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.6.0: the vendor's hook can name a person, and two OAuth hooks ship ready-made
 
 ### Added
 
@@ -24,8 +24,8 @@
   shows for the principal. Your hook sets `Principal.displayName` and it is
   sent VERBATIM in every mode, hashed included, and never through your
   scrubber: you choose what is safe to show. A non-string, blank (only Unicode
-  whitespace), over-128-code-point, lone-surrogate or NUL-bearing name is dropped on its
-  own; the id still ships. A principal with no name is unchanged on the wire.
+  whitespace), over-128-code-point, lone-surrogate or NUL-bearing name is
+  dropped on its own; the id still ships. A principal with no name is unchanged on the wire.
   ⚠ **The email hook sends the local part** — `alice` for `alice@acme.com` —
   even when ids are hashed; write your own hook if you don't want that.
   ⚠ Needs a collector that accepts the member: a strict one rejects the event.
