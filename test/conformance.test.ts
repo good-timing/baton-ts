@@ -291,4 +291,21 @@ describe("baton-spec conformance", () => {
       expect(valid, ajv.errorsText(validate.errors)).toBe(true);
     });
   });
+
+  /** The ENVELOPE's optional members, which the payload fixtures above never
+   * reach. `principal.display_name` is optional inside an optional object, so
+   * a stale pin rejected every named event while every case above passed. */
+  it.each([
+    ["named", { id: "abc", source: "asserted", form: "hashed", display_name: "alice" }],
+    ["null name (Python's shape)", { id: "abc", source: "asserted", form: "raw", display_name: null }],
+    ["no name (this SDK's shape)", { id: "abc", source: "asserted", form: "hashed" }],
+  ])("a %s principal is valid against the PINNED schema", (_label, principal) => {
+    const event = BRANCHES.tool_call_start!.parse({
+      ...commonEnvelope(),
+      principal,
+      payload: MINIMAL.tool_call_start,
+    });
+    const valid = validate(JSON.parse(JSON.stringify(event)));
+    expect(valid, ajv.errorsText(validate.errors)).toBe(true);
+  });
 });
