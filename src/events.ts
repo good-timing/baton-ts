@@ -228,7 +228,7 @@ export const PrincipalWireSchema = z
     id: z.string(),
     source: z.string(),
     form: z.string(),
-    display_name: z.string().optional(),
+    display_name: z.string().nullable().optional(),
   })
   .strict();
 

@@ -342,6 +342,10 @@ describe("display_name on the wire (SPEC §11.4)", () => {
     expect(PrincipalWireSchema.safeParse(got).success).toBe(true);
   });
 
+  it("parses a null name — SPEC makes null and absent equivalent, and Python may send it", () => {
+    expect(PrincipalWireSchema.safeParse({ id: "x", source: "asserted", form: "raw", display_name: null }).success).toBe(true);
+  });
+
   it("is OMITTED, never null, when there is none — a nameless principal is unchanged", () => {
     expect(Object.keys(named(null)!)).toEqual(["id", "source", "form"]);
   });
