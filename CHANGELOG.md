@@ -1,5 +1,26 @@
 # Changelog
 
+## Unreleased: the hook states the principal, and the SDK sends it as given
+
+### Changed (BREAKING)
+
+- **`resolvePrincipal` decides everything about the value.** `Principal` gains
+  an optional `form` (`"raw"` by default; `"hashed"` when the hook derived a
+  pseudonym itself). The SDK puts `principalId`, `form` and `displayName` on
+  the wire as returned, with `source: "asserted"`. An unregistered `form` is
+  sent as `"raw"`. A `principalId` that is blank, not a string, or holds a lone
+  surrogate or U+0000 yields no `principal`. The wire shape is unchanged.
+  `PrincipalForm` is exported.
+
+### Removed (BREAKING)
+
+- **`principalIdMode`, `principalIdHmacKey` and the
+  `BATON_PRINCIPAL_ID_HMAC_KEY` read.** Nothing in the SDK hashes or holds a
+  key. A vendor who must not send real identities hashes inside the hook and
+  returns `form: "hashed"`.
+- **`hashPrincipalId`, `PrincipalIdMode` and `Principal.issuer`.** The sub hook
+  returns the subject alone.
+
 ## 0.5.1: the vendor's hook can name a person, and two OAuth hooks ship ready-made
 
 ### Added

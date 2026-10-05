@@ -12,7 +12,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { z } from "zod";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { withBaton } from "../../../src/integrations/mcp/withBaton.js";
 import { CLIENT_INFO_META_KEY } from "../../../src/integrations/mcp/runtimeAdapter.js";
 import type { BatonConfig } from "../../../src/integrations/mcp/config.js";
@@ -23,7 +23,6 @@ import {
   PRINCIPAL_FORM_HASHED,
   PRINCIPAL_FORM_RAW,
   PRINCIPAL_SOURCE_ASSERTED,
-  hashPrincipalId,
 } from "../../../src/identity.js";
 import { CHATGPT_IPHONE_META } from "../../openaiMetaSamples.js";
 
@@ -990,11 +989,7 @@ describe("withBaton — intent-param injection", () => {
   it("refuses the pre-0.3.5 identity keys rather than ignoring them", () => {
     // A JavaScript caller gets no compile error, and identity fails open, so an
     // ignored key would silently stop producing a principal.
-    for (const [was, now] of [
-      ["resolveUser", "resolvePrincipal"],
-      ["userIdMode", "principalIdMode"],
-      ["userIdHmacKey", "principalIdHmacKey"],
-    ] as const) {
+    for (const [was, now] of [["resolveUser", "resolvePrincipal"]] as const) {
       const server = new McpServer({ name: "vendor", version: "1.0.0" });
       const config = { vendorId: "acme", vendorDisplayName: "Acme", consentToken: "ct", sink, [was]: "x" };
       expect(() => withBaton(server, config as never)).toThrow(`BatonConfig.${was} was renamed to ${now}`);
@@ -1571,27 +1566,13 @@ describe("withBaton — coordinates in runtime_meta", () => {
 });
 
 // ---------------------------------------------------------------------------
-// `principal` (register D6) — the field existed on this SDK's envelope since
-// 0.3.0 with NOTHING able to populate it. These drive the real wrap so the
-// assertion is about what reaches the sink, not about the resolver in
-// isolation (that is `principalResolution.test.ts`).
+// `principal` — these drive the real wrap, so the assertion is about what
+// reaches the sink, not about the resolver in isolation (that is
+// `principalResolution.test.ts`).
 // ---------------------------------------------------------------------------
 
 describe("withBaton principal", () => {
   const TENANT = "tenant-e2e";
-  const KEY = "e2e-identity-key";
-
-  // ⚠ `resolvePrincipalIdHmacKey` falls back to `BATON_PRINCIPAL_ID_HMAC_KEY`, the
-  // variable vendors are told to export for hashed identity. On a
-  // machine or CI job that has it set, the "no key" test below would see a
-  // REAL hash and fail for a reason unrelated to the code. Cleared for this
-  // block so the assertions depend on the config, not on the environment.
-  beforeEach(() => {
-    vi.stubEnv("BATON_PRINCIPAL_ID_HMAC_KEY", "");
-  });
-  afterEach(() => {
-    vi.unstubAllEnvs();
-  });
 
   async function drive(
     sink: CapturingSink,
@@ -1631,30 +1612,73 @@ describe("withBaton principal", () => {
     }
   });
 
-  it("reaches the tool-call legs AND the annotation tool from one hook", async () => {
-    // The split that matters: an annotation naming a different actor than the
-    // call it describes is unjoinable downstream. Both paths, one hook, one
-    // resolution — and asserted on the EXPECTED hash, so two paths that are
-    // both broken to null cannot pass by agreeing.
-    const expected = {
-      id: hashPrincipalId("employee-4417", { tenantId: TENANT, key: KEY }),
-      source: PRINCIPAL_SOURCE_ASSERTED,
-      form: PRINCIPAL_FORM_HASHED,
-    };
-    const events = await drive(new CapturingSink(), {
-      resolvePrincipal: () => ({ principalId: "employee-4417" }),
-      principalIdHmacKey: KEY,
-    });
-
+  /** Every event a call's principal rides: the tool-call legs AND the
+   * annotation. An annotation naming a different actor than the call it
+   * describes is unjoinable downstream, so each case below asserts both. */
+  function carriersOf(events: Event[]): Event[] {
     const carriers = events.filter((e) => e.event_type !== "surface_snapshot");
-    expect(carriers.length).toBeGreaterThan(1);
-    for (const event of carriers) {
-      expect(event.principal).toEqual(expected);
+    expect(carriers.some((e) => e.event_type.startsWith("tool_call"))).toBe(true);
+    expect(carriers.some((e) => e.event_type === "annotation")).toBe(true);
+    return carriers;
+  }
+
+  it("sends the id as the hook returned it and calls it raw, on both emit paths", async () => {
+    const events = await drive(new CapturingSink(), {
+      resolvePrincipal: () => ({ principalId: "Alice@Acme.example" }),
+    });
+    for (const event of carriersOf(events)) {
+      expect(event.principal).toEqual({
+        id: "Alice@Acme.example",
+        source: PRINCIPAL_SOURCE_ASSERTED,
+        form: PRINCIPAL_FORM_RAW,
+      });
       expect(Object.keys(event)).not.toContain("principal_id");
     }
+  });
 
-    const annotations = carriers.filter((e) => e.event_type === "annotation");
-    expect(annotations.length).toBeGreaterThan(0);
+  it("sends the form the hook stated, with the id untouched, on both emit paths", async () => {
+    const events = await drive(new CapturingSink(), {
+      resolvePrincipal: () => ({ principalId: "9F2C-not-hex", form: "hashed" }),
+    });
+    for (const event of carriersOf(events)) {
+      expect(event.principal).toEqual({
+        id: "9F2C-not-hex",
+        source: PRINCIPAL_SOURCE_ASSERTED,
+        form: PRINCIPAL_FORM_HASHED,
+      });
+    }
+  });
+
+  it("sends an unregistered form as raw, on both emit paths", async () => {
+    // SPEC §11.4: anything not exactly "hashed" is personal data.
+    const warnings = vi.spyOn(process, "emitWarning").mockImplementation(() => {});
+    let events: Event[];
+    try {
+      events = await drive(new CapturingSink(), {
+        resolvePrincipal: () => ({ principalId: "employee-4417", form: "encrypted" }) as never,
+      });
+    } finally {
+      warnings.mockRestore();
+    }
+    for (const event of carriersOf(events)) {
+      expect(event.principal).toEqual({
+        id: "employee-4417",
+        source: PRINCIPAL_SOURCE_ASSERTED,
+        form: PRINCIPAL_FORM_RAW,
+      });
+    }
+  });
+
+  it("never lets a hook RESULT that throws when read fail the vendor's tool call", async () => {
+    const events = await drive(new CapturingSink(), {
+      resolvePrincipal: () => ({
+        get principalId(): string {
+          throw new Error("vendor getter");
+        },
+      }),
+    });
+    expect(events.some((e) => e.event_type === "tool_call_end")).toBe(true);
+    for (const event of events) expect(event.principal).toBeNull();
   });
 
   it("never lets a vendor's broken hook fail the vendor's tool call", async () => {
@@ -1663,51 +1687,17 @@ describe("withBaton principal", () => {
       resolvePrincipal: () => {
         throw new Error("vendor bug");
       },
-      principalIdHmacKey: KEY,
     });
     // The call still succeeded and still emitted; identity is simply absent.
     expect(events.some((e) => e.event_type === "tool_call_end")).toBe(true);
     for (const event of events) expect(event.principal).toBeNull();
   });
 
-  it("drops the field in hashed mode with no key rather than emitting it raw", async () => {
-    // A residency breach that looked like success would be: field present,
-    // populated, carrying the subject verbatim.
-    const events = await drive(new CapturingSink(), {
-      resolvePrincipal: () => ({ principalId: "alice@acme.example" }),
-    });
-    for (const event of events) {
-      expect(event.principal).toBeNull();
-      expect(JSON.stringify(event)).not.toContain("alice@acme.example");
-    }
-  });
-
-  it("emits the subject verbatim in raw mode", async () => {
-    const events = await drive(new CapturingSink(), {
-      resolvePrincipal: () => ({ principalId: "alice@acme.example" }),
-      principalIdMode: "raw",
-    });
-    const carriers = events.filter((e) => e.event_type !== "surface_snapshot");
-    for (const event of carriers) {
-      // The half a scheme prefix structurally could not carry: raw mode emits
-      // an UNTAGGED value and still names both its provenance and its form,
-      // so a consumer here is told a real identity AND which mechanism named
-      // it. Under the retired shape this event was indistinguishable from an
-      // attested one.
-      expect(event.principal).toEqual({
-        id: "alice@acme.example",
-        source: PRINCIPAL_SOURCE_ASSERTED,
-        form: PRINCIPAL_FORM_RAW,
-      });
-    }
-  });
-
   it("never stamps a principal on a surface_snapshot", async () => {
     // It describes the SERVER and is captured outside any call, so there is
-    // no caller to name (Python register D5).
+    // no caller to name.
     const events = await drive(new CapturingSink(), {
       resolvePrincipal: () => ({ principalId: "employee-4417" }),
-      principalIdHmacKey: KEY,
     });
     for (const event of events.filter((e) => e.event_type === "surface_snapshot")) {
       expect(event.principal).toBeNull();

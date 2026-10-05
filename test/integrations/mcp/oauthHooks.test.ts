@@ -1,11 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 
-import {
-  PRINCIPAL_FORM_HASHED,
-  PRINCIPAL_SOURCE_ASSERTED,
-  hashPrincipalId,
-} from "../../../src/identity.js";
+import { PRINCIPAL_FORM_RAW, PRINCIPAL_SOURCE_ASSERTED } from "../../../src/identity.js";
 import {
   principalFromOAuthEmail,
   principalFromOAuthSub,
@@ -22,7 +18,6 @@ import {
 import { CapturingSink, MAJORS, install } from "./_majors.js";
 
 const TENANT = "ten_parity";
-const KEY = "cross-sdk-key";
 const CLAIMS = {
   sub: "opaque-123",
   email: "Alice@Acme.example",
@@ -49,11 +44,7 @@ function ctx(info: AuthInfo | null): PrincipalResolutionContext {
 }
 
 async function resolve(hook: ResolvePrincipalHook, extra: object) {
-  return resolveCallPrincipal(
-    hook,
-    { extra, toolName: "lookup", arguments: {} },
-    { mode: "hashed", tenantId: TENANT, key: KEY },
-  );
+  return resolveCallPrincipal(hook, { extra, toolName: "lookup", arguments: {} });
 }
 
 describe("the context carries the validated token on both majors", () => {
@@ -74,32 +65,23 @@ describe("the context carries the validated token on both majors", () => {
     const got = await resolveCallPrincipal(
       undefined,
       { extra: extraV1(authInfo(CLAIMS)), toolName: "lookup", arguments: {} },
-      { mode: "hashed", tenantId: TENANT, key: KEY },
     );
     expect(got).toBeNull();
   });
 });
 
-describe("cross-SDK parity: the SAME digest Python's twin produces", () => {
-  // ⚠ FROZEN from baton-sdk's `principal_from_oauth_sub` / `principal_from_oauth_email`
-  // on the same claims, tenant and key (2026-10-02). Both SDKs share the hash
-  // (pinned by the identity corpus); what this pins is that the two hooks
-  // pick the same (id, issuer) PAIR from one token. Do not update a literal to
-  // make this pass — a mismatch means one arm keys a person differently.
-  const PY_SUB =
-    "6c532d2c0a0366be74008fe3c4be5449fcc4e886b6825deca9ed30d2e5305a26";
-  const PY_EMAIL =
-    "7c2bd6eddc6679977e0ae2543f05922835a7cc0e28c86a518967e06b1c86f5ff";
-
+describe("cross-SDK parity: the SAME principal Python's twin produces", () => {
+  // What `principal_from_oauth_sub` / `principal_from_oauth_email` return for
+  // the same claims. A mismatch means one arm keys a person differently.
   it.each([
-    ["sub", principalFromOAuthSub, PY_SUB, {}],
-    ["email", principalFromOAuthEmail, PY_EMAIL, { display_name: "Alice" }],
+    ["sub", principalFromOAuthSub, CLAIMS.sub, {}],
+    ["email", principalFromOAuthEmail, CLAIMS.email, { display_name: "Alice" }],
   ] as const)("%s, on both majors", async (_label, hook, expected, named) => {
     for (const shape of [extraV1, extraV2]) {
       expect(await resolve(hook, shape(authInfo(CLAIMS)))).toEqual({
         id: expected,
         source: PRINCIPAL_SOURCE_ASSERTED,
-        form: PRINCIPAL_FORM_HASHED,
+        form: PRINCIPAL_FORM_RAW,
         ...named,
       });
     }
@@ -107,15 +89,12 @@ describe("cross-SDK parity: the SAME digest Python's twin produces", () => {
 });
 
 describe("principalFromOAuthSub", () => {
-  it("reads sub and iss from authInfo.extra", () => {
+  it("reads sub from authInfo.extra, and nothing else", () => {
     expect(
       principalFromOAuthSub(
         ctx(authInfo({ sub: "alice", iss: "https://idp" })),
       ),
-    ).toEqual({
-      principalId: "alice",
-      issuer: "https://idp",
-    });
+    ).toEqual({ principalId: "alice" });
   });
 
   it("never falls back to clientId, which names the APP", () => {
@@ -130,17 +109,6 @@ describe("principalFromOAuthSub", () => {
       expect(principalFromOAuthSub(ctx(authInfo({ sub })))).toBeNull();
     }
     expect(principalFromOAuthSub(ctx(null))).toBeNull();
-  });
-
-  it("returns a clean issuer to a vendor wrapping the hook", () => {
-    expect(principalFromOAuthSub(ctx(authInfo({ sub: "a", iss: 42 })))?.issuer).toBeNull();
-    expect(principalFromOAuthSub(ctx(authInfo({ sub: "a", iss: "" })))?.issuer).toBeNull();
-  });
-
-  it("an empty issuer hashes as no issuer, rather than a second pseudonym", async () => {
-    // Coerced by `normalizePrincipal`, not by the hook, so asserted on the digest.
-    const got = await resolve(principalFromOAuthSub, extraV1(authInfo({ sub: "alice", iss: "" })));
-    expect(got?.id).toBe(hashPrincipalId("alice", { tenantId: TENANT, key: KEY }));
   });
 
 });
@@ -166,34 +134,16 @@ describe("principalFromOAuthEmail", () => {
       principalFromOAuthEmail,
       extraV1(authInfo({ email: "alice@contoso.com" })),
     );
-    expect(a?.id).toBe(
-      hashPrincipalId("alice@acme.com", { tenantId: TENANT, key: KEY }),
-    );
-    expect(a?.id).not.toBe(b?.id);
+    expect(a?.id).toBe("alice@acme.com");
+    expect(b?.id).toBe("alice@contoso.com");
   });
 
-  it("sends the local part as display_name, hashed mode included, and never the address", async () => {
-    // Ruled 2026-10-02: the name rides every mode; a vendor who wants none
-    // writes their own hook. The address itself stays hashed.
+  it("sends the local part as display_name", async () => {
     const got = await resolve(
       principalFromOAuthEmail,
       extraV2(authInfo({ email: "alice@acme.com" })),
     );
     expect(got!.display_name).toBe("alice");
-    expect(JSON.stringify(got)).not.toContain("acme");
-  });
-
-  it("keeps one pseudonym when the issuer URL changes — no issuer is folded in", async () => {
-    const a = await resolve(
-      principalFromOAuthEmail,
-      extraV1(authInfo({ email: "alice@acme.com", iss: "https://sts.windows.net/x/" })),
-    );
-    const b = await resolve(
-      principalFromOAuthEmail,
-      extraV1(authInfo({ email: "alice@acme.com", iss: "https://login.microsoftonline.com/x/v2.0" })),
-    );
-    expect(a).not.toBeNull();
-    expect(a).toEqual(b);
   });
 
   it("does not fall back to sub — which claim names the person is the vendor's call", () => {
@@ -203,10 +153,7 @@ describe("principalFromOAuthEmail", () => {
   it("composes with ?? into email-else-sub", () => {
     const hook: ResolvePrincipalHook = (c) =>
       principalFromOAuthEmail(c) ?? principalFromOAuthSub(c);
-    expect(hook(ctx(authInfo({ sub: "alice" }))) as unknown).toEqual({
-      principalId: "alice",
-      issuer: null,
-    });
+    expect(hook(ctx(authInfo({ sub: "alice" }))) as unknown).toEqual({ principalId: "alice" });
   });
 
   it("splits on the LAST @, and names nobody when there is no local part", () => {
@@ -235,7 +182,6 @@ describe("principalFromOAuthEmail", () => {
     const hook: ResolvePrincipalHook = (c) => principalFromOAuthEmail(c) ?? principalFromOAuthSub(c);
     expect(hook(ctx(authInfo({ email: "\x1f", sub: "opaque-123" }))) as unknown).toEqual({
       principalId: "opaque-123",
-      issuer: null,
     });
     expect(principalFromOAuthEmail(ctx(authInfo({ email: "\uFEFF" })))?.principalId).toBe("\uFEFF");
   });
@@ -262,14 +208,13 @@ describe.each(MAJORS)("end to end on $label", (major) => {
   // This drives a REAL server of each major, with the token delivered by the
   // SDK's own transport, so a major that kept `authInfo` somewhere other than
   // where `extraAuthInfo` reads would leave every event without a principal.
-  it("the email hook resolves the frozen Python digest from an authenticated call", async () => {
+  it("the email hook resolves the address from an authenticated call", async () => {
     const server = major.make();
     major.tool(server, "lookup", { name: z.string() }, () => ({ content: [] }));
     const sink = new CapturingSink();
     install(server, sink, {
       resolvePrincipal: principalFromOAuthEmail,
       tenantId: TENANT,
-      principalIdHmacKey: KEY,
     });
     const client = await major.connect(server, { authInfo: authInfo(CLAIMS) });
     await client.callTool({ name: "lookup", arguments: { name: "x" } });
@@ -277,24 +222,22 @@ describe.each(MAJORS)("end to end on $label", (major) => {
     expect(calls.length).toBeGreaterThan(0);
     for (const event of calls) {
       expect(event.principal).toEqual({
-        id: "7c2bd6eddc6679977e0ae2543f05922835a7cc0e28c86a518967e06b1c86f5ff",
+        id: CLAIMS.email,
         source: PRINCIPAL_SOURCE_ASSERTED,
-        form: PRINCIPAL_FORM_HASHED,
+        form: PRINCIPAL_FORM_RAW,
         display_name: "Alice",
       });
     }
   });
 
   it("the annotation tool resolves the same principal as the tool call", async () => {
-    // The second `resolveCallPrincipal` site (annotation.ts). Python's parity
-    // file collapses both emit paths to one value for this reason.
+    // The second `resolveCallPrincipal` site (annotation.ts).
     const server = major.make();
     major.tool(server, "lookup", { name: z.string() }, () => ({ content: [] }));
     const sink = new CapturingSink();
     const handle = install(server, sink, {
       resolvePrincipal: principalFromOAuthEmail,
       tenantId: TENANT,
-      principalIdHmacKey: KEY,
     });
     const client = await major.connect(server, { authInfo: authInfo(CLAIMS) });
     await client.callTool({ name: "lookup", arguments: { name: "x" } });
@@ -307,14 +250,14 @@ describe.each(MAJORS)("end to end on $label", (major) => {
     const ids = new Set(
       sink.events.filter((e) => e.event_type !== "surface_snapshot").map((e) => e.principal?.id ?? null),
     );
-    expect([...ids]).toEqual(["7c2bd6eddc6679977e0ae2543f05922835a7cc0e28c86a518967e06b1c86f5ff"]);
+    expect([...ids]).toEqual([CLAIMS.email]);
   });
 
   it("an authenticated call with NO hook carries no principal", async () => {
     const server = major.make();
     major.tool(server, "lookup", { name: z.string() }, () => ({ content: [] }));
     const sink = new CapturingSink();
-    install(server, sink, { tenantId: TENANT, principalIdHmacKey: KEY });
+    install(server, sink, { tenantId: TENANT });
     const client = await major.connect(server, { authInfo: authInfo(CLAIMS) });
     await client.callTool({ name: "lookup", arguments: { name: "x" } });
     const calls = sink.events.filter((e) => e.event_type.startsWith("tool_call"));

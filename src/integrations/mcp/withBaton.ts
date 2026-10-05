@@ -114,7 +114,6 @@ import { roundMetaCoordinates } from "../../metaCoordinates.js";
 import {
   resolveBatonConfig,
   resolveTenantId,
-  resolvePrincipalIdHmacKey,
   type BatonConfig,
 } from "./config.js";
 import { captureDisabled, DisabledSink, logDisabled } from "../../optout.js";
@@ -151,9 +150,7 @@ import { resolveSessionId } from "./sessionResolution.js";
 import {
   type ResolvePrincipalHook,
   resolveCallPrincipal,
-  warnIfIdentityCannotResolve,
 } from "./principalResolution.js";
-import type { PrincipalIdMode } from "../../identity.js";
 import { SessionCounter } from "./sessionCounter.js";
 import {
   advertiseUserGoalRequired,
@@ -199,8 +196,6 @@ interface WrapContext {
    * resolutions could disagree, and an annotation naming a different actor
    * than the call it describes is worse than one naming nobody. */
   resolvePrincipal: ResolvePrincipalHook | undefined;
-  principalIdMode: PrincipalIdMode;
-  principalIdHmacKey: string | Uint8Array | undefined;
   tracker: ProactiveTracker;
   surfaceState: SurfaceState;
   emitSurface: (
@@ -523,7 +518,6 @@ async function openCall(
   const principal = await resolveCallPrincipal(
     ctx.resolvePrincipal,
     { extra, toolName, arguments: params },
-    { mode: ctx.principalIdMode, tenantId: ctx.tenantId, key: ctx.principalIdHmacKey },
   );
 
   const common = {
@@ -2016,19 +2010,12 @@ export function withBaton(server: SupportedMcpServer, supplied: BatonConfig = {}
     resultCaptureMode: config.resultCaptureMode ?? "full",
     paramRegistry: new Map(),
     resolvePrincipal: config.resolvePrincipal,
-    principalIdMode: config.principalIdMode ?? "hashed",
-    principalIdHmacKey: resolvePrincipalIdHmacKey(config.principalIdHmacKey),
     vendorToolJsonSchema,
     bustSchemaMemo,
     tracker,
     surfaceState,
     emitSurface,
   };
-
-  // Install-time, not per-call: all three inputs are resolved above and cannot
-  // change for the life of this server. See `warnIfIdentityCannotResolve` for
-  // why the silent-success case is the one that needs saying out loud.
-  warnIfIdentityCannotResolve(ctx);
 
   // Server instructions — load-bearing on instruction-aware runtimes (SPEC
   // §5.1.2). No public setter exists post-construction; see module
@@ -2091,15 +2078,7 @@ export function withBaton(server: SupportedMcpServer, supplied: BatonConfig = {}
     vendorId: ctx.vendorId,
     vendorDisplayName: config.vendorDisplayName,
     consentToken: ctx.consentToken,
-    // Read off `ctx`, never re-resolved from `config`: the two paths must
-    // agree on the actor, and `principalIdMode`/`principalIdHmacKey` each have a
-    // default and an env fallback that a second resolution could take
-    // differently. Required (not optional) on the options type ON PURPOSE —
-    // the compiler then refuses a registration that forgets them, which is
-    // the mechanical version of "wiring two of four call sites".
     resolvePrincipal: ctx.resolvePrincipal,
-    principalIdMode: ctx.principalIdMode,
-    principalIdHmacKey: ctx.principalIdHmacKey,
     fallbackSessionId: ctx.fallbackSessionId,
     scrubber: ctx.scrubber,
     // The RESOLVED name, never `config.annotationToolName`: handing over the

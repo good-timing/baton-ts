@@ -1,21 +1,18 @@
 /** `BatonConfig.resolvePrincipal` — the ONLY identity provenance (SPEC §11.4).
  *
- * **The producer never reads the token itself** (SPEC §11.4, §13 2026-10-02 —
- * Python's own token rung was removed the same day), so every principal this
- * SDK emits is `source: "asserted"`. The hook's context carries the validated
- * `authInfo`, and `oauthHooks.ts` ships the two ready-made OAuth hooks.
+ * The producer never reads the token itself and never derives the value: who
+ * the person is, and whether the id is hashed, are the hook's to state. Every
+ * principal this SDK emits is `source: "asserted"`. The hook's context carries
+ * the validated `authInfo`, and `oauthHooks.ts` ships the two ready-made
+ * OAuth hooks.
  *
- * The TypeScript half of Python's `integrations/identity_adapter.py`, built to
- * close register D6: the field (`user_id` until 0.3.5) had been on this SDK's
- * envelope since 0.3.0 and NOTHING could populate it, so a partition that
- * works on one of two SDKs is not a partition.
+ * The TypeScript half of Python's `integrations/identity_adapter.py`.
  */
 
 import {
   type Principal,
-  type PrincipalIdMode,
   type PrincipalWire,
-  PRINCIPAL_ID_MODE_HASHED,
+  PRINCIPAL_FORM_RAW,
   normalizePrincipal,
   principalFor,
 } from "../../identity.js";
@@ -88,49 +85,6 @@ function buildPrincipalResolutionContext(
   };
 }
 
-/** Warn ONCE at install when identity is configured but cannot produce a value.
- *
- * ⚠ **The silent-success case is the one that needs a voice.** A vendor sets
- * `resolvePrincipal`, ships, and sees `principal: null` on every event forever —
- * hashed mode with no key DROPS the field by design, and without this there is
- * no string anywhere in the process to grep for. Python spends a `warned` set
- * threaded through five call sites to say this; here all three inputs are
- * install-resolved constants, so it costs one check at startup and nothing per
- * call.
- *
- * ⚠ **The message must never contain the principal.** Identity was configured
- * and produced nothing, and printing the value to explain that would put raw
- * end-user identity in the vendor's log files — the residency leak one layer
- * sideways. Python's equivalent carries the same warning.
- *
- * `process.emitWarning` because `console` is banned in this package (stdout is
- * the MCP JSON-RPC frame) and this is the channel `optout.ts` and `HttpSink`
- * already use. Guarded like every `process` read here: absent on edge and
- * worker runtimes, where a missing warning channel must not crash startup.
- */
-export function warnIfIdentityCannotResolve(config: {
-  resolvePrincipal?: ResolvePrincipalHook | undefined;
-  principalIdMode: PrincipalIdMode;
-  principalIdHmacKey: string | Uint8Array | undefined;
-}): void {
-  if (config.resolvePrincipal === undefined) return;
-  if (config.principalIdMode !== PRINCIPAL_ID_MODE_HASHED) return;
-  if (config.principalIdHmacKey !== undefined) return;
-  if (typeof process === "undefined" || typeof process.emitWarning !== "function") return;
-  // The pre-0.3.5 variable is never read. Naming it is the only way an upgrade
-  // that kept it learns why identity stopped; its value is never logged.
-  const renamed = process.env?.BATON_USER_ID_HMAC_KEY
-    ? "BATON_USER_ID_HMAC_KEY is set, but it was renamed to " +
-      "BATON_PRINCIPAL_ID_HMAC_KEY in 0.3.5 and is no longer read. "
-    : "";
-  process.emitWarning(
-    "baton: resolvePrincipal is configured but no principal HMAC key is set, so " +
-      `the principal is dropped from every event (events still emit). ${renamed}Set ` +
-      "BATON_PRINCIPAL_ID_HMAC_KEY or BatonConfig.principalIdHmacKey, or pass " +
-      'principalIdMode: "raw" if you intend to emit the subject verbatim.',
-  );
-}
-
 let warnedPreRenameShape = false;
 
 /** A hook still returning the pre-0.3.5 `{ userId }` resolves nobody on every
@@ -153,69 +107,44 @@ function warnIfPreRenameShape(result: unknown): void {
  * analytics and a vendor's own bug in their resolver may not fail their tool
  * call (SPEC §11.2 fail-open). The prior art converged on the identical rule.
  *
- * ⚠ **No timeout, and that is a DIVERGENCE from Python recorded rather than
- * an omission.** Python runs vendor hooks off the event loop under a 5s
- * budget (`integrations/_hooks.py`); this arm awaits the hook inline. ⚠ An
- * earlier draft justified that by "matching `resolveSessionId`, the convention
- * already shipped here" — but `BatonConfig.resolveSessionId` was REMOVED
- * 2026-09-12 and the surviving function takes no vendor callable at all. The
- * real precedent is `scrubber`, the only other vendor code this SDK runs
- * inline; `resolvePrincipal` is the first vendor hook on its per-call path. So the
- * gap is real and deserves its true weight rather than an argument from a
- * convention that no longer exists. A hook that blocks stalls this request.
- * Containment is a separate, larger change on this arm.
+ * ⚠ **No timeout, and that is a DIVERGENCE from Python.** Python runs vendor
+ * hooks off the event loop under a 5s budget (`integrations/_hooks.py`); this
+ * arm awaits the hook inline, as it does `scrubber`, the only other vendor
+ * code on the per-call path. A hook that blocks stalls this request.
  */
 export async function resolveCallPrincipal(
   hook: ResolvePrincipalHook | undefined,
   call: { extra: Extra; toolName: string; arguments: Record<string, unknown> },
-  options: {
-    mode: PrincipalIdMode;
-    tenantId: string;
-    key?: Uint8Array | string | null | undefined;
-  },
 ): Promise<PrincipalWire | null> {
-  // ⚠ **The context is built HERE — after the hook check, inside the try —
-  // and the signature takes the raw call rather than a built context so a
-  // caller CANNOT do it the other way.** Passing a context as an argument
-  // meant it was constructed on every tool call of every server that never
-  // configured identity, and constructed OUTSIDE this guard, so a throw from
-  // the header read escaped into the vendor's tool call. Python states the
-  // same rule (`standalone/middleware.py`: "the context is built only when a
-  // hook exists"), and having it as a convention rather than a shape is how
-  // this arm got it wrong.
+  // The context is built HERE — after the hook check, inside the try — and
+  // the signature takes the raw call so a caller cannot do it the other way:
+  // a server with no hook pays nothing, and a throw from the header read
+  // cannot escape into the vendor's tool call.
   if (hook === undefined) return null;
-  let result: unknown;
   try {
     const context = buildPrincipalResolutionContext(call.extra, call.toolName, call.arguments);
-    result = await hook(context);
-  } catch {
-    // Broad on purpose, and for the reason the sibling guards are: this calls
-    // code a VENDOR wrote, and an identity read may not be able to fail a
-    // tool call. Nothing is logged to stdout — that stream is the MCP
-    // JSON-RPC frame (AGENTS.md boundary rule 2).
-    return null;
-  }
-  const principal = normalizePrincipal(result);
-  if (principal === null) {
-    warnIfPreRenameShape(result);
-    return null;
-  }
-  try {
-    return principalFor(principal, {
-      mode: options.mode,
-      tenantId: options.tenantId,
-      key: options.key,
+    const result: unknown = await hook(context);
+    // Reading the result stays inside the try: a getter or Proxy on what the
+    // hook returned is still the vendor's code.
+    const principal = normalizePrincipal(result);
+    if (principal === null) {
+      warnIfPreRenameShape(result);
+      return null;
+    }
+    return principalFor(principal, (form) => {
+      warn(
+        `baton: resolvePrincipal returned form ${describeForm(form)}, expected "raw" or "hashed" — ` +
+          `sending it as "${PRINCIPAL_FORM_RAW}".`,
+      );
     });
   } catch {
-    // The hashing step, which the guard above did NOT cover. `createHmac`
-    // rejects a key that is not a string/TypedArray, and a JavaScript vendor
-    // — or a TypeScript one whose config came from parsed settings and is
-    // typed `any` — reaches this with `principalIdHmacKey: 12345`. Install-time
-    // validation refuses that now, but this function's docstring promises it
-    // cannot raise, and a promise like that needs the guard rather than an
-    // argument about who calls it. Python guards the same call for the same
-    // reason (`identity_adapter.py:324`).
+    // Broad on purpose: this calls code a VENDOR wrote, and an identity read
+    // may not be able to fail a tool call. Nothing is logged to stdout — that
+    // stream is the MCP JSON-RPC frame (AGENTS.md boundary rule 2).
     return null;
   }
 }
 
+function describeForm(form: unknown): string {
+  return typeof form === "string" ? JSON.stringify(form.slice(0, 32)) : `of type ${typeof form}`;
+}

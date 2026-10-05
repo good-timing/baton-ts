@@ -4,341 +4,142 @@ import {
   PRINCIPAL_FORM_HASHED,
   PRINCIPAL_FORM_RAW,
   PRINCIPAL_SOURCE_ASSERTED,
-  RAW_PRINCIPAL_ID_MAX_LEN,
+  PRINCIPAL_ID_MAX_LEN,
   DISPLAY_NAME_MAX_LEN,
-  hashPrincipalId,
   normalizePrincipal,
   principalFor,
 } from "../src/identity.js";
 import { PrincipalWireSchema } from "../src/events.js";
-import vectors from "./identityVectors.json" with { type: "json" };
-
-/** The differential corpus. Every `expected` here was produced by Python's
- * `baton.identity.hash_principal_id` and written by `scripts/gen_identity_vectors.py`
- * — nothing in this file is hand-derived, which is the whole point. A hand
- * -written expectation only proves this implementation agrees with whoever
- * wrote the test; these prove it agrees with the other SDK.
- *
- * ⚠ This METHOD is new. `scrub.ts` parity mirrors Python's test matrix
- * case-for-case by hand; nothing there is generated. A generated corpus is the
- * stronger form, and the reason is the same one: a person reaching two SDKs
- * must be ONE actor downstream. */
-describe("hashPrincipalId parity with the Python SDK", () => {
-  for (const c of vectors.cases) {
-    it(`matches Python: ${c.name}`, () => {
-      expect(
-        hashPrincipalId(c.principal, {
-          tenantId: vectors.tenant_id,
-          key: vectors.key_utf8,
-          issuer: c.issuer,
-        }),
-      ).toBe(c.expected);
-    });
-  }
-
-  it("emits a BARE digest, and the SAME digest the tagged era emitted", () => {
-    // ⚠ **Pinned by LITERAL, and that is the point of this case.** This was
-    // "defaults to the key generation Python's corpus was generated under",
-    // guarding a wire constant that no longer exists (`HASH_SCHEME`, removed at
-    // 0.4.1 with the tag). The reason it was pinned by literal still applies to
-    // its replacement: an assertion written against a constant in this repo is
-    // self-referential and cannot see that constant move.
-    //
-    // **What it guards now is the CONTINUITY claim.** SPEC §13 says taking the
-    // tag off was a relabel, not a recomputation — the tag was never in the HMAC
-    // message. The hex below was Python's output under `h1:` before 0.8.11 and
-    // is Python's output bare after it, so this is the one assertion proving the
-    // digest survived the change ACROSS the language boundary. If it ever reds,
-    // the derivation moved and every stored pseudonym is unreproducible.
-    const plain = vectors.cases.find((c) => c.name === "plain ascii");
-    expect(plain).toBeDefined();
-    expect(plain!.expected).toBe(
-      "311e59dcfc8cf3abb267b85dec03bc3e924b2e3fa9d627209a9cfaf0f1164d47",
-    );
-    expect(plain!.expected).not.toContain(":");
-    expect(
-      hashPrincipalId(plain!.principal, {
-        tenantId: vectors.tenant_id,
-        key: vectors.key_utf8,
-        issuer: plain!.issuer,
-      }),
-    ).toBe(plain!.expected);
-  });
-
-  it("covers the canonicalization traps on purpose", () => {
-    // A guard on the corpus itself: these vectors are the reason the
-    // canonicalizer cannot use `.trim()`, so losing them silently would let a
-    // `.trim()` regression pass the rest of the suite.
-    const names = vectors.cases.map((c) => c.name);
-    expect(names.some((n) => n.includes("BOM"))).toBe(true);
-    expect(names.some((n) => n.includes("NFD"))).toBe(true);
-    expect(names.some((n) => n.includes("WHITESPACE-ONLY"))).toBe(true);
-  });
-});
-
-describe("hashPrincipalId properties", () => {
-  const KEY = "unit-key";
-
-  it("emits a value that carries NO facts about itself", () => {
-    // Replaces "labels the KEY GENERATION without moving the digest", which
-    // hashed under `h2` and checked only the prefix moved. There is no prefix
-    // to move at 0.4.1.
-    //
-    // ⚠ **Written as "no colon", not as "not h1:".** Naming the retired tag
-    // would let `h2:`, `v1:` or a newly invented letter through, which is how
-    // a tag came back the first time. 64 lowercase hex characters and nothing
-    // else is the whole contract.
-    const digest = hashPrincipalId("e-1", { tenantId: "t", key: KEY });
-    expect(digest).toMatch(/^[0-9a-f]{64}$/);
-  });
-
-  it("folds the tenant into the MESSAGE, so one principal cannot correlate across tenants", () => {
-    expect(hashPrincipalId("e-1", { tenantId: "t-a", key: KEY })).not.toBe(
-      hashPrincipalId("e-1", { tenantId: "t-b", key: KEY }),
-    );
-  });
-
-  it("treats a missing issuer as the pre-issuer form", () => {
-    // The append-only layout: every hash the proxy and extmcp have emitted
-    // since 0.5.0 was issuer-less, and they share this contract.
-    const omitted = hashPrincipalId("e-1", { tenantId: "t", key: KEY });
-    expect(hashPrincipalId("e-1", { tenantId: "t", key: KEY, issuer: null })).toBe(omitted);
-    expect(hashPrincipalId("e-1", { tenantId: "t", key: KEY, issuer: undefined })).toBe(omitted);
-  });
-
-  it("separates two people who share a subject under different issuers", () => {
-    expect(hashPrincipalId("sub-7", { tenantId: "t", key: KEY, issuer: "https://a.example" })).not.toBe(
-      hashPrincipalId("sub-7", { tenantId: "t", key: KEY, issuer: "https://b.example" }),
-    );
-  });
-
-  it("encodes a string key as UTF-8, matching Python's env-var path", () => {
-    expect(hashPrincipalId("e-1", { tenantId: "t", key: "🔑" })).toBe(
-      hashPrincipalId("e-1", { tenantId: "t", key: new TextEncoder().encode("🔑") }),
-    );
-  });
-});
 
 describe("the principal object's REQUIRED shape", () => {
   it("names the provenance by the LITERAL the spec registers, not by our constant", () => {
-    // ⚠ **Pinned by literal for the same reason the tag is.** Every other
-    // assertion spells this `PRINCIPAL_SOURCE_ASSERTED` and therefore follows
-    // the constant wherever it goes — a mutation setting it to `"attested"`
-    // passed the whole suite. That mutant is the one that matters most: this
-    // SDK has NO attested rung (`AuthInfo` carries no `claims`), and SPEC
-    // §11.4 forbids a consumer presenting an asserted principal as verified.
-    // So the negative is the load-bearing half, not the positive.
+    // Pinned by literal: an assertion spelled with the constant follows it
+    // wherever it goes, and SPEC §11.4 forbids presenting an asserted
+    // principal as verified, so the negative is the load-bearing half.
     expect(PRINCIPAL_SOURCE_ASSERTED).toBe("asserted");
     expect(PRINCIPAL_SOURCE_ASSERTED).not.toBe("attested");
     expect(PRINCIPAL_FORM_HASHED).toBe("hashed");
     expect(PRINCIPAL_FORM_RAW).toBe("raw");
 
-    const emitted = principalFor({ principalId: "e-1" }, { mode: "hashed", tenantId: "t", key: "k" });
-    expect(emitted!.source).toBe("asserted");
+    expect(principalFor({ principalId: "e-1" }).source).toBe("asserted");
   });
 
   it("refuses a PARTIAL object — all three members or nothing", () => {
-    // The whole guarantee the object exists to give, and nothing tested it:
-    // a schema that admitted a missing `source` or `form` would be the prose
-    // -shaped binding this change exists to replace, wearing an object's
-    // syntax. A mutation making `source` optional-with-a-default survived the
-    // suite before this case existed.
-    const whole = { id: "h1:abc", source: "asserted", form: "hashed" };
+    const whole = { id: "abc", source: "asserted", form: "hashed" };
     expect(PrincipalWireSchema.safeParse(whole).success).toBe(true);
     for (const missing of ["id", "source", "form"] as const) {
       const partial: Record<string, unknown> = { ...whole };
       delete partial[missing];
       expect(PrincipalWireSchema.safeParse(partial).success).toBe(false);
     }
-    // And `extra="forbid"`'s half: an unknown member is malformed, not richer.
+    // An unknown member is malformed, not richer.
     expect(PrincipalWireSchema.safeParse({ ...whole, scheme: "h1" }).success).toBe(false);
   });
 });
 
 describe("normalizePrincipal", () => {
-  it("accepts a well-formed principal", () => {
-    expect(normalizePrincipal({ principalId: "e-1", issuer: "https://idp" })).toEqual({
-      principalId: "e-1",
-      issuer: "https://idp",
+  it("accepts a well-formed principal and keeps the form the hook stated", () => {
+    expect(normalizePrincipal({ principalId: "e-1" })).toEqual({ principalId: "e-1" });
+    expect(normalizePrincipal({ principalId: "9f2c", form: "hashed" })).toEqual({
+      principalId: "9f2c",
+      form: "hashed",
     });
   });
 
   it("rejects an empty or whitespace-only principalId", () => {
-    // The measured divergence from AgentCat, whose falsy-only guard lets
-    // `{principalId: ""}` reach their wire. An empty principal hashes to one stable
-    // digest naming nobody, merging every such caller into one phantom actor.
+    // A blank id names nobody, and every such caller would merge into one actor.
     expect(normalizePrincipal({ principalId: "" })).toBeNull();
     expect(normalizePrincipal({ principalId: "   " })).toBeNull();
-    expect(normalizePrincipal({ principalId: " " })).toBeNull();
+    expect(normalizePrincipal({ principalId: " " })).toBeNull();
+  });
+
+  it("rejects an id holding U+0000", () => {
+    expect(normalizePrincipal({ principalId: "jane\u0000" })).toBeNull();
   });
 
   it("rejects a lone surrogate, which would otherwise MERGE distinct people", () => {
-    // Node's `update(…, "utf8")` does not throw on an unpaired surrogate — it
-    // substitutes U+FFFD — so these three principals all hash to ONE digest
-    // (measured). That is the actor merge this module exists to prevent,
-    // through the quietest door available. Python raises `UnicodeEncodeError`
-    // and drops the field, so refusing here also keeps the two arms agreeing:
-    // same input, same answer.
     const HIGH = String.fromCharCode(0xd800);
     const LOW = String.fromCharCode(0xdc00);
     expect(normalizePrincipal({ principalId: `a${HIGH}` })).toBeNull();
     expect(normalizePrincipal({ principalId: `a${LOW}` })).toBeNull();
     // A well-formed pair is NOT a lone surrogate and must still resolve —
     // otherwise the guard eats every emoji-bearing subject.
-    expect(normalizePrincipal({ principalId: "a😀" })).toEqual({ principalId: "a😀", issuer: null });
-  });
-
-  it("drops a malformed ISSUER but keeps the identity", () => {
-    const HIGH = String.fromCharCode(0xd800);
-    expect(normalizePrincipal({ principalId: "e-1", issuer: `https://idp${HIGH}` })).toEqual({
-      principalId: "e-1",
-      issuer: null,
-    });
+    expect(normalizePrincipal({ principalId: "a😀" })).toEqual({ principalId: "a😀" });
   });
 
   it("treats anything that is not a principal-shaped object as a miss", () => {
-    // Types vanish at runtime and a hook is vendor code; the prior art returns
-    // a bare object, so these are the shapes that actually arrive.
+    // Types vanish at runtime and a hook is vendor code.
     for (const junk of [null, undefined, "e-1", 42, [], { principal_id: "e-1" }, { userId: "e-1" }, { principalId: 7 }]) {
       expect(normalizePrincipal(junk)).toBeNull();
     }
   });
 
-  it("drops a non-string or empty issuer rather than losing the whole principal", () => {
-    // A junk issuer costs the ISSUER, not the identity — the subject still
-    // resolves, which is the difference between a degraded actor and no actor.
-    expect(normalizePrincipal({ principalId: "e-1", issuer: 7 })).toEqual({
+  it("does not carry members the wire has no place for", () => {
+    expect(normalizePrincipal({ principalId: "e-1", issuer: "https://idp" })).toEqual({
       principalId: "e-1",
-      issuer: null,
-    });
-    expect(normalizePrincipal({ principalId: "e-1", issuer: "" })).toEqual({
-      principalId: "e-1",
-      issuer: null,
-    });
-  });
-
-  it("carries Python's whitespace-issuer defect, on purpose", () => {
-    // ⚠ NOT a bug in this test. Python's guard is truthiness-only, so a
-    // whitespace issuer survives on BOTH arms and then canonicalizes to "",
-    // producing a third digest distinct from null and from "". Fixing it here
-    // alone would split every issuer-bearing hash across the two SDKs. Pinned
-    // so whichever arm is fixed first reds the other.
-    expect(normalizePrincipal({ principalId: "e-1", issuer: "   " })).toEqual({
-      principalId: "e-1",
-      issuer: "   ",
     });
   });
 });
 
 describe("principalFor", () => {
-  it("drops the field in hashed mode with no key, rather than falling back to raw", () => {
-    // The fallback would be a residency breach that looks like success:
-    // present, populated, and carrying the subject verbatim.
-    expect(
-      principalFor({ principalId: "alice@acme.example" }, { mode: "hashed", tenantId: "t" }),
-    ).toBeNull();
-    expect(
-      principalFor(
-        { principalId: "alice@acme.example" },
-        { mode: "hashed", tenantId: "t", key: null },
-      ),
-    ).toBeNull();
+  it("sends the id exactly as the hook returned it, and calls it raw", () => {
+    expect(principalFor({ principalId: "Alice@Acme.example" })).toEqual({
+      id: "Alice@Acme.example",
+      source: PRINCIPAL_SOURCE_ASSERTED,
+      form: PRINCIPAL_FORM_RAW,
+    });
   });
 
-  it("returns the subject verbatim and UNTAGGED in raw mode", () => {
-    expect(
-      principalFor({ principalId: "alice@acme.example" }, { mode: "raw", tenantId: "t" })?.id,
-    ).toBe("alice@acme.example");
-  });
-
-  it("caps a RAW principal id at the same length Python does", () => {
-    // Raw mode copies vendor text onto EVERY event of a call — three tool-call
-    // legs plus annotations — so unbounded is unbounded several times over. A
-    // hook returning a JWT is the realistic shape.
-    const long = "u".repeat(500);
-    const got = principalFor({ principalId: long }, { mode: "raw", tenantId: "t" });
-    expect(got?.id).toHaveLength(RAW_PRINCIPAL_ID_MAX_LEN);
-    expect(RAW_PRINCIPAL_ID_MAX_LEN).toBe(128);
-
-    // ⚠ **The cap counts CODE POINTS**, because a plain `.slice()` counts
-    // UTF-16 units and would cut this subject through the middle of the emoji
-    // — shipping a lone surrogate on `principal_id`, which this same module refuses
-    // on the way IN, and disagreeing with Python's `principal_id[:128]`. The
-    // all-ASCII case above cannot see it; that is why this one exists.
-    const astral = `${"u".repeat(127)}😀tail`;
-    const capped = principalFor({ principalId: astral }, { mode: "raw", tenantId: "t" });
-    expect(capped).not.toBeNull();
-    expect([...capped!.id]).toHaveLength(RAW_PRINCIPAL_ID_MAX_LEN);
-    expect(capped!.id.endsWith("😀")).toBe(true);
-    expect(/\p{Surrogate}/u.test(capped!.id)).toBe(false);
-  });
-
-  it("folds the hook's ISSUER into the digest — two IdPs, one `sub`, two actors", () => {
-    // ⚠ **The one member of this chokepoint no test reached.** Deleting
-    // `issuer: principal.issuer ?? null` from `principalFor`'s hash call left
-    // the whole suite green: `hashPrincipalId` is covered for issuer by the
-    // corpus, but the WIRING between what `normalizePrincipal` returns and
-    // what gets hashed was not.
-    //
-    // What that mutant ships is the actor merge this module exists to
-    // prevent, and it diverges from Python, which does fold it: two different
-    // people behind two identity providers who happen to share a `sub`
-    // collapse into one `principal.id` on the wire.
-    const a = principalFor(
-      { principalId: "sub-7", issuer: "https://a.example" },
-      { mode: "hashed", tenantId: "t", key: "k" },
-    );
-    const b = principalFor(
-      { principalId: "sub-7", issuer: "https://b.example" },
-      { mode: "hashed", tenantId: "t", key: "k" },
-    );
-    const none = principalFor({ principalId: "sub-7" }, { mode: "hashed", tenantId: "t", key: "k" });
-
-    expect(a!.id).not.toBe(b!.id);
-    expect(a!.id).not.toBe(none!.id);
-    // And the digest is the one Python produces for the same triple — so this
-    // pins the wiring against the OTHER arm, not merely against itself.
-    expect(a!.id).toBe(
-      hashPrincipalId("sub-7", { tenantId: "t", key: "k", issuer: "https://a.example" }),
-    );
-    // Raw mode deliberately folds NO issuer: the value is meant to be read by
-    // a human, so it accepts that collision by construction.
-    expect(principalFor({ principalId: "sub-7", issuer: "https://a.example" }, { mode: "raw", tenantId: "t" })!.id).toBe(
-      "sub-7",
-    );
-  });
-
-  it("names a hook principal ASSERTED in its own member, not in the tag", () => {
-    // ⚠ **This test INVERTED, and the inversion is the point of the change.**
-    // It used to assert the digest carried a `v1:` prefix, because the tag was
-    // the only place provenance lived. The old shape could not hold this
-    // assertion at all: under it, "asserted" and the tag were the same three
-    // bytes.
-    const hashed = principalFor({ principalId: "e-1" }, { mode: "hashed", tenantId: "t", key: "k" });
-    expect(hashed).toEqual({
-      id: expect.stringMatching(/^[0-9a-f]{64}$/),
+  it("sends the form the hook stated, with the id untouched", () => {
+    expect(principalFor({ principalId: "9F2C-not-hex", form: "hashed" })).toEqual({
+      id: "9F2C-not-hex",
       source: PRINCIPAL_SOURCE_ASSERTED,
       form: PRINCIPAL_FORM_HASHED,
     });
+    expect(principalFor({ principalId: "e-1", form: "raw" }).form).toBe("raw");
+  });
 
-    // The half a tag structurally cannot carry: raw mode emits an untagged
-    // value and STILL names its provenance.
-    const raw = principalFor({ principalId: "e-1" }, { mode: "raw", tenantId: "t" });
-    expect(raw).toEqual({ id: "e-1", source: PRINCIPAL_SOURCE_ASSERTED, form: PRINCIPAL_FORM_RAW });
+  it.each([["encrypted"], ["HASHED"], [""], [7], [null], [true]])(
+    "sends an unregistered form (%j) as raw, and says so",
+    (form) => {
+      // SPEC §11.4: anything not exactly "hashed" is personal data.
+      const seen: unknown[] = [];
+      const got = principalFor({ principalId: "e-1", form }, (f) => seen.push(f));
+      expect(got.form).toBe("raw");
+      expect(got.id).toBe("e-1");
+      expect(seen).toEqual([form]);
+    },
+  );
+
+  it("does not warn for a registered or an omitted form", () => {
+    const seen: unknown[] = [];
+    principalFor({ principalId: "e-1" }, (f) => seen.push(f));
+    principalFor({ principalId: "e-1", form: "hashed" }, (f) => seen.push(f));
+    expect(seen).toEqual([]);
+  });
+
+  it("caps the id at the same length Python does, in CODE POINTS", () => {
+    const long = "u".repeat(500);
+    expect(principalFor({ principalId: long }).id).toHaveLength(PRINCIPAL_ID_MAX_LEN);
+    expect(PRINCIPAL_ID_MAX_LEN).toBe(128);
+
+    // A plain `.slice()` counts UTF-16 units and would cut this id through
+    // the middle of the emoji, shipping a lone surrogate.
+    const astral = `${"u".repeat(127)}😀tail`;
+    const capped = principalFor({ principalId: astral });
+    expect([...capped.id]).toHaveLength(PRINCIPAL_ID_MAX_LEN);
+    expect(capped.id.endsWith("😀")).toBe(true);
+    expect(/\p{Surrogate}/u.test(capped.id)).toBe(false);
   });
 });
 
 describe("display_name on the wire (SPEC §11.4)", () => {
-  const named = (displayName: unknown, mode: "hashed" | "raw" = "hashed") =>
-    principalFor(normalizePrincipal({ principalId: "alice", displayName })!, {
-      mode,
-      tenantId: "t",
-      key: "k",
-    });
+  const named = (displayName: unknown, form: "hashed" | "raw" = "hashed") =>
+    principalFor(normalizePrincipal({ principalId: "alice", form, displayName })!);
 
-  it.each(["hashed", "raw"] as const)("rides %s mode", (mode) => {
-    const got = named("Alice", mode);
-    expect(got!.display_name).toBe("Alice");
+  it.each(["hashed", "raw"] as const)("rides a %s id", (form) => {
+    const got = named("Alice", form);
+    expect(got.display_name).toBe("Alice");
     expect(PrincipalWireSchema.safeParse(got).success).toBe(true);
   });
 
@@ -347,7 +148,7 @@ describe("display_name on the wire (SPEC §11.4)", () => {
   });
 
   it("is OMITTED, never null, when there is none — a nameless principal is unchanged", () => {
-    expect(Object.keys(named(null)!)).toEqual(["id", "source", "form"]);
+    expect(Object.keys(named(null))).toEqual(["id", "source", "form"]);
   });
 
   it.each([
@@ -361,8 +162,8 @@ describe("display_name on the wire (SPEC §11.4)", () => {
     ["NUL", "jane\u0000"],
   ])("drops an unusable name (%s) and keeps the id", (_label, value) => {
     const got = named(value);
-    expect(got!.id).toBeTruthy();
-    expect(got!.display_name).toBeUndefined();
+    expect(got.id).toBeTruthy();
+    expect(got.display_name).toBeUndefined();
   });
 
   it.each([
@@ -374,6 +175,6 @@ describe("display_name on the wire (SPEC §11.4)", () => {
   ])("sends a usable name (%s) verbatim", (_label, value) => {
     // Blank is Unicode White_Space exactly: `.trim()` would drop U+FEFF,
     // Python's `strip()` would drop U+001C, and the two SDKs must agree.
-    expect(named(value)!.display_name).toBe(value);
+    expect(named(value).display_name).toBe(value);
   });
 });

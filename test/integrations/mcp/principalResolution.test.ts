@@ -2,19 +2,15 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   PRINCIPAL_FORM_HASHED,
+  PRINCIPAL_FORM_RAW,
   PRINCIPAL_SOURCE_ASSERTED,
   type PrincipalWire,
-  hashPrincipalId,
 } from "../../../src/identity.js";
 import { extraHeaders } from "../../../src/integrations/mcp/mcpTypes.js";
 import {
   resolveCallPrincipal,
   type PrincipalResolutionContext,
-  warnIfIdentityCannotResolve,
 } from "../../../src/integrations/mcp/principalResolution.js";
-
-const TENANT = "tenant-ts";
-const KEY = "ts-identity-key";
 
 /** Collects `process.emitWarning` messages until `restore()`. `vi.spyOn`
  * rather than a hand-rolled swap: it restores cleanly and avoids reassigning a
@@ -52,12 +48,11 @@ function extraV2(headers: Record<string, string>) {
 describe("one vendor hook across both SDK majors (register A8, applied prospectively)", () => {
   it("resolves the SAME principal on 1.x and on v2", async () => {
     // Assert the EXPECTED value, not merely that the two agree: two majors
-    // broken identically — both `null`, which is the state before this change
-    // — pass an agreement-only check. Python's parity file rule 1.
+    // broken identically, both `null`, pass an agreement-only check.
     const expected = {
-      id: hashPrincipalId("employee-4417", { tenantId: TENANT, key: KEY }),
+      id: "employee-4417",
       source: PRINCIPAL_SOURCE_ASSERTED,
-      form: PRINCIPAL_FORM_HASHED,
+      form: PRINCIPAL_FORM_RAW,
     };
 
     const resolved: Record<string, PrincipalWire | null> = {};
@@ -69,7 +64,6 @@ describe("one vendor hook across both SDK majors (register A8, applied prospecti
       resolved[major] = await resolveCallPrincipal(
         vendorHook,
         { extra, toolName: "lookup", arguments: {} },
-        { mode: "hashed", tenantId: TENANT, key: KEY },
       );
     }
 
@@ -92,7 +86,7 @@ describe("one vendor hook across both SDK majors (register A8, applied prospecti
   it("joins a repeated 1.x header line instead of handing back an array", () => {
     // The trap that has no Python equivalent: 1.x types a header value as
     // `string | string[]`, so a proxy chain appending a second line turns one
-    // `headers[name]` into an array. A hook expecting text would then hash
+    // `headers[name]` into an array. A hook expecting text would then return
     // something like "alice,bob" — or crash on `.trim()` — depending on what
     // it did next. `Headers` applies the platform's documented join.
     const headers = extraHeaders(extraV1({ "x-forwarded-user": ["alice", "bob"] }));
@@ -165,22 +159,20 @@ describe("resolveCallPrincipal fail-open", () => {
     toolName: "lookup",
     arguments: {},
   };
-  const opts = { mode: "hashed", tenantId: TENANT, key: KEY } as const;
-
   it("returns null when no hook is configured", async () => {
-    expect(await resolveCallPrincipal(undefined, call, opts)).toBeNull();
+    expect(await resolveCallPrincipal(undefined, call)).toBeNull();
   });
 
   it("treats a throwing hook as anonymous, never as a failed call", async () => {
     const boom = () => {
       throw new Error("vendor bug");
     };
-    await expect(resolveCallPrincipal(boom, call, opts)).resolves.toBeNull();
+    await expect(resolveCallPrincipal(boom, call)).resolves.toBeNull();
   });
 
   it("treats a rejecting async hook the same way", async () => {
     const boom = () => Promise.reject(new Error("vendor bug"));
-    await expect(resolveCallPrincipal(boom, call, opts)).resolves.toBeNull();
+    await expect(resolveCallPrincipal(boom, call)).resolves.toBeNull();
   });
 
   it("accepts a SYNC hook as well as an async one", async () => {
@@ -188,23 +180,40 @@ describe("resolveCallPrincipal fail-open", () => {
     // value verbatim, so an `async` hook silently produced an anonymous event.
     const sync = () => ({ principalId: "employee-4417" });
     const async = () => Promise.resolve({ principalId: "employee-4417" });
-    expect(await resolveCallPrincipal(sync, call, opts)).toEqual(
-      await resolveCallPrincipal(async, call, opts),
+    expect(await resolveCallPrincipal(sync, call)).toEqual(
+      await resolveCallPrincipal(async, call),
     );
-    expect(await resolveCallPrincipal(sync, call, opts)).not.toBeNull();
+    expect(await resolveCallPrincipal(sync, call)).not.toBeNull();
   });
 
-  it("does not let the HASHING step throw into the vendor's tool call", async () => {
-    // `createHmac` rejects a key that is not a string/TypedArray. Install-time
-    // validation refuses that now, but this function's docstring promises it
-    // cannot raise, and a promise like that must not rest on an argument about
-    // who calls it.
-    const resolved = await resolveCallPrincipal(() => ({ principalId: "e-1" }), call, {
-      mode: "hashed",
-      tenantId: TENANT,
-      key: 12345 as unknown as string,
+  it("sends the form the hook stated, with the id untouched", async () => {
+    const hook = () => ({ principalId: "9F2C-not-hex", form: "hashed" as const });
+    expect(await resolveCallPrincipal(hook, call)).toEqual({
+      id: "9F2C-not-hex",
+      source: PRINCIPAL_SOURCE_ASSERTED,
+      form: PRINCIPAL_FORM_HASHED,
     });
-    expect(resolved).toBeNull();
+  });
+
+  it("sends an unregistered form as raw and warns, without the id", async () => {
+    const warnings = spyWarnings();
+    let resolved: PrincipalWire | null;
+    try {
+      resolved = await resolveCallPrincipal(
+        () => ({ principalId: "employee-4417", form: "encrypted" }) as never,
+        call,
+      );
+    } finally {
+      warnings.restore();
+    }
+    expect(resolved).toEqual({
+      id: "employee-4417",
+      source: PRINCIPAL_SOURCE_ASSERTED,
+      form: PRINCIPAL_FORM_RAW,
+    });
+    expect(warnings.seen).toHaveLength(1);
+    expect(warnings.seen[0]).toContain('"encrypted"');
+    expect(warnings.seen[0]).not.toContain("employee-4417");
   });
 
   it("routes the hook's return through normalizePrincipal", async () => {
@@ -213,7 +222,7 @@ describe("resolveCallPrincipal fail-open", () => {
     // reds two files for one cause. What is unique HERE is only that the
     // wrapper consults it at all — a snake_case key is the shape a vendor
     // reaches for first, and it must not duck-type through.
-    expect(await resolveCallPrincipal(() => ({ principal_id: "e-1" }) as never, call, opts)).toBeNull();
+    expect(await resolveCallPrincipal(() => ({ principal_id: "e-1" }) as never, call)).toBeNull();
   });
 
   it("warns once, without the value, when a hook still returns the pre-0.3.5 { userId }", async () => {
@@ -222,8 +231,8 @@ describe("resolveCallPrincipal fail-open", () => {
     const warnings = spyWarnings();
     try {
       const old = () => ({ userId: "employee-4417" }) as never;
-      expect(await resolveCallPrincipal(old, call, opts)).toBeNull();
-      expect(await resolveCallPrincipal(old, call, opts)).toBeNull();
+      expect(await resolveCallPrincipal(old, call)).toBeNull();
+      expect(await resolveCallPrincipal(old, call)).toBeNull();
     } finally {
       warnings.restore();
     }
@@ -245,72 +254,14 @@ describe("resolveCallPrincipal fail-open", () => {
     const a = await resolveCallPrincipal(
       hook,
       { extra: {}, toolName: "lookup", arguments: { q: "one" } },
-      opts,
     );
     const b = await resolveCallPrincipal(
       hook,
       { extra: {}, toolName: "acme_annotate", arguments: { q: "two" } },
-      opts,
     );
 
     expect(seen).toEqual(["lookup", "acme_annotate"]);
-    // The arguments half of this test's own title, which it did not assert
-    // until now — and `withBaton.ts` carries a comment saying the AFTER-the-
-    // strip ordering is load-bearing, so the field deserves a witness.
     expect(seenArgs).toEqual([{ q: "one" }, { q: "two" }]);
     expect(a).not.toBe(b);
-  });
-});
-
-describe("warnIfIdentityCannotResolve", () => {
-  /** The silent-success case: identity configured, nothing emitted, and until
-   * this warning existed there was no string in the process to grep for. */
-  function capture(config: Parameters<typeof warnIfIdentityCannotResolve>[0]): string[] {
-    const warnings = spyWarnings();
-    try {
-      warnIfIdentityCannotResolve(config);
-    } finally {
-      warnings.restore();
-    }
-    return warnings.seen;
-  }
-
-  const hook = () => ({ principalId: "employee-4417" });
-
-  it("warns when a hook is set, mode is hashed, and no key exists", () => {
-    const seen = capture({ resolvePrincipal: hook, principalIdMode: "hashed", principalIdHmacKey: undefined });
-    expect(seen).toHaveLength(1);
-    expect(seen[0]).toContain("BATON_PRINCIPAL_ID_HMAC_KEY");
-  });
-
-  it("never puts the principal in the message", () => {
-    // Identity was configured and produced nothing; printing the value to
-    // explain that would be the residency leak one layer sideways.
-    const seen = capture({ resolvePrincipal: hook, principalIdMode: "hashed", principalIdHmacKey: undefined });
-    expect(seen[0]).not.toContain("employee-4417");
-  });
-
-  it("names the renamed variable when it is set, and never its value", () => {
-    // 0.3.5 renamed BATON_USER_ID_HMAC_KEY with no fallback, so a leftover one
-    // is the likeliest reason for this warning after an upgrade.
-    const warn = () =>
-      capture({ resolvePrincipal: hook, principalIdMode: "hashed", principalIdHmacKey: undefined })[0];
-    try {
-      vi.stubEnv("BATON_USER_ID_HMAC_KEY", "old-secret-value");
-      expect(warn()).toContain("BATON_USER_ID_HMAC_KEY");
-      expect(warn()).not.toContain("old-secret-value");
-      vi.stubEnv("BATON_USER_ID_HMAC_KEY", "");
-      expect(warn()).not.toContain("BATON_USER_ID_HMAC_KEY");
-    } finally {
-      vi.unstubAllEnvs();
-    }
-  });
-
-  it("stays quiet in every state that is not that one", () => {
-    // A server with no hook is the common case and must not be nagged; raw
-    // mode needs no key; a key present is the working configuration.
-    expect(capture({ principalIdMode: "hashed", principalIdHmacKey: undefined })).toEqual([]);
-    expect(capture({ resolvePrincipal: hook, principalIdMode: "raw", principalIdHmacKey: undefined })).toEqual([]);
-    expect(capture({ resolvePrincipal: hook, principalIdMode: "hashed", principalIdHmacKey: "k" })).toEqual([]);
   });
 });

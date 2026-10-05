@@ -116,47 +116,29 @@ export type { Sink, StdoutSinkOptions, HttpSinkOptions } from "./sinks.js";
 export { StdoutSink, HttpSink, safeWrite } from "./sinks.js";
 
 export type { BatonConfig } from "./integrations/mcp/index.js";
-// Exported for the reason `PrincipalIdMode` is, below: `BatonConfig
-// .resultCaptureMode` is typed with it, so a vendor cannot name the field's
-// type without it.
+// `BatonConfig.resultCaptureMode` is typed with it, so a vendor cannot name
+// the field's type without it.
 export type { ResultCaptureMode } from "./integrations/mcp/index.js";
 export { withBaton, BatonHandle } from "./integrations/mcp/index.js";
 // The only way a consumer can name `withBaton`'s parameter now that neither
 // SDK major's `McpServer` is imported.
 export type { SupportedMcpServer } from "./integrations/mcp/index.js";
 
-// Principal identity. `Principal` and `PrincipalResolutionContext` are what a
-// vendor's `resolvePrincipal` hook signs its function against, so they are part of
-// the public contract the moment the hook is — a vendor cannot write a typed
-// hook without naming them. `hashPrincipalId` is exported for the same reason
-// `Scrubber` is: a vendor recomputing a pseudonym outside the SDK (to join
-// their own records against Console data) must get the identical value, and
-// re-implementing the HMAC message layout by hand is how that silently
-// diverges.
-export type { Principal, PrincipalIdMode } from "./identity.js";
-// ⚠ `PrincipalWire` and `PrincipalForm` are NOT exported, for the same reason
-// `principalFor` is not: they are the PRODUCER's types, narrowed to the one
-// `source` and two `form`s this SDK emits. Nothing on the public surface can
-// produce one — `Event.principal` is inferred from `PrincipalWireSchema`,
-// whose members are deliberately open, so `event.principal` does not satisfy
-// the narrow type and a vendor naming it in a `Sink` signature gets TS2345.
-// A consumer wanting a name for the received shape uses
-// `z.infer<typeof PrincipalWireSchema>` or `Event["principal"]`.
-// ⚠ **`HASH_SCHEME` was exported here until 0.4.1 and is GONE**, because there
-// is no prefix left for a vendor recomputing a pseudonym to match: a hashed
-// principal is the bare digest (SPEC §11.4, §13 entry 0.8.11). A vendor holding
-// the old constant gets a tagged value from its own copy and a bare one from
-// this SDK across the upgrade — a breaking removal, stated in the CHANGELOG.
-//
-// `principalFor` is NOT exported, and that is the deliberate half: it is the
-// single construction site for the wire object, and handing it out invites a
-// vendor to assemble a `principal` by hand, which is exactly the "all three
-// members or nothing" guarantee this change exists to make structural.
+// Principal identity. `Principal`, `PrincipalForm` and
+// `PrincipalResolutionContext` are what a vendor's `resolvePrincipal` hook
+// signs its function against, so a vendor cannot write a typed hook without
+// naming them.
+export type { Principal, PrincipalForm } from "./identity.js";
+// `PrincipalWire` and `principalFor` are NOT exported: they are the
+// PRODUCER's, and `principalFor` is the single construction site for the wire
+// object. `Event.principal` is inferred from `PrincipalWireSchema`, whose
+// members are deliberately open, so a consumer wanting a name for the
+// received shape uses `z.infer<typeof PrincipalWireSchema>` or
+// `Event["principal"]`.
 export {
   PRINCIPAL_FORM_HASHED,
   PRINCIPAL_FORM_RAW,
   PRINCIPAL_SOURCE_ASSERTED,
-  hashPrincipalId,
 } from "./identity.js";
 export type {
   AuthInfo,

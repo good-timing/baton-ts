@@ -260,8 +260,8 @@ void _principalKeysMatch;
  * `vendorId` is REQUIRED — the wrapped vendor identifier; the Console groups
  * friction by `(tenant_id, vendor_id)`.
  * `principal` is the resolved principal as emitted — `{id, source, form}`, all
- * three required together, hashed at the capture edge in the default mode so
- * the raw principal never leaves it; null when nobody was resolved.
+ * three required together, as the vendor's resolver returned and classified
+ * it; null when nobody was resolved.
  * `runtimeMeta` is the runtime-supplied MCP request `_meta` envelope, used
  * by the Console to derive turn/cycle boundaries more precise than
  * `session_id` alone.

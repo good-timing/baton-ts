@@ -7,7 +7,6 @@ import { parseDsn, selectDsn, VENDOR_ID_PATTERN } from "../../dsn.js";
 import { displayNameFromServer } from "./annotationName.js";
 import type { ResolvePrincipalHook } from "./principalResolution.js";
 import { DEFAULT_CONSENT_TOKEN } from "../../events.js";
-import { PRINCIPAL_ID_MODES, type PrincipalIdMode } from "../../identity.js";
 import { RESULT_CAPTURE_MODES, type ResultCaptureMode } from "./errorResult.js";
 import { HttpSink, type Sink } from "../../sinks.js";
 
@@ -29,18 +28,10 @@ const INTENT_PARAM_MODES = new Set(["optional", "required", "off"]);
 // What the vendor may ask us to do with tool RESULT data (SPEC §11.4).
 // `"full"` never reaches the wire — absence is what means captured.
 //
-// DERIVED from the registry, never restated — the same rule
-// `PRINCIPAL_ID_MODE_SET` below follows, and for the same reason: a
-// hand-written copy makes the guarantee "two lists happen to agree", so a mode
-// could be accepted here that the emitter has no payload shape for.
+// DERIVED from the registry, never restated: a hand-written copy makes the
+// guarantee "two lists happen to agree", so a mode could be accepted here that
+// the emitter has no payload shape for.
 const RESULT_CAPTURE_MODE_SET: ReadonlySet<string> = new Set(RESULT_CAPTURE_MODES);
-// Imported, never restated: the registry is derived from `FORM_BY_MODE`, so a
-// mode cannot be accepted here without someone having chosen its `form`.
-// `principalFor` drops Python's unrecognised-mode branch on the strength of
-// exactly this check, so a second hand-written list would make that a
-// coincidence rather than a guarantee.
-const PRINCIPAL_ID_MODE_SET: ReadonlySet<string> = new Set(PRINCIPAL_ID_MODES);
-
 export interface BatonConfig {
   /** The packed connection string from /account — one value carrying the
    * ingest host, the workspace, the server and the key that binds them.
@@ -188,23 +179,13 @@ export interface BatonConfig {
    *
    * Never fails a tool call: a hook that throws or returns junk yields an
    * anonymous call. ⚠ It is awaited INLINE with no timeout — a blocking hook
-   * stalls its own request. */
+   * stalls its own request.
+   *
+   * The SDK sends what the hook returns and does nothing else to it: the id
+   * as given, `form` to say whether the hook hashed it, and `displayName` for
+   * what a page shows. A vendor who must not send real identities hashes
+   * inside the hook and returns `form: "hashed"`. */
   resolvePrincipal?: ResolvePrincipalHook;
-  /** `"hashed"` (default) emits a per-tenant HMAC pseudonym and
-   * `form: "hashed"`; `"raw"` emits the subject VERBATIM and `form: "raw"`.
-   *
-   * `"raw"` puts real identity in the collector's database and is the vendor's
-   * deliberate choice. ⚠ A consumer classifies on `form`, never on this
-   * setting — `PrincipalWireSchema` carries the rule and why it is stated that
-   * way round. */
-  principalIdMode?: PrincipalIdMode;
-  /** The HMAC secret for hashed mode. Resolved explicit →
-   * `BATON_PRINCIPAL_ID_HMAC_KEY` → unset.
-   *
-   * ⚠ **With none set, hashed mode DROPS the principal rather than falling back to
-   * raw.** The fallback would be a residency breach that looks like success:
-   * the field present, populated, and carrying the subject verbatim. */
-  principalIdHmacKey?: string | Uint8Array;
 }
 
 /**
@@ -224,37 +205,10 @@ export interface BatonConfig {
 export function resolveTenantId(explicit: string | undefined, vendorId: string): string {
   if (explicit) return explicit;
   // Guarded: `process` is absent on edge/worker runtimes, and a missing one is
-  // a miss, not a crash inside the vendor's server startup. (This said "this
-  // package reads no other environment variable" until `resolvePrincipalIdHmacKey`
-  // below added a second one; `dsn.ts` and `optout.ts` read theirs too.)
+  // a miss, not a crash inside the vendor's server startup.
   const fromEnv = typeof process !== "undefined" ? process.env?.BATON_TENANT_ID : undefined;
   if (fromEnv) return fromEnv;
   return vendorId;
-}
-
-/**
- * The HMAC secret for a hashed principal: explicit → `BATON_PRINCIPAL_ID_HMAC_KEY` →
- * unset. Mirrors Python's `_resolve_principal_id_hmac_key`.
- *
- * `undefined` is a SUPPORTED state, not an error: it means hashed-mode
- * identity is off and events emit without a principal. A string is kept as a
- * string and UTF-8 encoded at the HMAC, which is the same byte sequence
- * Python's env path produces — the env var has always carried text.
- *
- * Resolved ONCE per install, for the same reason `resolveTenantId` is: two
- * resolutions could disagree, and one person would hash two ways within a
- * single server.
- */
-export function resolvePrincipalIdHmacKey(
-  explicit: string | Uint8Array | undefined,
-): string | Uint8Array | undefined {
-  if (explicit !== undefined) return explicit;
-  // Guarded exactly like the tenant read — `process` is absent on edge and
-  // worker runtimes, and a missing one is a miss rather than a crash inside
-  // the vendor's server startup.
-  const fromEnv =
-    typeof process !== "undefined" ? process.env?.BATON_PRINCIPAL_ID_HMAC_KEY : undefined;
-  return fromEnv ? fromEnv : undefined;
 }
 
 /**
@@ -377,8 +331,6 @@ export function resolveBatonConfig(config: BatonConfig, serverName?: string): Re
  * `TypeError` refuses, which is any unknown keyword. */
 const RENAMED_KEYS: Record<string, string> = {
   resolveUser: "resolvePrincipal",
-  userIdMode: "principalIdMode",
-  userIdHmacKey: "principalIdHmacKey",
 };
 
 export function validateBatonConfig(config: BatonConfig): asserts config is ResolvedBatonConfig {
@@ -462,25 +414,5 @@ export function validateBatonConfig(config: BatonConfig): asserts config is Reso
     // (stdio, where no token can exist) that this field is the only mechanism
     // for. Mirrors Python's `resolve_user must be callable`.
     throw new Error("BatonConfig.resolvePrincipal must be a function.");
-  }
-  if (
-    config.principalIdHmacKey !== undefined &&
-    typeof config.principalIdHmacKey !== "string" &&
-    !(config.principalIdHmacKey instanceof Uint8Array)
-  ) {
-    // The one new field with no install-time check until now, and the shape
-    // that reaches it is ordinary: a config built from parsed settings is
-    // typed `any`, so `principalIdHmacKey: 12345` compiles. Unvalidated, `createHmac`
-    // rejects it INSIDE the per-call identity path — once per tool call, for
-    // the life of the process. Mirrors Python, which guards this at install
-    // AND around the hash itself; both, because a promise that a function
-    // cannot raise should not rest on an argument about who calls it.
-    throw new Error("BatonConfig.principalIdHmacKey must be a string or a Uint8Array.");
-  }
-  if (config.principalIdMode !== undefined && !PRINCIPAL_ID_MODE_SET.has(config.principalIdMode)) {
-    throw new Error(
-      `BatonConfig.principalIdMode ${JSON.stringify(config.principalIdMode)} must be one of ` +
-        `${JSON.stringify([...PRINCIPAL_ID_MODE_SET].sort())}.`,
-    );
   }
 }

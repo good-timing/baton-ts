@@ -35,9 +35,6 @@ import { type PrincipalResolutionContext } from "./principalResolution.js";
 
 /** The token's claim bag, or `null`. Never throws: it reads an object a
  * vendor's verifier built, and an identity read may not fail a tool call. */
-// `iss` is coerced in the hook as well as in `normalizePrincipal`: these are
-// public exports, and a vendor wrapping one reads `.issuer` first.
-
 function claimsOf(
   context: PrincipalResolutionContext,
 ): Record<string, unknown> | null {
@@ -49,8 +46,8 @@ function claimsOf(
   }
 }
 
-/** A non-blank string claim, or `null`. Blank is a miss because the hash
- * canonicalizes (strips), so every whitespace-only value is one phantom actor.
+/** A non-blank string claim, or `null`. Blank is a miss: it names nobody, and
+ * every such caller would merge into one actor.
  *
  * ⚠ `pythonStrip`, never `.trim()`: the two strip different codepoints
  * (`\x1f` survives `.trim()`, U+FEFF survives Python's `strip()`), and the
@@ -61,29 +58,23 @@ function stringClaim(claims: Record<string, unknown>, name: string): string | nu
   return typeof value === "string" && pythonStrip(value) !== "" ? value : null;
 }
 
-/** The token's `sub`, keyed with its `iss` — a subject is unique only per
- * issuer, so two identity providers can hand two people the same one. */
+/** The token's `sub`. A subject is unique only per issuer: a vendor running
+ * two identity providers writes a hook that combines it with `iss`. */
 export function principalFromOAuthSub(
   context: PrincipalResolutionContext,
 ): Principal | null {
   const claims = claimsOf(context);
   if (claims === null) return null;
   const sub = stringClaim(claims, "sub");
-  const iss = claims.iss;
-  return sub === null ? null : { principalId: sub, issuer: typeof iss === "string" && iss !== "" ? iss : null };
+  return sub === null ? null : { principalId: sub };
 }
 
-/** The token's `email`, as the WHOLE address and with NO issuer.
+/** The token's `email`, as the WHOLE address.
  *
  * `principalId` is the whole address and `displayName` the part before the
  * last `@`. The local part alone is not an id — `alice@acme.com` and
- * `alice@contoso.com` are two people. `displayName` IS sent, in every mode: a
- * vendor who hashes ids and does not want `alice` on the wire writes their
- * own hook.
- *
- * No issuer, unlike the `sub` hook: a subject is unique only per issuer, an
- * address on its own, and folding `iss` in would give one person a new
- * pseudonym the day their identity provider changes its issuer URL.
+ * `alice@contoso.com` are two people. A vendor who does not want `alice` on
+ * the wire writes their own hook.
  *
  * ⚠ `email` is not a standard ACCESS-token claim (OIDC puts it in the ID
  * token), so it is here only if the identity provider adds it and the verifier

@@ -62,11 +62,11 @@ withBaton(server, {
 });
 ```
 
-`principalFromOAuthEmail` keys on the token's `email` claim (the whole address); `principalFromOAuthSub` on its subject and issuer. Each returns `null` when the claim is missing, so they compose: `(ctx) => principalFromOAuthEmail(ctx) ?? principalFromOAuthSub(ctx)`. Set `displayName` on the returned `Principal` to choose what your dashboard shows for a person; it is sent as-is, even when ids are hashed. The email hook sets it to the part before `@`.
+`principalFromOAuthEmail` keys on the token's `email` claim (the whole address); `principalFromOAuthSub` on its subject. Each returns `null` when the claim is missing, so they compose: `(ctx) => principalFromOAuthEmail(ctx) ?? principalFromOAuthSub(ctx)`. Set `displayName` on the returned `Principal` to choose what your dashboard shows for a person; it is sent as-is. The email hook sets it to the part before `@`.
 
 ⚠ **They read the claims from `authInfo.extra`.** The MCP SDK's `AuthInfo` has no `claims` field, so these hooks expect your token verifier to put the decoded JWT claims (`sub`, `iss`, `email`) at the top level of `extra`. If yours keeps them elsewhere, write the three-line hook that reads them from there. A token exists only on HTTP with auth configured; on stdio, write a hook that names the user from whatever you authenticated them with.
 
-The value is HMAC-hashed in your process before it is sent, keyed with `BATON_PRINCIPAL_ID_HMAC_KEY`; without a key, nothing is attached.
+The id is sent exactly as your hook returns it, so the hook decides what is safe to send. To send a pseudonym instead, hash the id inside your hook and return `form: "hashed"` with it.
 
 ## Not capturing responses at all
 

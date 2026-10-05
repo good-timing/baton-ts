@@ -19,7 +19,6 @@ import type { Sink } from "../../sinks.js";
 import { deriveAnnotationToolName } from "./annotationName.js";
 import { emit } from "./emit.js";
 import { type ResolvePrincipalHook, resolveCallPrincipal } from "./principalResolution.js";
-import type { PrincipalIdMode } from "../../identity.js";
 import { buildAnnotationToolDescription, SIGNAL_TYPES } from "./llmText.js";
 import { extraEnvelope, extraMeta, observeTransport, type Extra } from "./mcpTypes.js";
 import type { SupportedMcpServer } from "./withBaton.js";
@@ -57,11 +56,9 @@ export interface RegisterAnnotationToolOptions {
   /** Shared with the tool-call wrapper so a session opens at most one
    * proactive annotation regardless of which path fires first. */
   tracker?: ProactiveTracker | undefined;
-  /** The vendor's identity resolver and its hashing settings — the SAME
-   * values the tool-call wrapper holds, resolved once at install. */
+  /** The vendor's identity resolver — the SAME one the tool-call wrapper
+   * holds. */
   resolvePrincipal?: ResolvePrincipalHook | undefined;
-  principalIdMode: PrincipalIdMode;
-  principalIdHmacKey: string | Uint8Array | undefined;
 }
 
 /** Register the annotation tool on `server`. Returns the resolved tool name. */
@@ -123,11 +120,6 @@ export function registerAnnotationTool(
       const principal = await resolveCallPrincipal(
         options.resolvePrincipal,
         { extra, toolName: name, arguments: args },
-        {
-          mode: options.principalIdMode,
-          tenantId: options.tenantId,
-          key: options.principalIdHmacKey,
-        },
       );
 
       await emit(options.sink, () =>

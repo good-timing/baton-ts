@@ -290,10 +290,8 @@ export function errorText(value: unknown): string {
 /** The registered values of `resultCaptureMode` (SPEC §11.4), and the single
  * source of truth for them.
  *
- * Shaped after `identity.ts`'s `FORM_BY_MODE` → `PRINCIPAL_ID_MODES`, whose
- * own note says why: a second hand-written list makes the guarantee "two lists
- * happen to agree", which is the prose-shaped binding that pattern exists to
- * replace. `config.ts` builds its validator set from THIS array rather than
+ * A second hand-written list would make the guarantee "two lists happen to
+ * agree". `config.ts` builds its validator set from THIS array rather than
  * restating the literals, so a mode cannot be accepted at the door without
  * someone having given it a payload shape below. */
 export const RESULT_CAPTURE_MODES = ["full", "off"] as const;
