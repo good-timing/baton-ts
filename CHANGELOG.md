@@ -1,6 +1,10 @@
 # Changelog
 
-## Unreleased: the hook states the principal, and the SDK sends it as given
+## 0.5.2: the hook states the principal, and the SDK sends it as given
+
+⚠ **This is a BREAKING release on a patch number.** A `^0.5.0` range adopts
+it without an edit. Read the two BREAKING sections below before upgrading if
+you set `principalIdMode` or `principalIdHmacKey`, or import `hashPrincipalId`.
 
 ### Changed (BREAKING)
 
