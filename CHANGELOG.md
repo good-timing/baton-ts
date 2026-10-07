@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **The CommonJS build loads under Jest.** `dist/index.cjs` required `uuid`,
+  which ships only as ESM since v12, so a CommonJS test runner failed with
+  `SyntaxError: Unexpected token 'export'` on any file that imported the SDK.
+  The server itself ran, because Node 22 can `require()` an ES module. The SDK
+  now makes its own UUIDv7 and has no `uuid` dependency. Ids stay version 7
+  and still sort by creation time.
+
 ## 0.5.2: the hook states the principal, and the SDK sends it as given
 
 ⚠ **This is a BREAKING release on a patch number.** A `^0.5.0` range adopts

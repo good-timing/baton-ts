@@ -85,7 +85,7 @@
  */
 
 import { AsyncLocalStorage } from "node:async_hooks";
-import { v7 as uuidv7 } from "uuid";
+import { uuid7 } from "../../uuid7.js";
 import {
   AnnotationEventSchema,
   type Event,
@@ -510,7 +510,7 @@ async function openCall(
   // is deliberately NOT part of `common`: `common` is also spread into the
   // proactive annotation below, and SPEC defines no `call_id` for an
   // annotation. Stamped onto the three tool-call events individually.
-  const callId = uuidv7();
+  const callId = uuid7();
 
   // Resolved AFTER the intent-param strip, so the hook's `arguments` are
   // exactly what the vendor's own handler receives — Baton's injected
@@ -1876,7 +1876,7 @@ export function withBaton(server: SupportedMcpServer, supplied: BatonConfig = {}
   // agent for `user_goal` and refuses no call that omits it.
   const intentParamMode: IntentParamMode = config.intentParamMode ?? "required";
   const counter = new SessionCounter();
-  const fallbackSessionId = `sdk-${uuidv7()}`;
+  const fallbackSessionId = `sdk-${uuid7()}`;
   // Resolved ONCE, here, and read by every emit path below — the tool-call
   // wrapper (via `ctx`), the annotation tool (via `registerAnnotationTool`)
   // and `emitSurface`, which builds its envelope from `config` directly.

@@ -14,7 +14,7 @@
  */
 
 import { z } from "zod";
-import { v7 as uuidv7 } from "uuid";
+import { uuid7 } from "./uuid7.js";
 import { SDK_VERSION } from "./version.js";
 import type { PrincipalWire } from "./identity.js";
 
@@ -285,7 +285,7 @@ void _principalKeysMatch;
  * derived from the JSON-RPC request id, which restarts at 1 per connection.
  * It says WHICH CALL, never WHO; the principal is `principal.id`. */
 const envelopeShape = {
-  event_id: z.uuid().default(() => uuidv7()),
+  event_id: z.uuid().default(() => uuid7()),
   tenant_id: z.string(),
   vendor_id: z.string(),
   session_id: z.string(),
