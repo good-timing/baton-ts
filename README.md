@@ -41,6 +41,31 @@ For a hosted server, where the process starts from your own environment, set `BA
 
 Sending to your own collector instead, or trying the package before you have a key, means naming the parts rather than passing a DSN: [Without a DSN](https://goodtiming.ai/docs.html#without-dsn). That section's examples are Python. The config field names carry over as camelCase, and `HttpSink` takes its options as an object: `new HttpSink(url, { apiKey })`. Its timeouts do **not** carry over. Python's `request_timeout_seconds` / `backoff_base_seconds` / `backoff_max_seconds` / `circuit_breaker_reset_seconds` are `requestTimeoutMs` / `backoffBaseMs` / `backoffMaxMs` / `circuitBreakerResetMs` here, in milliseconds rather than seconds, and there is no equivalent of `shutdown_flush_timeout_seconds`.
 
+## A server per request
+
+A stateless HTTP server builds a new `McpServer` for every request. Create one Baton at startup and wrap each server with it:
+
+```ts
+import { createBaton } from "@goodtiming/baton-sdk";
+
+const baton = createBaton(); // reads BATON_DSN, like withBaton
+
+app.post("/mcp", async (req, res) => {
+  const server = buildServer();
+  baton.wrap(server);
+  // connect a transport and handle the request as before
+});
+```
+
+Call `await baton.aclose()` in your own shutdown path, after the HTTP server stops taking requests. It sends what is still buffered.
+
+`createBaton` takes the same config as `withBaton`. The Baton owns the sink, so there is nothing to close per request. Calling `withBaton` per request instead builds a new sink each time and re-sends the tool surface on every request.
+
+What a stateless server costs, with either function:
+
+- **Every request is its own session.** The protocol gives a stateless server no session id, so the SDK does not invent a join between two requests. To see one person's requests together, return a principal from `resolvePrincipal` ([Who is calling](#who-is-calling)): the Console lists sessions by person. Signals that need several calls in one session, such as a retry loop, do not fire across requests.
+- **The client's name is often `unknown`.** A client states its name in the `initialize` handshake, and a per-request server never sees the handshake of the call it is serving. The exception is a client the SDK can recognise from the request itself: Claude Code's tool calls are named `claude-code`. Resource and prompt requests are not.
+
 ## PII scrubbing
 
 **On by default**, a rule-for-rule port of the Python SDK's ruleset: email, `Bearer` values, `sk-*` and `AKIA*` keys, JWTs, phone numbers, Luhn-checked card numbers, plus force-redaction on sensitive field names. Pass `identityScrub` to opt out, or supply your own `(value: unknown) => unknown`.
@@ -160,7 +185,7 @@ None of it blocks the quickstart above.
 - Only the high-level `McpServer`. The low-level `Server` is not wrapped.
 - **Task-based tools are not wrapped, and are not left alone either.** A 1.x tool registered with an object at `.handler` rather than a function produces no `tool_call_*` events at all, and nothing reports that. It still gets the intent parameters added to its advertised schema, because injection runs before the wrap is skipped and the strip only happens inside the wrapper. So `user_goal`, `expected_result` and `overall_task` can arrive in your own handler's arguments. Tools on the same server registered the ordinary way are unaffected. ⚠ **The request-level seam above does not rescue this one**: it reports only on tools this package wrapped, so a task-based tool emits nothing even for a rejected argument, where an unknown tool now emits a `tool_call_error`.
 - Intent parameters need a Zod schema. On the 2.x SDK a tool registered with a non-Zod standard schema is still wrapped and still emits `tool_call_*`; it just advertises no intent parameters.
-- The per-request `createMcpHandler` deployment shape is unscoped.
+- v2's `createMcpHandler` is untested. A server built per request by your own code is supported: see [A server per request](#a-server-per-request).
 
 ## Wire compatibility
 

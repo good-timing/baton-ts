@@ -114,7 +114,9 @@ import { roundMetaCoordinates } from "../../metaCoordinates.js";
 import {
   resolveBatonConfig,
   resolveTenantId,
+  withServerDisplayName,
   type BatonConfig,
+  type ResolvedBatonConfig,
 } from "./config.js";
 import { captureDisabled, DisabledSink, logDisabled } from "../../optout.js";
 import { capCodePoints } from "../../_text.js";
@@ -135,7 +137,11 @@ import {
   TOOL_ERROR_TYPE,
 } from "./errorResult.js";
 import { BatonHandle } from "./handle.js";
-import { resolveAnnotationToolName, usableServerName } from "./annotationName.js";
+import {
+  deriveAnnotationToolName,
+  resolveAnnotationToolName,
+  usableServerName,
+} from "./annotationName.js";
 import { buildServerInstructions } from "./llmText.js";
 import {
   EXPECTED_RESULT_PARAM_NAME,
@@ -213,7 +219,7 @@ interface WrapContext {
 // `.d.ts` surface. Reaching into them is deliberate (see module docstring),
 // the same way Python's `_registry.py` does, and isolated to this one module
 // so a future SDK internals change has exactly one place to update. Each
-// reach-in is declared on a named local shape (`internals` in `withBaton`,
+// reach-in is declared on a named local shape (`internals` in `install`,
 // the small casts in `wrapIfNeeded`/`captureAndInject`) rather than an
 // `any`, so a rename upstream lands as a compile error here.
 
@@ -321,10 +327,12 @@ class SurfaceState {
     string,
     { disabled: boolean; tool: Record<string, unknown> }
   >();
-  readonly emittedHashes = new Set<string>();
   dirty = false;
 
-  constructor(private readonly serverMeta: ReturnType<typeof buildServerMeta>) {}
+  constructor(
+    private readonly serverMeta: ReturnType<typeof buildServerMeta>,
+    readonly emittedHashes: Set<string>,
+  ) {}
 
   /** `inputSchemaJson` is already converted — by `ctx.vendorToolJsonSchema`,
    * which picks the spelling THIS SDK major puts on the wire. */
@@ -876,14 +884,18 @@ function extractGoalParam(
   return typeof raw === "string" && raw.trim() ? raw : null;
 }
 
+/** A server whose surface differs on every request would otherwise grow the
+ * shared set for the life of the process. */
+const MAX_REMEMBERED_SURFACES = 1024;
+
 /** Lazy, fail-open surface_snapshot capture — the first tool call after any
  * registration change re-hashes the surface and emits iff the hash hasn't
  * been seen before. `dirty` is cleared FIRST so a hashing/serialization
  * error (deterministic — would just re-throw identically every call) costs
  * one attempt per surface change, not a retry storm. A WRITE failure is
  * different (sink health can recover), so that path re-sets `dirty = true`
- * to retry on the next call; `emittedHashes` only gains an entry AFTER a
- * successful write, so a transient failure can't permanently drop a
+ * to retry on the next call, and takes the digest back out of
+ * `emittedHashes`, so a transient failure can't permanently drop a
  * surface the way a genuine dedup skip would. */
 async function maybeEmitSurfaceSnapshot(ctx: WrapContext): Promise<void> {
   if (!ctx.surfaceState.dirty) return;
@@ -897,7 +909,12 @@ async function maybeEmitSurfaceSnapshot(ctx: WrapContext): Promise<void> {
     process.stderr.write(`baton: surface snapshot capture failed: ${String(err)}\n`);
     return;
   }
-  if (ctx.surfaceState.emittedHashes.has(digest)) return;
+  const emitted = ctx.surfaceState.emittedHashes;
+  if (emitted.has(digest)) return;
+  if (emitted.size >= MAX_REMEMBERED_SURFACES) emitted.clear();
+  // Reserved before the write, so two servers sharing this set cannot both
+  // send it: `createBaton.test.ts`, "when the first requests arrive together".
+  emitted.add(digest);
   const seam = buildSeamAugmentations({
     injectedToolNames: [ctx.annotationToolName],
     intentParamNames: [USER_GOAL_PARAM_NAME, EXPECTED_RESULT_PARAM_NAME, OVERALL_TASK_PARAM_NAME],
@@ -907,10 +924,9 @@ async function maybeEmitSurfaceSnapshot(ctx: WrapContext): Promise<void> {
     await ctx.emitSurface(ctx.fallbackSessionId, digest, { ...snapshot, seam_augmentations: seam });
   } catch (err) {
     process.stderr.write(`baton: surface snapshot capture failed: ${String(err)}\n`);
+    emitted.delete(digest);
     ctx.surfaceState.dirty = true;
-    return;
   }
-  ctx.surfaceState.emittedHashes.add(digest);
 }
 
 /** Capture the entry's CURRENT `inputSchema` as vendor-true and splice in
@@ -988,7 +1004,7 @@ type SeamedHandler = AnyHandler & { [tag: symbol]: boolean | undefined };
  * because `originalSet` is read at install time, after the earlier patch has
  * landed. That composition held when this was one hand-written function per
  * seam too; one helper makes it structural rather than a property of the call
- * order in `withBaton`.
+ * order in `install`.
  *
  * ⚠ A server whose internals do not have this shape gets no seam at all.
  * What that costs differs per seam and is stated at each call site.
@@ -1831,7 +1847,54 @@ export function withBaton(server: SupportedMcpServer, supplied: BatonConfig = {}
       annotationToolName: "",
     });
   }
+  return install(server, supplied, resolveBatonConfig(supplied), new Set());
+}
 
+/** One Baton for a process that builds a new `McpServer` for every request.
+ * Owns the sink, so a request has nothing to close. */
+export interface Baton {
+  wrap(server: SupportedMcpServer): void;
+  flush(): Promise<void>;
+  aclose(): Promise<void>;
+}
+
+/** Create once at startup, then `wrap` each per-request server. For a server
+ * that lives as long as the process, use `withBaton`. */
+export function createBaton(supplied: BatonConfig = {}): Baton {
+  const disabledBy = captureDisabled();
+  if (disabledBy !== null) {
+    logDisabled(disabledBy, "createBaton");
+    const unused = supplied.sink ?? new DisabledSink();
+    return { wrap: () => {}, flush: () => unused.flush(), aclose: () => unused.aclose() };
+  }
+
+  // Everything the environment or a bad config can decide is settled here, so
+  // a request cannot fail on it or be switched off by it:
+  // `createBaton.test.ts`, "reads the environment once".
+  const resolved = resolveBatonConfig(supplied);
+  deriveAnnotationToolName(resolved.vendorId, supplied.annotationToolName);
+  const sink = resolved.sink ?? new StdoutSink();
+  const config = {
+    ...resolved,
+    sink,
+    tenantId: resolveTenantId(resolved.tenantId, resolved.vendorId),
+  };
+  const emittedSurfaceHashes = new Set<string>();
+  return {
+    wrap: (server) => {
+      install(server, supplied, config, emittedSurfaceHashes);
+    },
+    flush: () => sink.flush(),
+    aclose: () => sink.aclose(),
+  };
+}
+
+function install(
+  server: SupportedMcpServer,
+  supplied: BatonConfig,
+  resolved: ResolvedBatonConfig,
+  emittedSurfaceHashes: Set<string>,
+): BatonHandle {
   // The internals both majors keep off their public `.d.ts`, on one named
   // shape rather than an `any` per reach-in, so a future SDK rename is a
   // compile error here instead of a runtime surprise in five places.
@@ -1855,16 +1918,7 @@ export function withBaton(server: SupportedMcpServer, supplied: BatonConfig = {}
     className: internals.constructor.name,
   }));
 
-  // Shadowed deliberately: every path below — the tool wrappers, the
-  // annotation tool, the surface snapshot — closes over `config`, and one of
-  // them reading the caller's raw object would emit its events under a
-  // different identity than the rest. `ResolvedBatonConfig`'s required fields
-  // are what make that a compile error rather than a review question.
-  //
-  // The parameter defaults to `{}` so `withBaton(server)` works when
-  // `BATON_DSN` is exported — the hosted-vendor shape, and Python's
-  // `install_baton(mcp)` with nothing but the environment.
-  const config = resolveBatonConfig(supplied, serverName);
+  const config = withServerDisplayName(resolved, supplied, serverName);
   const sink = config.sink ?? new StdoutSink();
   // Resolved ONCE and threaded to every consumer below: the wrapper's skip of
   // the annotate tool, the instructions, the registration and the handle. With
@@ -1892,7 +1946,7 @@ export function withBaton(server: SupportedMcpServer, supplied: BatonConfig = {}
   // MUST run before the instructions assignment, or the snapshot would
   // capture Baton's own text instead of the vendor's. See module docstring.
   const serverMeta = buildServerMeta(server.server);
-  const surfaceState = new SurfaceState(serverMeta);
+  const surfaceState = new SurfaceState(serverMeta, emittedSurfaceHashes);
 
   const emitSurface = async (
     sessionId: string,

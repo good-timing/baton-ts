@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+### Added
+
+- **`createBaton(config)` for a server built per request.** A stateless HTTP
+  server makes a new `McpServer` for every request. Wrapping each one with
+  `withBaton` built a new `HttpSink` per request, each adding a `beforeExit`
+  listener, and sent a `surface_snapshot` on every request. `createBaton`
+  is made once; `baton.wrap(server)` shares one sink and sends each surface
+  once per process. `baton.flush()` and `baton.aclose()` replace the handle's.
+  See "A server per request" in the README. `withBaton` takes and returns
+  what it did before.
+
+  Session ids are unchanged: each request is still its own session, which is
+  what the Python SDK sends from a stateless server. `agent_runtime` is still
+  `unknown` there for any client the SDK cannot recognise from the request
+  itself, because the handshake is not on the request's server.
+
 ### Fixed
 
 - **The CommonJS build loads under Jest.** `dist/index.cjs` required `uuid`,

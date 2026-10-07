@@ -198,7 +198,7 @@ export interface BatonConfig {
  * supported configuration: it reproduces exactly the collapse the split exists
  * to end, so it is the branch to delete once the recipe emits the var.
  *
- * Resolved ONCE per `withBaton` install and shared by the tool-call and
+ * Resolved ONCE per install and shared by the tool-call and
  * annotation paths — two resolutions could disagree, and an annotation under a
  * different tenant than its call is unjoinable.
  */
@@ -242,12 +242,10 @@ export interface ResolvedBatonConfig extends BatonConfig {
  * parked for that repo — and nothing here reads the string after parsing, so
  * this arm simply does not import the problem.
  *
- * `serverName` is the server's own name as `withBaton` read it, already
- * through `usableServerName`, so `undefined` when there is none to use. It is
- * consulted for one field, the display name, and only when a DSN is given:
- * with no DSN, `vendorDisplayName` stays required.
+ * Knows nothing about the server being wrapped. The one field that depends on
+ * it, the display name, is finished by `withServerDisplayName`.
  */
-export function resolveBatonConfig(config: BatonConfig, serverName?: string): ResolvedBatonConfig {
+export function resolveBatonConfig(config: BatonConfig): ResolvedBatonConfig {
   const dsnString = selectDsn(
     config.dsn,
     {
@@ -289,17 +287,7 @@ export function resolveBatonConfig(config: BatonConfig, serverName?: string): Re
     // in the server instructions and the annotation tool description, which is
     // the whitelabel obligation the validator cites when it refuses the empty
     // one. ⚠ Python uses `or` here and still has the inconsistency.
-    //
-    // Between the explicit value and the segment sits the server's own name,
-    // under the guards in `annotationName.ts`: the segment is an opaque
-    // `srv-<8 hex>`, and it was what agents were told the vendor is called.
-    vendorDisplayName:
-      config.vendorDisplayName ??
-      displayNameFromServer(serverName, {
-        vendorId: dsn.vendorId,
-        annotationToolName: config.annotationToolName,
-      }) ??
-      dsn.vendorId,
+    vendorDisplayName: config.vendorDisplayName ?? dsn.vendorId,
     // `??`, not `||`: an explicit empty string must survive to the validation
     // below and be REFUSED there, rather than be quietly replaced by the
     // default it was deliberately not left as.
@@ -323,6 +311,23 @@ export function resolveBatonConfig(config: BatonConfig, serverName?: string): Re
     // itself, exactly as it does for an explicitly-constructed sink.
     sink: new HttpSink(dsn.origin, { apiKey: dsn.key }),
   };
+}
+
+/** Between an explicit display name and the DSN's server segment sits the
+ * server's own name: the segment is an opaque `srv-<8 hex>`, and it was what
+ * agents were told the vendor is called. `serverName` is already through
+ * `usableServerName`, so `undefined` when there is none to use. */
+export function withServerDisplayName(
+  resolved: ResolvedBatonConfig,
+  supplied: BatonConfig,
+  serverName: string | undefined,
+): ResolvedBatonConfig {
+  if (supplied.vendorDisplayName !== undefined) return resolved;
+  const fromServer = displayNameFromServer(serverName, {
+    vendorId: resolved.vendorId,
+    annotationToolName: supplied.annotationToolName,
+  });
+  return fromServer === undefined ? resolved : { ...resolved, vendorDisplayName: fromServer };
 }
 
 /** Keys renamed in 0.3.5, REFUSED rather than ignored: a JavaScript caller gets

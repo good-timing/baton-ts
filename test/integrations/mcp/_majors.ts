@@ -24,11 +24,14 @@ import { withBaton } from "../../../src/integrations/mcp/withBaton.js";
 
 export class CapturingSink implements Sink {
   readonly events: Event[] = [];
+  closed = false;
   async write(event: Event): Promise<void> {
     this.events.push(event);
   }
   async flush(): Promise<void> {}
-  async aclose(): Promise<void> {}
+  async aclose(): Promise<void> {
+    this.closed = true;
+  }
 }
 
 /** The terminal event of the (single) call, with its type pinned FIRST — and

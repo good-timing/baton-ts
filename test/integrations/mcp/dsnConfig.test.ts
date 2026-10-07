@@ -19,7 +19,10 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { z } from "zod";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { withBaton } from "../../../src/integrations/mcp/withBaton.js";
-import { resolveBatonConfig } from "../../../src/integrations/mcp/config.js";
+import {
+  resolveBatonConfig,
+  withServerDisplayName,
+} from "../../../src/integrations/mcp/config.js";
 import { HttpSink, StdoutSink } from "../../../src/sinks.js";
 import { DEFAULT_CONSENT_TOKEN } from "../../../src/events.js";
 
@@ -173,8 +176,10 @@ describe("what the DSN does not take over", () => {
     // vendor was called `srv-c8eca135`. The server's name is a string the
     // vendor chose, so it reaches their users as written, neither prettified
     // nor slugged.
+    const supplied = { dsn: DSN, consentToken: "ct" };
     expect(
-      resolveBatonConfig({ dsn: DSN, consentToken: "ct" }, "Toybox Pantry").vendorDisplayName,
+      withServerDisplayName(resolveBatonConfig(supplied), supplied, "Toybox Pantry")
+        .vendorDisplayName,
     ).toBe("Toybox Pantry");
   });
 
