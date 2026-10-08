@@ -159,6 +159,11 @@ const ENVELOPE_ALLOWED_TO_DIFFER = new Set([
   "transport_observed",
 ]);
 
+/** Envelope keys this SDK emits before the Python that generates the vectors
+ * does. Forgiven only while the vector lacks the key, and never on
+ * `surface_snapshot`, which must not carry a caller's key at all. */
+const ENVELOPE_AHEAD_OF_VECTORS = new Set(["client_observed"]);
+
 /** SPEC §11.4: **absent and null are equivalent on the wire, and a consumer
  * MUST NOT test for the KEY.** So the two producers may legitimately disagree
  * about whether an optional member is present at all, and this comparison has
@@ -365,7 +370,11 @@ describe("cross-SDK emitter conformance (Phase 3)", () => {
     // Key set first — a missing or extra envelope field is the failure this
     // test most needs to catch, and comparing values alone would miss an
     // extra one entirely.
-    expect(Object.keys(emitted).sort()).toEqual(Object.keys(reference).sort());
+    const emittedKeys = Object.keys(emitted).filter(
+      (key) =>
+        key in reference || name === "surface_snapshot" || !ENVELOPE_AHEAD_OF_VECTORS.has(key),
+    );
+    expect(emittedKeys.sort()).toEqual(Object.keys(reference).sort());
 
     for (const key of Object.keys(reference)) {
       if (key === "payload" || ENVELOPE_ALLOWED_TO_DIFFER.has(key)) continue;

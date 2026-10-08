@@ -23,6 +23,7 @@ import { buildAnnotationToolDescription, SIGNAL_TYPES } from "./llmText.js";
 import { extraEnvelope, extraMeta, observeTransport, type Extra } from "./mcpTypes.js";
 import type { SupportedMcpServer } from "./withBaton.js";
 import type { ProactiveTracker } from "./proactiveTracker.js";
+import { clientObservedMember } from "./clientObserved.js";
 import { detectAgentRuntime, UNKNOWN_AGENT_RUNTIME } from "./runtimeAdapter.js";
 import { resolveSessionId } from "./sessionResolution.js";
 import { scrubOrNull } from "./safeScrub.js";
@@ -133,6 +134,7 @@ export function registerAnnotationTool(
           agent_runtime: runtime,
           principal,
           transport_observed: observeTransport(extra),
+          ...clientObservedMember(extra, { server, scrubber: options.scrubber }),
           runtime_meta: scrubbedMeta,
           payload: {
             // Agent-facing names -> wire keys, as with `overall_task`

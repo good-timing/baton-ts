@@ -13,6 +13,7 @@ import {
  * that bound resting on every caller happening to pass a literal. */
 export type ScrubbedField =
   | "agent-runtime name"
+  | "client_observed"
   | "_meta"
   | typeof USER_GOAL_PARAM_NAME
   | typeof EXPECTED_RESULT_PARAM_NAME

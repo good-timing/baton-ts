@@ -64,7 +64,7 @@ Call `await baton.aclose()` in your own shutdown path, after the HTTP server sto
 What a stateless server costs, with either function:
 
 - **Every request is its own session.** The protocol gives a stateless server no session id, so the SDK does not invent a join between two requests. To see one person's requests together, return a principal from `resolvePrincipal` ([Who is calling](#who-is-calling)): the Console lists sessions by person. Signals that need several calls in one session, such as a retry loop, do not fire across requests.
-- **The client's name is often `unknown`.** A client states its name in the `initialize` handshake, and a per-request server never sees the handshake of the call it is serving. The exception is a client the SDK can recognise from the request itself: Claude Code's tool calls are named `claude-code`. Resource and prompt requests are not.
+- **The client's name is often `unknown`.** A client states its name in the `initialize` handshake, and a per-request server never sees the handshake of the call it is serving. The exception is a client the SDK can recognise from the request itself: Claude Code's tool calls are named `claude-code`. Resource and prompt requests are not. The request's `User-Agent` header is still sent with each of those events, in `client_observed`, so the client can be named from it.
 
 ## PII scrubbing
 

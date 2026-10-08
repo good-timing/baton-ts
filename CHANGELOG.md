@@ -18,6 +18,14 @@
   `unknown` there for any client the SDK cannot recognise from the request
   itself, because the handshake is not on the request's server.
 
+- **`client_observed` on every event that has a caller.** It carries what
+  the client said about itself, uninterpreted: `info` is the `name` and
+  `version` it declared, and `headers` holds the request's `user-agent` and
+  `x-anthropic-client` when there is an HTTP request. No other header is ever
+  copied. Values pass through your scrubber. The key is left out when there
+  is nothing to carry. `agent_runtime` is unchanged; on a server built per
+  request it is often `unknown`, and the `User-Agent` is still sent there.
+
 ### Changed
 
 - **`expected_result` is advertised as required too.** Under the default

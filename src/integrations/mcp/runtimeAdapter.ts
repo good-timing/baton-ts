@@ -93,7 +93,7 @@ export const CLIENT_INFO_META_KEY = "io.modelcontextprotocol/clientInfo";
  * this module owns, and mangling it would be the opposite mistake.
  */
 import { capCodePoints } from "../../_text.js";
-import { scrubOrNull } from "./safeScrub.js";
+import { scrubOrNull, type ScrubbedField } from "./safeScrub.js";
 
 export const CLIENT_NAME_MAX_LEN = 128;
 
@@ -120,9 +120,11 @@ export interface RuntimeDetectionOptions {
  * through to the NEXT tier instead of becoming the reported runtime — a
  * vendor scrubber that redacts a name must lose that tier, not the ladder.
  */
-function clean(
+export function cleanClientText(
   name: unknown,
   scrubber: ((value: unknown) => unknown) | undefined,
+  field: ScrubbedField = "agent-runtime name",
+  max: number = CLIENT_NAME_MAX_LEN,
 ): string | null {
   if (typeof name !== "string" || !name) return null;
   let cleaned: string = name;
@@ -130,7 +132,7 @@ function clean(
     // Fail-open; `safeScrub` carries why `emit`'s guard does not cover this one.
     // ⚠ `<unknown>` deliberately, NOT inferred: `T` would infer `string` and make
     // the guard below look redundant to a reader, when it is load-bearing.
-    const scrubbed = scrubOrNull<unknown>(scrubber, cleaned, "agent-runtime name");
+    const scrubbed = scrubOrNull<unknown>(scrubber, cleaned, field);
     // A scrubber that redacts by returning null — or anything else that is
     // not a string — loses this TIER; it does not get stringified onto the
     // wire. `String(null)` is `"null"`, which is truthy and would ship as
@@ -143,28 +145,39 @@ function clean(
   // Code points, not UTF-16 units — `capCodePoints` carries the reasoning,
   // which moved there when a second capped field turned out to need it and
   // reintroduced the defect by slicing.
-  return capCodePoints(cleaned, CLIENT_NAME_MAX_LEN);
+  return capCodePoints(cleaned, max);
 }
 
-/** The declared name off the reserved per-request key, wherever this major
- * keeps it. The value is an object with `name`/`version`. */
+/** A client's `clientInfo` as it declared it, unvalidated. */
+export interface DeclaredClientInfo {
+  name?: unknown;
+  version?: unknown;
+}
+
+/** The first declaration `carries` accepts off the reserved per-request key,
+ * wherever this major keeps it. */
 function declaredOnRequest(
   meta: Record<string, unknown> | null,
   envelope: Record<string, unknown> | null | undefined,
-): unknown {
+  carries: (declared: DeclaredClientInfo) => boolean,
+): DeclaredClientInfo | undefined {
   for (const source of [envelope, meta]) {
     if (!source) continue;
     const info = source[CLIENT_INFO_META_KEY];
     if (info && typeof info === "object") {
-      const name = (info as { name?: unknown }).name;
-      if (name !== undefined) return name;
+      const { name, version } = info as DeclaredClientInfo;
+      if (carries({ name, version })) return { name, version };
     }
   }
   return undefined;
 }
 
+const hasName = (declared: DeclaredClientInfo): boolean => declared.name !== undefined;
+const hasAnything = (declared: DeclaredClientInfo): boolean =>
+  declared.name !== undefined || declared.version !== undefined;
+
 /**
- * The declared name off the server's cached `initialize` handshake.
+ * The declaration off the server's cached `initialize` handshake.
  *
  * ⚠ **Catches everything, on purpose.** This walks two properties of a
  * third-party object across two majors and seven versions, and they are
@@ -184,7 +197,7 @@ function declaredOnRequest(
  * attributed to client B's declared name. Not measured either way — recorded
  * as the honest limit of this carrier rather than implied away.
  */
-function declaredOnConnection(options: RuntimeDetectionOptions): unknown {
+function declaredOnConnection(options: RuntimeDetectionOptions): DeclaredClientInfo | undefined {
   try {
     // `options.server` is READ INSIDE the try, never destructured by the
     // caller. Reading a property can itself throw — v2's `McpServer` reaches
@@ -194,13 +207,24 @@ function declaredOnConnection(options: RuntimeDetectionOptions): unknown {
     if (!server) return undefined;
     const inner = (server as { server?: unknown }).server;
     const holder = (inner ?? server) as {
-      getClientVersion?: () => { name?: unknown } | undefined;
+      getClientVersion?: () => DeclaredClientInfo | undefined;
     };
     if (typeof holder.getClientVersion !== "function") return undefined;
-    return holder.getClientVersion()?.name;
+    const declared = holder.getClientVersion();
+    return declared ? { name: declared.name, version: declared.version } : undefined;
   } catch {
     return undefined;
   }
+}
+
+/** What the client declared, never the heuristic: the request's own
+ * declaration if it carries a name or a version, else the handshake's. Both
+ * fields come from the one source, so the pair is one the client sent. */
+export function declaredClientInfo(
+  meta: Record<string, unknown> | null,
+  options: Pick<RuntimeDetectionOptions, "envelope" | "server"> = {},
+): DeclaredClientInfo | undefined {
+  return declaredOnRequest(meta, options.envelope, hasAnything) ?? declaredOnConnection(options);
 }
 
 /**
@@ -246,14 +270,14 @@ export function detectAgentRuntime(
   const { envelope, scrubber } = options;
 
   // Tier 1 — declared, on the request.
-  const onRequest = clean(declaredOnRequest(meta, envelope), scrubber);
+  const onRequest = cleanClientText(declaredOnRequest(meta, envelope, hasName)?.name, scrubber);
   if (onRequest !== null) return onRequest;
 
   // Tier 2 — declared, on the connection. The tier that answers for every
   // client shipping today, including the ones that were unattributable
   // before it existed. `options` goes in whole, deliberately: see the
   // property-read note in `declaredOnConnection`.
-  const onConnection = clean(declaredOnConnection(options), scrubber);
+  const onConnection = cleanClientText(declaredOnConnection(options)?.name, scrubber);
   if (onConnection !== null) return onConnection;
 
   // Tier 3 — inferred, and last: a key prefix says where the METADATA came

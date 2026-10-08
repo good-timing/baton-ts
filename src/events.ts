@@ -207,6 +207,19 @@ export type SurfaceSnapshotPayload = z.infer<typeof SurfaceSnapshotPayloadSchema
  */
 export const DEFAULT_CONSENT_TOKEN = "customer-consented";
 
+// Strict, with the headers spelled out, so a header that is not registered
+// cannot reach the wire: `clientObserved.test.ts`, "refuses an unregistered
+// header at the schema".
+export const ClientObservedSchema = z
+  .object({
+    info: z.object({ name: z.string().optional(), version: z.string().optional() }).strict().optional(),
+    headers: z
+      .object({ "user-agent": z.string().optional(), "x-anthropic-client": z.string().optional() })
+      .strict()
+      .optional(),
+  })
+  .strict();
+
 /** The principal as emitted — `{id, source, form}`, all three REQUIRED
  * together, plus an optional `display_name` (SPEC §11.4). The runtime shape
  * of `identity.PrincipalWire`.
@@ -296,6 +309,8 @@ const envelopeShape = {
   agent_runtime: z.string().default("unknown"),
   principal: PrincipalWireSchema.nullable().default(null),
   transport_observed: z.string().nullable().default(null),
+  // Optional and never defaulted: SPEC §11.4 has the key absent, not null.
+  client_observed: ClientObservedSchema.optional(),
   call_id: z.string().nullable().default(null),
   runtime_meta: z.record(z.string(), z.unknown()).nullable().default(null),
 };

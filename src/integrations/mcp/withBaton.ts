@@ -157,6 +157,7 @@ import {
   observeTransport,
   type Extra,
 } from "./mcpTypes.js";
+import { clientObservedMember } from "./clientObserved.js";
 import { ProactiveTracker } from "./proactiveTracker.js";
 import { detectAgentRuntime, UNKNOWN_AGENT_RUNTIME } from "./runtimeAdapter.js";
 import { resolveSessionId } from "./sessionResolution.js";
@@ -553,6 +554,7 @@ async function openCall(
     // SERVER and is captured outside any call, so it has no caller's
     // transport to name any more than it has a caller to name.
     transport_observed: observeTransport(extra),
+    ...clientObservedMember(extra, ctx),
     runtime_meta: scrubbedMeta,
   };
 
@@ -1248,6 +1250,7 @@ async function openLifecycleCall(
         consent_token: ctx.consentToken,
         agent_runtime: parts.runtime,
         transport_observed: observeTransport(extra),
+        ...clientObservedMember(extra, ctx),
         runtime_meta: parts.scrubbedMeta,
       },
     };
