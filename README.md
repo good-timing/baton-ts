@@ -171,6 +171,14 @@ with `could not parse ${body.slice(0, 200)}`, that content leaves your process
 under a mode you set to stop exactly that. Throw a message that names the
 resource, not its contents.
 
+## Tool listings
+
+Every `tools/list` request emits a `tool_list_start` and then a
+`tool_list_end` or a `tool_list_error`. A client that connects, lists your
+tools and calls none is still recorded. The end event carries how many tools
+that response held and how long it took. No tool name, description or schema
+is on these events.
+
 ## Turning capture off entirely
 
 Not the same thing as **Not capturing responses at all**: that one keeps the signal and drops the response bodies, this one emits nothing at all. It also belongs to a different person — `resultCaptureMode` is set by whoever WRAPS the server, in code; this is set by whoever RUNS it, in the environment.

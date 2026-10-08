@@ -153,6 +153,9 @@ describe("baton-spec conformance", () => {
     prompt_get_start: { name: "p", params: { a: 1 } },
     prompt_get_end: { name: "p", duration_ms: 3 },
     prompt_get_error: { name: "p", error_type: "-32602", error_body: "boom", duration_ms: 3 },
+    tool_list_start: {},
+    tool_list_end: { count: 2, duration_ms: 3 },
+    tool_list_error: { error_type: "Error", error_body: "boom", duration_ms: 3 },
   };
 
   /** Each event type and its payload schema, DERIVED from `EventSchema` —
@@ -229,6 +232,9 @@ describe("baton-spec conformance", () => {
     prompt_get_start: { name: "p" },
     prompt_get_end: { name: "p" },
     prompt_get_error: { name: "p", error_type: "-32602", error_body: "boom" },
+    tool_list_start: {},
+    tool_list_end: { count: 2 },
+    tool_list_error: { error_type: "Error", error_body: "boom" },
   };
 
   /** ⚠ **(c).** Both fixture tables are literals, so something must force a new

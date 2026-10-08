@@ -23,6 +23,14 @@
   copied. Values pass through your scrubber. It is `null` when there is
   nothing to carry.
 
+- **Tool listings are recorded.** Every `tools/list` request now emits a
+  `tool_list_start` and then a `tool_list_end` or a `tool_list_error`, so a
+  client that lists your tools and calls none is no longer invisible. The end
+  event carries the number of tools in that response and the time it took; no
+  tool name, description or schema is sent. **A collector that keeps a closed
+  list of event types must add these three before it receives events from
+  this version.** The hosted Console has.
+
 ### Changed
 
 - **The SDK no longer names the client: `agent_runtime` is always

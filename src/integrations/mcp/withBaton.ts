@@ -105,6 +105,9 @@ import {
   ToolCallEndEventSchema,
   ToolCallErrorEventSchema,
   ToolCallStartEventSchema,
+  ToolListEndEventSchema,
+  ToolListErrorEventSchema,
+  ToolListStartEventSchema,
 } from "../../events.js";
 import { StdoutSink, type Sink } from "../../sinks.js";
 import { registerAnnotationTool } from "./annotation.js";
@@ -1016,6 +1019,10 @@ function installRequestSeam(
     const handler = handlers.get(method) as SeamedHandler | undefined;
     if (typeof handler !== "function" || handler[seamTag]) return;
     const seamed = wrap(handler) as SeamedHandler;
+    // Two seams may wrap one method. Without the inner seam's tag on the
+    // outer handler, the inner seam would wrap again on the next
+    // `setRequestHandler`: "each seam applies once" in `toolList.test.ts`.
+    for (const tag of Object.getOwnPropertySymbols(handler)) seamed[tag] = handler[tag];
     seamed[seamTag] = true;
     handlers.set(method, seamed);
   };
@@ -1065,10 +1072,11 @@ const LIFECYCLE_SEAMS = {
   resourceRead: Symbol("batonResourceReadSeam"),
   promptList: Symbol("batonPromptListSeam"),
   promptGet: Symbol("batonPromptGetSeam"),
+  toolList: Symbol("batonToolListSeam"),
 } as const;
 
 /** The three event schemas one lifecycle family needs, structurally rather
- * than by Zod generics: all twelve `.parse` to something assignable to
+ * than by Zod generics: every one `.parse`s to something assignable to
  * `Event`, and that is the only thing the seam does with them. */
 interface LifecycleSchemas {
   start: { parse(value: unknown): Event };
@@ -1103,7 +1111,7 @@ interface LifecycleSchemas {
  * ⚠ **Fail-open throughout (SPEC §11.2).** Every event goes through `emit`,
  * the whole settle is wrapped, and the vendor's result and the vendor's
  * exception pass through untouched in both lanes. A server with no reachable
- * handler map gets no seam, which costs these twelve events and nothing else.
+ * handler map gets no seam, which costs these events and nothing else.
  *
  * ⚠ **The error leg is THROW-ONLY, which is why there is no returned-flag
  * branch here.** `isError` is a `CallToolResult` member; a failing resource
@@ -1131,7 +1139,7 @@ interface LifecycleSpec {
   subjectKey?: "uri" | "name";
   /** Which array of the `*_list` result `count` counts. Absent for the two
    * families that have no count. */
-  countKey?: "resources" | "prompts";
+  countKey?: "resources" | "prompts" | "tools";
   /** The `*_start` payload's `params` member, or `{}` where the family has
    * none. */
   startParams: (params: Record<string, unknown>) => Record<string, unknown>;
@@ -1313,6 +1321,17 @@ const LIFECYCLE_SPECS: readonly LifecycleSpec[] = [
     startParams: (params) => ({
       params: paramsBag(params["arguments"] as Record<string, unknown> | undefined),
     }),
+  },
+  {
+    method: TOOLS_LIST_METHOD,
+    seamTag: LIFECYCLE_SEAMS.toolList,
+    schemas: {
+      start: ToolListStartEventSchema,
+      end: ToolListEndEventSchema,
+      error: ToolListErrorEventSchema,
+    },
+    countKey: "tools",
+    startParams: NO_PARAMS,
   },
 ];
 
@@ -2093,17 +2112,9 @@ function install(
     ctx,
   );
 
-  // The four resource/prompt lifecycle seams (SPEC §11.4.4) — unconditional,
-  // like the seam above, because what they capture is not configurable.
-  //
-  // ⚠ **Install ORDER is irrelevant for these four, unlike the two above.**
-  // `resources/*` and `prompts/*` handlers are installed by the vendor's own
-  // `registerResource` / `registerPrompt`, not by the annotate-tool
-  // registration below — and `installRequestSeam` patches `setRequestHandler`,
-  // so a primitive registered AFTER `withBaton` is seamed as its handler
-  // lands. Verified on both majors. This paragraph used to claim the
-  // annotate-tool ordering mattered here, which was the `tools/*` seams'
-  // reason copied one function too far.
+  // The lifecycle seams (SPEC §11.4.4, §11.4.5) — unconditional, like the
+  // seam above, because what they capture is not configurable. Install order
+  // does not matter: `installRequestSeam` wraps a handler registered later.
   installLifecycleSeams(internals.server, ctx);
 
   const resolvedAnnotationToolName = registerAnnotationTool(server, {

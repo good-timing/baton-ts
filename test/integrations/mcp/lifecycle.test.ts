@@ -277,7 +277,7 @@ describe.each(MAJORS)("resource and prompt lifecycles — $label", (major) => {
       expect(wire["principal"]).toBeNull();
       expect(wire["call_id"]).toBeNull();
       // The envelope is otherwise the SAME one a tool call carries, which is
-      // what lets one endpoint accept all seventeen types.
+      // what lets one endpoint accept every type.
       expect(wire["tenant_id"]).toBe("acme");
       expect(wire["vendor_id"]).toBe("acme");
       expect(wire["consent_token"]).toBe("ct");

@@ -66,6 +66,12 @@ export type {
   PromptGetEndPayload,
   PromptGetErrorEvent,
   PromptGetErrorPayload,
+  ToolListStartEvent,
+  ToolListStartPayload,
+  ToolListEndEvent,
+  ToolListEndPayload,
+  ToolListErrorEvent,
+  ToolListErrorPayload,
 } from "./events.js";
 
 export { DEFAULT_CONSENT_TOKEN } from "./events.js";
@@ -108,6 +114,12 @@ export {
   PromptGetEndPayloadSchema,
   PromptGetErrorEventSchema,
   PromptGetErrorPayloadSchema,
+  ToolListStartEventSchema,
+  ToolListStartPayloadSchema,
+  ToolListEndEventSchema,
+  ToolListEndPayloadSchema,
+  ToolListErrorEventSchema,
+  ToolListErrorPayloadSchema,
 } from "./events.js";
 
 export { Scrubber, identityScrub, DEPTH_LIMIT } from "./scrub.js";

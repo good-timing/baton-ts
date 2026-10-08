@@ -337,6 +337,10 @@ export const EventTypeSchema = z.enum([
   "prompt_get_start",
   "prompt_get_end",
   "prompt_get_error",
+  // SPEC §11.4.5.
+  "tool_list_start",
+  "tool_list_end",
+  "tool_list_error",
 ]);
 export type EventType = z.infer<typeof EventTypeSchema>;
 
@@ -487,6 +491,29 @@ export const PromptListErrorPayloadSchema = z
   .strict();
 export type PromptListErrorPayload = z.infer<typeof PromptListErrorPayloadSchema>;
 
+/** `tools/list` reached the server (SPEC §11.4.5). Empty, for the reason
+ * `ResourceListStartPayloadSchema` carries. */
+export const ToolListStartPayloadSchema = z.object({}).strict();
+export type ToolListStartPayload = z.infer<typeof ToolListStartPayloadSchema>;
+
+/** `tools/list` returned. `count` is the length of the `tools` array in that
+ * one response, this SDK's own tool included. */
+export const ToolListEndPayloadSchema = z
+  .object({
+    count: z.number().int(),
+    ...timingShape,
+  })
+  .strict();
+export type ToolListEndPayload = z.infer<typeof ToolListEndPayloadSchema>;
+
+/** `tools/list` failed. See `ResourceReadErrorPayloadSchema`. */
+export const ToolListErrorPayloadSchema = z
+  .object({
+    ...failureShape,
+  })
+  .strict();
+export type ToolListErrorPayload = z.infer<typeof ToolListErrorPayloadSchema>;
+
 /** `prompts/get` reached the server.
  *
  * ⚠ **`params` is the request's `arguments` member ALONE, not the whole params
@@ -583,8 +610,8 @@ export const SurfaceSnapshotEventSchema = z
   .strict();
 export type SurfaceSnapshotEvent = z.infer<typeof SurfaceSnapshotEventSchema>;
 
-// ⚠ The twelve lifecycle events carry the SAME `envelopeShape` as the five
-// above, which is what lets one collector endpoint accept all seventeen and
+// ⚠ The lifecycle events carry the SAME `envelopeShape` as the five
+// above, which is what lets one collector endpoint accept every type and
 // one worker order them on `(session_id, sequence_number)`. `call_id` stays
 // absent on them: no producer mints one for these types, so SPEC §11.5.4's
 // FIFO floor is all a consumer has for pairing — recorded rather than fixed.
@@ -697,6 +724,33 @@ export const PromptGetErrorEventSchema = z
   .strict();
 export type PromptGetErrorEvent = z.infer<typeof PromptGetErrorEventSchema>;
 
+export const ToolListStartEventSchema = z
+  .object({
+    ...envelopeShape,
+    event_type: z.literal("tool_list_start").default("tool_list_start"),
+    payload: ToolListStartPayloadSchema,
+  })
+  .strict();
+export type ToolListStartEvent = z.infer<typeof ToolListStartEventSchema>;
+
+export const ToolListEndEventSchema = z
+  .object({
+    ...envelopeShape,
+    event_type: z.literal("tool_list_end").default("tool_list_end"),
+    payload: ToolListEndPayloadSchema,
+  })
+  .strict();
+export type ToolListEndEvent = z.infer<typeof ToolListEndEventSchema>;
+
+export const ToolListErrorEventSchema = z
+  .object({
+    ...envelopeShape,
+    event_type: z.literal("tool_list_error").default("tool_list_error"),
+    payload: ToolListErrorPayloadSchema,
+  })
+  .strict();
+export type ToolListErrorEvent = z.infer<typeof ToolListErrorEventSchema>;
+
 // =============================================================================
 // Discriminated union — mirrors Python's `Event` (discriminator: event_type)
 // =============================================================================
@@ -719,9 +773,12 @@ export const EventSchema = z.discriminatedUnion("event_type", [
   PromptGetStartEventSchema,
   PromptGetEndEventSchema,
   PromptGetErrorEventSchema,
+  ToolListStartEventSchema,
+  ToolListEndEventSchema,
+  ToolListErrorEventSchema,
 ]);
 /** ⚠ DERIVED, not hand-listed. It used to be a third list of the same
- * seventeen members, after `EventTypeSchema` and `EventSchema`'s own branches,
+ * members, after `EventTypeSchema` and `EventSchema`'s own branches,
  * and the twelve lifecycle types made that visible: three lists to keep in
  * step. `EventSchema` is the discriminated union over exactly these schemas,
  * so its inferred output type IS this union — verified mutually assignable
