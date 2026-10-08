@@ -20,8 +20,8 @@
   the client said about itself, uninterpreted: `info` is the `name` and
   `version` it declared, and `headers` holds the request's `user-agent` and
   `x-anthropic-client` when there is an HTTP request. No other header is ever
-  copied. Values pass through your scrubber. The key is left out when there
-  is nothing to carry.
+  copied. Values pass through your scrubber. It is `null` when there is
+  nothing to carry.
 
 ### Changed
 
@@ -34,13 +34,19 @@
   `client_observed` before it receives events from this version**, or every
   client shows as unknown. The hosted Console does.
 
-- **`expected_result` is advertised as required too.** Under the default
-  `intentParamMode: "required"`, `tools/list` now lists `user_goal` and
-  `expected_result` in each wrapped tool's `required`, as the Python SDK does
-  since 0.8.12, and `expected_result`'s description opens "REQUIRED.".
-  Neither is enforced: a call that omits them still reaches your handler.
-  `overall_task` stays optional. `surface_snapshot` reports the two names in
-  `seam_augmentations.intent_param.required_names`.
+- **`expected_result` and `overall_task` are advertised as required too.**
+  Under the default `intentParamMode: "required"`, `tools/list` now lists all
+  three intent params in each wrapped tool's `required`, as the Python SDK
+  does, and each description opens "REQUIRED.". None is enforced: a call that
+  omits them still reaches your handler. `surface_snapshot` reports the names
+  in `seam_augmentations.intent_param.required_names`.
+- **`overall_task` asks for the turn number.** Its description now asks the
+  agent to start the label with the number of the user's current message
+  ("3: prepare campaign approval"), which the Console reads to cut turns. The
+  server instructions end with one sentence telling a delegating agent to
+  pass that number to its subagents. The sentence is left out under
+  `intentParamMode: "off"`, and on a server where one of your tools declares
+  its own `overall_task`.
 - **`resolvePrincipal` has 5 seconds to answer.** A hook that has not answered
   by then is given up on, and the call is sent without a principal. Before,
   a hook waiting on a lookup that never returned held the tool call open for

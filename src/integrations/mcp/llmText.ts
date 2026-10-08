@@ -69,8 +69,8 @@ downstream_blocked, confidence_in_intent. For signal_type='feature_gap' \
 also missing_capability_field and requested_capability.`;
 
 // Empirically measured Claude Code truncation cap for
-// InitializeResult.instructions. Reserve headroom for vendor extensions
-// composed on top.
+// InitializeResult.instructions. The cap below it leaves room for
+// `INSTRUCTIONS_SUBAGENT_CLAUSE`.
 const CLAUDE_CODE_TRUNCATION_CAP = 2087;
 const INSTRUCTIONS_LENGTH_CAP = 1500;
 
@@ -106,7 +106,11 @@ export function fitsInstructionsCap(options: InstructionNames): boolean {
   return renderServerInstructions(options).length <= INSTRUCTIONS_LENGTH_CAP;
 }
 
-export function buildServerInstructions(options: InstructionNames): string {
+/** `intentParamMode: "off"` drops the subagent sentence: no tool then carries
+ * an `overall_task` param for a subagent to fill. */
+export function buildServerInstructions(
+  options: InstructionNames & { intentParamMode?: string },
+): string {
   const rendered = renderServerInstructions(options);
   if (rendered.length > INSTRUCTIONS_LENGTH_CAP) {
     throw new Error(
@@ -115,7 +119,10 @@ export function buildServerInstructions(options: InstructionNames): string {
         `~${CLAUDE_CODE_TRUNCATION_CAP}). Shorten vendorDisplayName or annotationToolName.`,
     );
   }
-  return rendered;
+  // Added after the cap check: the sentence has a fixed length, so it comes
+  // out of the headroom under the truncation point and not out of the budget
+  // the two names share.
+  return options.intentParamMode === "off" ? rendered : rendered + INSTRUCTIONS_SUBAGENT_CLAUSE;
 }
 
 export function buildAnnotationToolDescription(options: { vendorDisplayName: string }): string {
@@ -163,45 +170,33 @@ const EXPECTED_RESULT_PARAM_BODY =
 const EXPECTED_RESULT_PARAM_DESCRIPTION = "OPTIONAL. " + EXPECTED_RESULT_PARAM_BODY;
 const EXPECTED_RESULT_PARAM_DESCRIPTION_REQUIRED = "REQUIRED. " + EXPECTED_RESULT_PARAM_BODY;
 
-// The stability contract is the load-bearing design element: user_goal/
-// expected_result are call-scoped diagnostics that reword freely, so they
-// cannot key grouping; this param works ONLY if the model repeats the label
-// verbatim while the task is unchanged (measured 2026-08-10: without the
-// contract, 80% of adjacent same-task calls reword their goal text).
+// Two parts with two jobs. The leading number says which user message the
+// call answers, and the Console cuts a turn where it changes (SPEC §11.5.1
+// rule 2). The label after the colon says which task, and it works ONLY if the
+// model repeats it verbatim while the task is unchanged: user_goal and
+// expected_result reword freely, so they cannot key grouping.
 //
-// Granularity is a KNOWN, MEASURED weakness of this text, kept anyway because
-// the obvious fix is worse. Do not reword without scoring against both corpora
-// in baton-internal `spikes/overall_task_a5/` (40 paired live-agent sessions,
-// 2026-08-11, one build per run).
-//
-// What this text gets wrong: when the user switches topic WITHOUT announcing
-// it, agents carry the first task's label onto everything after it — one
-// session labelled a rice lookup, a chickpea restock and a waste check all
-// "cook dal tonight". Boundary detection 0.700 on cue-free multi-task scripts
-// (1.000 when the user says "Different thing:", which is why an earlier run
-// missed this entirely).
-//
-// What it gets right, and why it stays: it never splits a task that should
-// stay whole — 20/20 same-task pairs held the label verbatim across both
-// corpora. The candidate rewording ("the specific task the user is working on
-// right now — not the overall theme of the conversation") fixes the boundary
-// problem completely (1.000) but relabels *within* a single task, describing
-// successive steps of one goal as different tasks; it scored 0.200 then 0.400
-// over-split on identical scripts, and produced an A → B → A label that a
-// merge-only, adjacency-based consumer resolves as three tasks instead of one.
-// The gain (+0.300 boundary) is smaller than the cost (0.400 over-split), and
-// shattering is the failure mode that destroys downstream trust, so the trade
-// goes this way.
-//
-// The open target for any v3 is therefore specific: the candidate's boundary
-// behaviour with this text's within-task stability. The two failure modes are
-// independent, so it is not a granularity dial to be tuned — it needs the
-// repeat-verbatim contract hardened against step-level rewording.
-const OVERALL_TASK_PARAM_DESCRIPTION =
-  "OPTIONAL. Short stable label for the broader task this call serves " +
-  "(e.g. 'prepare campaign approval'). REPEAT the exact same string on " +
-  "every call serving the same task; change it only when the user starts " +
-  "a different task.";
+// Do not reword: the text is the Python SDK's, byte for byte
+// (`llmText.test.ts`, "parity with the Python SDK's rendered text").
+const OVERALL_TASK_PARAM_BODY =
+  "The number of the user's current message in this conversation " +
+  "(1 for the first), a colon, then a short stable label for the broader " +
+  "task this call serves (e.g. '3: prepare campaign approval'). Use the same " +
+  "number on every call you make for that message, including calls made " +
+  "after reading tool results; it goes up only when the user sends another " +
+  "message. REPEAT the exact same label text after the colon on every call " +
+  "serving the same task, across messages; change the label only when the " +
+  "user starts a different task.";
+const OVERALL_TASK_PARAM_DESCRIPTION = "OPTIONAL. " + OVERALL_TASK_PARAM_BODY;
+const OVERALL_TASK_PARAM_DESCRIPTION_REQUIRED = "REQUIRED. " + OVERALL_TASK_PARAM_BODY;
+
+// A main agent that delegates may never load this server's tool schemas, so the
+// param description above never reaches it and its subagents get no number.
+export const INSTRUCTIONS_SUBAGENT_CLAUSE =
+  "\n\nWhen you hand work to a subagent that may call this server's tools, tell it " +
+  "the number of the user's current message in this conversation, and that it " +
+  "must start overall_task with that number on every call to this server's " +
+  "tools. This applies only to this server's tools.";
 
 /** `user_goal`'s description, labelled "REQUIRED." under `intentParamMode:
  * "required"` and "OPTIONAL." otherwise. */
@@ -211,8 +206,12 @@ export function buildUserGoalParamDescription(options: { intentParamMode?: strin
     : USER_GOAL_PARAM_DESCRIPTION;
 }
 
-export function buildOverallTaskParamDescription(): string {
-  return OVERALL_TASK_PARAM_DESCRIPTION;
+export function buildOverallTaskParamDescription(
+  options: { intentParamMode?: string } = {},
+): string {
+  return options.intentParamMode === "required"
+    ? OVERALL_TASK_PARAM_DESCRIPTION_REQUIRED
+    : OVERALL_TASK_PARAM_DESCRIPTION;
 }
 
 export function buildExpectedResultParamDescription(
@@ -223,11 +222,9 @@ export function buildExpectedResultParamDescription(
     : EXPECTED_RESULT_PARAM_DESCRIPTION;
 }
 
-/** Which injected params `intentParamMode` advertises as required.
- * `overall_task` is never one: a grouping label the agent is forced to invent
- * splits one task into several. */
+/** Which injected params `intentParamMode` advertises as required. */
 export function requiredParamNames(intentParamMode: string): string[] {
   return intentParamMode === "required"
-    ? [USER_GOAL_PARAM_NAME, EXPECTED_RESULT_PARAM_NAME]
+    ? [USER_GOAL_PARAM_NAME, EXPECTED_RESULT_PARAM_NAME, OVERALL_TASK_PARAM_NAME]
     : [];
 }

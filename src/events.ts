@@ -311,8 +311,7 @@ const envelopeShape = {
   agent_runtime: z.string().default("unknown"),
   principal: PrincipalWireSchema.nullable().default(null),
   transport_observed: z.string().nullable().default(null),
-  // Optional and never defaulted: SPEC §11.4 has the key absent, not null.
-  client_observed: ClientObservedSchema.optional(),
+  client_observed: ClientObservedSchema.nullable().default(null),
   call_id: z.string().nullable().default(null),
   runtime_meta: z.record(z.string(), z.unknown()).nullable().default(null),
 };

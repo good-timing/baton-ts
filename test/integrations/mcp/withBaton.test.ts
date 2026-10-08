@@ -701,7 +701,7 @@ describe("withBaton — intent-param injection", () => {
     sink = new CapturingSink();
   });
 
-  it("injects the intent params by default, advertising user_goal and expected_result as required", async () => {
+  it("injects the intent params by default, advertising all three as required", async () => {
     const server = new McpServer({ name: "vendor", version: "1.0.0" });
     registerTools(server);
     withBaton(server, {
@@ -718,7 +718,12 @@ describe("withBaton — intent-param injection", () => {
     expect(echo.inputSchema.properties).toHaveProperty("user_goal");
     expect(echo.inputSchema.properties).toHaveProperty("expected_result");
     expect(echo.inputSchema.properties).toHaveProperty("overall_task");
-    expect(echo.inputSchema.required).toEqual(["text", "user_goal", "expected_result"]);
+    expect(echo.inputSchema.required).toEqual([
+      "text",
+      "user_goal",
+      "expected_result",
+      "overall_task",
+    ]);
   });
 
   it("does not add a schema to a tool registered with none (zero-arg tools are left alone)", async () => {
@@ -897,7 +902,7 @@ describe("withBaton — intent-param injection", () => {
     expect(echo.inputSchema.required).toContain("text");
   });
 
-  it("intentParamMode 'required' advertises two names as required, and nothing else changes", async () => {
+  it("intentParamMode 'required' advertises the three names as required, and nothing else changes", async () => {
     const advertised = async (mode: "optional" | "required") => {
       const server = new McpServer({ name: "vendor", version: "1.0.0" });
       server.registerTool(
@@ -920,9 +925,9 @@ describe("withBaton — intent-param injection", () => {
     const asOptional = await advertised("optional");
     const asRequired = await advertised("required");
     expect(asOptional.required).toBeUndefined();
-    expect(asRequired.required).toEqual(["user_goal", "expected_result"]);
+    expect(asRequired.required).toEqual(["user_goal", "expected_result", "overall_task"]);
 
-    // Apart from `required`, the only difference is the label on those two
+    // Apart from `required`, the only difference is the label on those
     // params' descriptions, which names the mode.
     type Advertised = typeof asRequired;
     const properties = (s: Advertised) => s.properties as Record<string, { description?: string }>;
@@ -930,7 +935,8 @@ describe("withBaton — intent-param injection", () => {
     expect(properties(asOptional).user_goal!.description).toMatch(/^OPTIONAL\. /);
     expect(properties(asRequired).expected_result!.description).toMatch(/^REQUIRED\. /);
     expect(properties(asOptional).expected_result!.description).toMatch(/^OPTIONAL\. /);
-    expect(properties(asRequired).overall_task).toEqual(properties(asOptional).overall_task);
+    expect(properties(asRequired).overall_task!.description).toMatch(/^REQUIRED\. /);
+    expect(properties(asOptional).overall_task!.description).toMatch(/^OPTIONAL\. /);
     const unlabelled = (s: Advertised) => ({
       ...s,
       required: undefined,
@@ -938,6 +944,7 @@ describe("withBaton — intent-param injection", () => {
         ...properties(s),
         user_goal: { ...properties(s).user_goal, description: undefined },
         expected_result: { ...properties(s).expected_result, description: undefined },
+        overall_task: { ...properties(s).overall_task, description: undefined },
       },
     });
     expect(unlabelled(asRequired)).toEqual(unlabelled(asOptional));
@@ -1047,7 +1054,7 @@ describe("withBaton — surface_snapshot", () => {
       injected_tools: ["vendor_annotate"],
       intent_param: {
         names: ["expected_result", "overall_task", "user_goal"],
-        required_names: ["expected_result", "user_goal"],
+        required_names: ["expected_result", "overall_task", "user_goal"],
         // This install sets no mode, so this is the default.
         mode: "required",
       },

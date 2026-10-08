@@ -125,7 +125,7 @@ export interface BatonConfig {
   /** Per-tool intent-param injection (mirrors baton-extmcp's vendor-neutral
    * naming). `"required"` (default) injects `user_goal`/`expected_result`/
    * `overall_task` string params on every wrapped tool's advertised schema
-   * and ADVERTISES `user_goal` and `expected_result` as required in
+   * and ADVERTISES all three as required in
    * `tools/list`, without enforcing them: a call that omits them still reaches
    * your handler, and its event simply carries no intent. `"optional"` injects
    * the same params and advertises none of them as required. `"off"` disables injection. The params are

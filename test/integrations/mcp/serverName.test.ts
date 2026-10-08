@@ -32,6 +32,7 @@ import {
 } from "../../../src/integrations/mcp/annotationName.js";
 import {
   buildServerInstructions,
+  INSTRUCTIONS_SUBAGENT_CLAUSE,
   fitsInstructionsCap,
 } from "../../../src/integrations/mcp/llmText.js";
 
@@ -330,7 +331,12 @@ describe("the instructions cap", () => {
       }, `length ${n}`).not.toThrow();
       const besideTheSegment = annotationToolNameFromServer(name, SEGMENT) ?? `${SEGMENT}_annotate`;
       expect(s!.handleToolName, `length ${n}`).toBe(besideTheSegment);
-      expect(s!.instructions.length, `length ${n}`).toBeLessThanOrEqual(CAP);
+      // The subagent sentence is added after the cap check and is not in its budget.
+      expect(s!.instructions.endsWith(INSTRUCTIONS_SUBAGENT_CLAUSE), `length ${n}`).toBe(true);
+      expect(
+        s!.instructions.length - INSTRUCTIONS_SUBAGENT_CLAUSE.length,
+        `length ${n}`,
+      ).toBeLessThanOrEqual(CAP);
       const display = /^This server is wrapped in the (.*?) usage and friction SDK\./.exec(
         s!.instructions,
       )?.[1];

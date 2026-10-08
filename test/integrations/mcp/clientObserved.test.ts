@@ -16,7 +16,6 @@ import { describe, expect, it } from "vitest";
 
 import {
   CLIENT_INFO_META_KEY,
-  clientObservedMember,
   observeClient,
 } from "../../../src/integrations/mcp/clientObserved.js";
 import type { Extra } from "../../../src/integrations/mcp/mcpTypes.js";
@@ -68,13 +67,13 @@ describe("observeClient", () => {
       }),
     );
     expect(observed).toEqual({ headers: { "user-agent": CLAUDE_CODE_UA } });
-    expect(JSON.stringify(observe(extraV1({ authorization: "Bearer secret" })))).toBe(undefined);
+    expect(observe(extraV1({ authorization: "Bearer secret" }))).toBeNull();
   });
 
-  it("is undefined, not an empty object, when nothing was observed", () => {
-    expect(observe({} as any)).toBeUndefined();
-    expect(observe(extraV1({}))).toBeUndefined();
-    expect(observe(extraV1({ "user-agent": "" }))).toBeUndefined();
+  it("is null, not an empty object, when nothing was observed", () => {
+    expect(observe({} as any)).toBeNull();
+    expect(observe(extraV1({}))).toBeNull();
+    expect(observe(extraV1({ "user-agent": "" }))).toBeNull();
   });
 
   it("takes info from the request's own declaration before the handshake's", () => {
@@ -102,7 +101,7 @@ describe("observeClient", () => {
 
   it("leaves info out when only a claudecode/* key is present", () => {
     const guessed = extraV1({}, { "claudecode/toolUseId": "toolu_1" });
-    expect(observe(guessed)).toBeUndefined();
+    expect(observe(guessed)).toBeNull();
   });
 
   it("passes every value through the vendor's scrubber, and drops one it does not return as text", () => {
@@ -200,10 +199,6 @@ describe("observeClient", () => {
     expect(observed).toEqual({ headers: { "user-agent": "a".repeat(kept) } });
   });
 
-  it("leaves the key out of the envelope, never null, when nothing was observed", () => {
-    expect(clientObservedMember({}, { scrubber: identityScrub })).toEqual({});
-  });
-
   it("joins a 1.x header that arrived as several lines", () => {
     const observed = observe(extraV1({ "User-Agent": ["agent/1.0", "proxy/2"] }));
     expect(observed).toEqual({ headers: { "user-agent": "agent/1.0, proxy/2" } });
@@ -254,7 +249,7 @@ describe("observeClient", () => {
         throw new Error("boom");
       },
     } as any;
-    expect(observe(extra, server)).toBeUndefined();
+    expect(observe(extra, server)).toBeNull();
   });
 });
 
@@ -320,7 +315,7 @@ describe.each(MAJORS.map((m) => [m.label, m] as const))("on %s", (_label, major)
     expect(sink.events.filter((e) => e.event_type === "annotation")).toHaveLength(2);
     for (const event of sink.events) {
       if (event.event_type === "surface_snapshot") {
-        expect(Object.keys(event)).not.toContain("client_observed");
+        expect(event.client_observed).toBeNull();
         continue;
       }
       // In memory there is no HTTP request, so there are no headers to carry.

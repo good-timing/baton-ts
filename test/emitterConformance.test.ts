@@ -157,12 +157,11 @@ const ENVELOPE_ALLOWED_TO_DIFFER = new Set([
   // asserted directly below ("observes the transport it was driven over"),
   // so exempting the cross-vector comparison leaves nothing uncovered.
   "transport_observed",
+  // As with `transport_observed`: Python's `generate.py` has no client behind
+  // its calls and this harness has one. `clientObserved.test.ts` asserts the
+  // values.
+  "client_observed",
 ]);
-
-/** Envelope keys this SDK emits before the Python that generates the vectors
- * does. Forgiven only while the vector lacks the key, and never on
- * `surface_snapshot`, which must not carry a caller's key at all. */
-const ENVELOPE_AHEAD_OF_VECTORS = new Set(["client_observed"]);
 
 /** SPEC §11.4: **absent and null are equivalent on the wire, and a consumer
  * MUST NOT test for the KEY.** So the two producers may legitimately disagree
@@ -370,11 +369,7 @@ describe("cross-SDK emitter conformance (Phase 3)", () => {
     // Key set first — a missing or extra envelope field is the failure this
     // test most needs to catch, and comparing values alone would miss an
     // extra one entirely.
-    const emittedKeys = Object.keys(emitted).filter(
-      (key) =>
-        key in reference || name === "surface_snapshot" || !ENVELOPE_AHEAD_OF_VECTORS.has(key),
-    );
-    expect(emittedKeys.sort()).toEqual(Object.keys(reference).sort());
+    expect(Object.keys(emitted).sort()).toEqual(Object.keys(reference).sort());
 
     for (const key of Object.keys(reference)) {
       if (key === "payload" || ENVELOPE_ALLOWED_TO_DIFFER.has(key)) continue;
@@ -495,7 +490,7 @@ describe("cross-SDK emitter conformance (Phase 3)", () => {
     ).toBeNull();
   });
 
-  it("X-2: `required` advertises both names after the vendor's own, as Python does", async () => {
+  it("X-2: `required` advertises the three names after the vendor's own, as Python does", async () => {
     const advertised = async (mode: "optional" | "required") => {
       const server = new McpServer({ name: "parity", version: "1.0.0" });
       server.registerTool(
@@ -523,7 +518,7 @@ describe("cross-SDK emitter conformance (Phase 3)", () => {
     const asRequired = await advertised("required");
     // The vendor's own requirement survives both; ours is appended after it.
     expect(asOptional.required).toEqual(["name"]);
-    expect(asRequired.required).toEqual(["name", "user_goal", "expected_result"]);
+    expect(asRequired.required).toEqual(["name", "user_goal", "expected_result", "overall_task"]);
     expect(asRequired.properties).toHaveProperty("user_goal");
     expect(asRequired.properties).toHaveProperty("expected_result");
   });

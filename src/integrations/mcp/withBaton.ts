@@ -142,7 +142,7 @@ import {
   resolveAnnotationToolName,
   usableServerName,
 } from "./annotationName.js";
-import { buildServerInstructions } from "./llmText.js";
+import { buildServerInstructions, INSTRUCTIONS_SUBAGENT_CLAUSE } from "./llmText.js";
 import {
   EXPECTED_RESULT_PARAM_NAME,
   INTENT_SOURCE_PARAM,
@@ -156,7 +156,7 @@ import {
   observeTransport,
   type Extra,
 } from "./mcpTypes.js";
-import { clientObservedMember } from "./clientObserved.js";
+import { observeClient } from "./clientObserved.js";
 import { ProactiveTracker } from "./proactiveTracker.js";
 import { resolveSessionId } from "./sessionResolution.js";
 import {
@@ -203,6 +203,10 @@ interface WrapContext {
   vendorToolJsonSchema: (name: string, inputSchema: unknown) => Record<string, unknown>;
   /** Drop v2's per-tool JSON-Schema memo after we mutate `inputSchema`. */
   bustSchemaMemo: (name: string) => void;
+  /** Tool `name` declares its own `overall_task`: take the subagent sentence
+   * out of the instructions, or it sends the turn number into the vendor's
+   * argument. */
+  dropSubagentClause: (name: string) => void;
   /** The vendor's per-request identity resolver, or `undefined`. Resolved
    * ONCE at install and shared by the tool-call and annotation paths — two
    * resolutions could disagree, and an annotation naming a different actor
@@ -530,7 +534,7 @@ async function openCall(
     // outside any call, so it has no caller, transport or client to name.
     principal,
     transport_observed: observeTransport(extra),
-    ...clientObservedMember(extra, ctx),
+    client_observed: observeClient(extra, ctx),
     runtime_meta: scrubbedMeta,
   };
 
@@ -946,6 +950,7 @@ function captureAndInject(name: string, entry: unknown, ctx: WrapContext): void 
       mutable.inputSchema = schema;
       ctx.bustSchemaMemo(name);
       ctx.paramRegistry.set(name, dispositions);
+      if (dispositions[OVERALL_TASK_PARAM_NAME] === "native") ctx.dropSubagentClause(name);
     } else {
       ctx.paramRegistry.delete(name);
     }
@@ -1225,7 +1230,7 @@ async function openLifecycleCall(
         session_id: parts.sessionId,
         consent_token: ctx.consentToken,
         transport_observed: observeTransport(extra),
-        ...clientObservedMember(extra, ctx),
+        client_observed: observeClient(extra, ctx),
         runtime_meta: parts.scrubbedMeta,
       },
     };
@@ -1972,6 +1977,17 @@ function install(
     if (memo && typeof memo === "object") delete memo[name];
   };
 
+  const dropSubagentClause = (name: string): void => {
+    const current = internals.server._instructions;
+    if (typeof current !== "string" || !current.includes(INSTRUCTIONS_SUBAGENT_CLAUSE)) return;
+    // A replace, not a suffix strip: the vendor may have appended text after ours.
+    internals.server._instructions = current.replace(INSTRUCTIONS_SUBAGENT_CLAUSE, "");
+    process.stderr.write(
+      `baton: tool ${JSON.stringify(name)} declares its own overall_task, so the subagent ` +
+        "sentence was removed from the server instructions; a session that already started keeps it\n",
+    );
+  };
+
   // Vendor-true JSON Schema for the surface snapshot. v2 renders `tools/list`
   // from its own converter (draft-2020-12, `$schema` included), so reading
   // its memo — which at call time still holds the pre-injection conversion —
@@ -2029,6 +2045,7 @@ function install(
     resolvePrincipal: config.resolvePrincipal,
     vendorToolJsonSchema,
     bustSchemaMemo,
+    dropSubagentClause,
     tracker,
     surfaceState,
     emitSurface,
@@ -2041,6 +2058,7 @@ function install(
   const instructions = buildServerInstructions({
     vendorDisplayName: config.vendorDisplayName,
     annotationToolName,
+    intentParamMode,
   });
   internals.server._instructions = instructions;
 

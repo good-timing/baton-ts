@@ -113,23 +113,10 @@ function orNothing<T>(read: () => T | undefined): T | undefined {
   }
 }
 
-/** `undefined` when nothing was observed, so the caller omits the key. */
-export function observeClient(
-  extra: Extra,
-  options: ObserveClientOptions,
-): ClientObserved | undefined {
+/** `null` when nothing was observed. */
+export function observeClient(extra: Extra, options: ObserveClientOptions): ClientObserved | null {
   const info = orNothing(() => observedInfo(extra, options));
   const headers = orNothing(() => observedHeaders(extra, options));
-  if (info === undefined && headers === undefined) return undefined;
+  if (info === undefined && headers === undefined) return null;
   return { ...(info && { info }), ...(headers && { headers }) };
-}
-
-/** Spread into an envelope: the key is absent, never `null`, when nothing was
- * observed. */
-export function clientObservedMember(
-  extra: Extra,
-  options: ObserveClientOptions,
-): { client_observed?: ClientObserved } {
-  const observed = observeClient(extra, options);
-  return observed === undefined ? {} : { client_observed: observed };
 }
