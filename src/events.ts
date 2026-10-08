@@ -532,9 +532,13 @@ export type PromptGetErrorPayload = z.infer<typeof PromptGetErrorPayloadSchema>;
 // Concrete event schemas
 // =============================================================================
 
+/** SPEC §11.4: a tool-call leg always carries the id its other leg carries. */
+const REQUIRED_CALL_ID = z.string().min(1);
+
 export const ToolCallStartEventSchema = z
   .object({
     ...envelopeShape,
+    call_id: REQUIRED_CALL_ID,
     event_type: z.literal("tool_call_start").default("tool_call_start"),
     payload: ToolCallStartPayloadSchema,
   })
@@ -544,6 +548,7 @@ export type ToolCallStartEvent = z.infer<typeof ToolCallStartEventSchema>;
 export const ToolCallEndEventSchema = z
   .object({
     ...envelopeShape,
+    call_id: REQUIRED_CALL_ID,
     event_type: z.literal("tool_call_end").default("tool_call_end"),
     payload: ToolCallEndPayloadSchema,
   })
@@ -553,6 +558,7 @@ export type ToolCallEndEvent = z.infer<typeof ToolCallEndEventSchema>;
 export const ToolCallErrorEventSchema = z
   .object({
     ...envelopeShape,
+    call_id: REQUIRED_CALL_ID,
     event_type: z.literal("tool_call_error").default("tool_call_error"),
     payload: ToolCallErrorPayloadSchema,
   })

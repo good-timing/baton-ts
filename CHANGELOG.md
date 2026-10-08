@@ -47,6 +47,10 @@
   pass that number to its subagents. The sentence is left out under
   `intentParamMode: "off"`, and on a server where one of your tools declares
   its own `overall_task`.
+- **`call_id` is required on the three tool-call events.** The event schemas
+  for `tool_call_start`, `tool_call_end` and `tool_call_error` now refuse an
+  event without one, as the shared schema does. `withBaton` has always sent
+  it; this only affects code that builds these events by hand.
 - **`resolvePrincipal` has 5 seconds to answer.** A hook that has not answered
   by then is given up on, and the call is sent without a principal. Before,
   a hook waiting on a lookup that never returned held the tool call open for

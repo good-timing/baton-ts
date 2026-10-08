@@ -10,6 +10,7 @@ function makeEvent(overrides: Partial<{ sequence_number: number }> = {}): Event 
     sequence_number: overrides.sequence_number ?? 0,
     captured_at: new Date().toISOString(),
     consent_token: "ct",
+    call_id: "call-1",
     payload: { tool_name: "lookup" },
   });
 }

@@ -285,12 +285,27 @@ describe("baton-spec conformance", () => {
     it.each(Object.keys(fixtures))("%s is valid against the PINNED schema", (name) => {
       const event = BRANCHES[name]!.parse({
         ...commonEnvelope(),
+        ...(name.startsWith("tool_call") && { call_id: "call-1" }),
         payload: fixtures[name],
       });
       const valid = validate(JSON.parse(JSON.stringify(event)));
       expect(valid, ajv.errorsText(validate.errors)).toBe(true);
     });
   });
+
+  it.each(["tool_call_start", "tool_call_end", "tool_call_error"] as const)(
+    "%s without a call_id is refused here as it is by the PINNED schema",
+    (name) => {
+      for (const call_id of [undefined, null, ""]) {
+        const built = BRANCHES[name]!.safeParse({
+          ...commonEnvelope(),
+          call_id,
+          payload: MINIMAL[name],
+        });
+        expect(built.success, String(call_id)).toBe(false);
+      }
+    },
+  );
 
   /** The ENVELOPE's optional members, which the payload fixtures above never
    * reach. `principal.display_name` is optional inside an optional object, so
@@ -302,6 +317,7 @@ describe("baton-spec conformance", () => {
   ])("a %s principal is valid against the PINNED schema", (_label, principal) => {
     const event = BRANCHES.tool_call_start!.parse({
       ...commonEnvelope(),
+      call_id: "call-1",
       principal,
       payload: MINIMAL.tool_call_start,
     });
