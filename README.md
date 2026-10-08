@@ -63,7 +63,26 @@ Call `await baton.aclose()` in your own shutdown path, after the HTTP server sto
 
 What a stateless server costs, with either function:
 
-- **Every request is its own session.** The protocol gives a stateless server no session id, so the SDK does not invent a join between two requests. To see one person's requests together, return a principal from `resolvePrincipal` ([Who is calling](#who-is-calling)): the Console lists sessions by person. Signals that need several calls in one session, such as a retry loop, do not fire across requests.
+- **Every request is its own session.** The protocol gives a stateless server no session id, so the SDK does not invent a join between two requests. To see one person's requests together, return a principal from `resolvePrincipal` ([Who is calling](#who-is-calling)): the Console lists sessions by person. If your HTTP handler has already authenticated the request, hand the user to the hook as `authInfo`. On `@modelcontextprotocol/sdk` 1.x that is `req.auth`, shown here; on `@modelcontextprotocol/server` 2.x pass `{ authInfo }` when you hand the request to the transport:
+
+  ```js
+  const baton = createBaton({
+    resolvePrincipal: (ctx) => {
+      const user = ctx.authInfo?.extra;
+      return typeof user?.userId === "string" ? { principalId: user.userId } : null;
+    },
+  });
+
+  app.post("/mcp", async (req, res) => {
+    const user = await authenticate(req); // your own check
+    req.auth = { token: "", clientId: "my-server", scopes: [], extra: { userId: user.id } };
+    const server = buildServer();
+    baton.wrap(server);
+    // connect a transport and handle the request as before
+  });
+  ```
+
+  Signals that need several calls in one session, such as a retry loop, do not fire across requests.
 - **The client is named from its `User-Agent`.** A client states its name in the `initialize` handshake, and a per-request server never sees the handshake of the call it is serving. Each event still carries the request's `User-Agent` header in `client_observed`, and your dashboard names the client from that.
 
 ## PII scrubbing
@@ -76,7 +95,7 @@ What a stateless server costs, with either function:
 
 ## Who is calling
 
-**Nothing is captured about the person behind a call unless you say how to find them.** Pass `resolvePrincipal`: it receives the call's headers, `_meta`, tool name, arguments and validated `authInfo`, and returns a `Principal` or `null`. Two ready-made hooks cover OAuth:
+**Nothing is captured about the person behind a call unless you say how to find them.** Pass `resolvePrincipal`: it receives the request's headers, `_meta`, tool name, arguments and validated `authInfo`, and returns a `Principal` or `null`. Two ready-made hooks cover OAuth:
 
 ```typescript
 import { withBaton, principalFromOAuthEmail } from "@goodtiming/baton-sdk";
@@ -91,7 +110,7 @@ withBaton(server, {
 
 ⚠ **They read the claims from `authInfo.extra`.** The MCP SDK's `AuthInfo` has no `claims` field, so these hooks expect your token verifier to put the decoded JWT claims (`sub`, `iss`, `email`) at the top level of `extra`. If yours keeps them elsewhere, write the three-line hook that reads them from there. A token exists only on HTTP with auth configured; on stdio, write a hook that names the user from whatever you authenticated them with.
 
-The hook runs on every call, before your handler. If it has not answered after 5 seconds, the SDK stops waiting and that call is sent without a principal. That covers an async hook waiting on a slow lookup. A hook that blocks synchronously cannot be interrupted, so keep the work in it async.
+The hook runs on every tool call and every `tools/list` request, before your handler. On a `tools/list` request `toolName` is `null` and `arguments` is empty, so a hook that names the person from the headers or `authInfo` needs no change. If it has not answered after 5 seconds, the SDK stops waiting and that request is sent without a principal. That covers an async hook waiting on a slow lookup. A hook that blocks synchronously cannot be interrupted, so keep the work in it async.
 
 The id is sent exactly as your hook returns it, so the hook decides what is safe to send. To send a pseudonym instead, hash the id inside your hook and return `form: "hashed"` with it.
 
@@ -177,7 +196,8 @@ Every `tools/list` request emits a `tool_list_start` and then a
 `tool_list_end` or a `tool_list_error`. A client that connects, lists your
 tools and calls none is still recorded. The end event carries how many tools
 that response held and how long it took. No tool name, description or schema
-is on these events.
+is on these events. They carry the principal your `resolvePrincipal` hook
+returns ([Who is calling](#who-is-calling)).
 
 ## Turning capture off entirely
 

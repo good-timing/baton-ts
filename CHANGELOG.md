@@ -2,7 +2,11 @@
 
 ## 0.5.3: a server built per request, the client as observed, and tool listings
 
-Nothing in your code has to change. Two things do change around it:
+Two edits may be needed. A server that builds an `McpServer` per request
+should move from `withBaton` to `createBaton` (below); until it does it
+still builds a sink and re-sends its tool surface on every request. A
+`resolvePrincipal` hook that uses `toolName` as a string must handle `null`
+(below). Two more things change without any edit:
 
 - **What an agent is shown.** `tools/list` now lists all three intent params
   as required, and the server instructions gain one sentence.
@@ -39,6 +43,10 @@ Nothing in your code has to change. Two things do change around it:
   list of event types must add these three before it receives events from
   this version.** The hosted Console has.
 
+  The three events carry the principal your `resolvePrincipal` hook returns,
+  so a listing is tied to a person as a tool call is. The hook is asked once
+  per `tools/list` request.
+
 ### Changed
 
 - **The SDK no longer names the client: `agent_runtime` is always
@@ -67,6 +75,11 @@ Nothing in your code has to change. Two things do change around it:
   for `tool_call_start`, `tool_call_end` and `tool_call_error` now refuse an
   event without one, as the shared schema does. `withBaton` has always sent
   it; this only affects code that builds these events by hand.
+- **`resolvePrincipal` also runs on a `tools/list` request, with
+  `toolName: null`.** `PrincipalResolutionContext.toolName` is now
+  `string | null`, and `arguments` is empty on a listing. A hook that reads
+  only the headers or `authInfo` needs no change. A hook that uses `toolName`
+  as a string must handle `null`.
 - **`resolvePrincipal` has 5 seconds to answer.** A hook that has not answered
   by then is given up on, and the call is sent without a principal. Before,
   a hook waiting on a lookup that never returned held the tool call open for

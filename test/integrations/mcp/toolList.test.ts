@@ -58,10 +58,10 @@ describe.each(MAJORS)("tool list events — $label", (major) => {
     expect(JSON.stringify(sink.events.map((e) => e.payload))).not.toContain("lookup");
   });
 
-  it("names the caller, and carries no principal and no call id", async () => {
+  it("names the caller and carries no call id", async () => {
     const sink = new CapturingSink();
     const server = withLookup();
-    install(server, sink, { resolvePrincipal: () => ({ principalId: "employee-1" }) });
+    install(server, sink);
     const client = await major.connect(server);
 
     await client.listTools();
@@ -74,6 +74,63 @@ describe.each(MAJORS)("tool list events — $label", (major) => {
       expect(event.principal, event.event_type).toBeNull();
       expect(event.call_id, event.event_type).toBeNull();
     }
+  });
+
+  it("carries the principal the vendor's hook resolved, asked once per request", async () => {
+    const sink = new CapturingSink();
+    const server = withLookup();
+    const asked: unknown[] = [];
+    install(server, sink, {
+      resolvePrincipal: (context) => {
+        asked.push({ toolName: context.toolName, arguments: context.arguments });
+        return { principalId: "employee-1" };
+      },
+    });
+    const client = await major.connect(server);
+
+    await client.listTools();
+
+    expect(asked).toEqual([{ toolName: null, arguments: {} }]);
+    expect(sink.events).toHaveLength(2);
+    for (const event of sink.events) {
+      expect(event.principal, event.event_type).toEqual({
+        id: "employee-1",
+        source: "asserted",
+        form: "raw",
+      });
+    }
+  });
+
+  it("a hook that throws costs the principal, not the listing", async () => {
+    const sink = new CapturingSink();
+    const server = withLookup();
+    install(server, sink, {
+      resolvePrincipal: () => {
+        throw new Error("lookup is down");
+      },
+    });
+    const client = await major.connect(server);
+
+    const listed = (await client.listTools()) as { tools: { name: string }[] };
+
+    expect(listed.tools.map((t) => t.name)).toContain("lookup");
+    expect(typesOf(sink)).toEqual(["tool_list_start", "tool_list_end"]);
+    expect(sink.events.map((e) => e.principal)).toEqual([null, null]);
+  });
+
+  it("a failed listing carries the principal too", async () => {
+    const sink = new CapturingSink();
+    const server = withLookup() as { server: { _requestHandlers: Map<string, unknown> } };
+    server.server._requestHandlers.set("tools/list", () => {
+      throw new Error("list is down");
+    });
+    install(server, sink, { resolvePrincipal: () => ({ principalId: "employee-1" }) });
+    const client = await major.connect(server);
+
+    await expect(client.listTools()).rejects.toThrow(/list is down/);
+
+    expect(typesOf(sink)).toEqual(["tool_list_start", "tool_list_error"]);
+    expect(sink.events.map((e) => e.principal?.id)).toEqual(["employee-1", "employee-1"]);
   });
 
   it("each list request gets its own pair", async () => {

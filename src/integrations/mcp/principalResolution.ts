@@ -30,12 +30,7 @@ import {
  *
  * Adapter-neutral BY CONSTRUCTION rather than by convention — the peers' own
  * handler-context objects differ in shape between the two majors, and this
- * type is what makes one hook portable across them. The prior art takes the
- * opposite approach: AgentCat's `identify()` receives the raw per-major object
- * behind `{ sessionId?: string; [key: string]: any }`, documented as "only
- * `sessionId` is common to both; everything else is SDK-version-specific".
- * That is the divergence handed to the vendor as `any`; this is the divergence
- * absorbed by us.
+ * type is what makes one hook portable across them.
  */
 export interface PrincipalResolutionContext {
   /** The call's HTTP headers, case-insensitive on BOTH majors — see
@@ -49,10 +44,12 @@ export interface PrincipalResolutionContext {
   /** The call's `_meta`, from wherever this major keeps it. */
   meta: Record<string, unknown> | null;
   /** The tool being called — the annotation tool's own name on that path, so a
-   * hook can answer differently per call rather than per install. */
-  toolName: string;
+   * hook can answer differently per call rather than per install. `null` on a
+   * `tools/list` request, which names no tool. */
+  toolName: string | null;
   /** The call's arguments, AFTER Baton's injected intent params are stripped,
-   * so a hook sees exactly what the vendor's own handler will. */
+   * so a hook sees exactly what the vendor's own handler will. Empty on a
+   * `tools/list` request. */
   arguments: Record<string, unknown>;
   /** The validated access token for this request, read from wherever this
    * major keeps it — see `extraAuthInfo`. `null` on stdio and on any
@@ -72,15 +69,15 @@ export type ResolvePrincipalHook = (
 
 /** Build the hook's input from whichever major's context arrived.
  *
- * ⚠ **ONE factory, called by every emit path.** Both consumers (the tool-call
- * wrapper and the annotation tool) go through here rather than each assembling
- * a context, because per-site assembly is exactly how the Python SDK ended up
+ * ⚠ **ONE factory, called by every emit path.** The tool-call wrapper, the
+ * annotation tool and the tool listing go through here rather than each
+ * assembling a context, because per-site assembly is exactly how the Python SDK ended up
  * with two adapters delivering different header shapes behind one declared
  * type — and no test could see it, because each path only ever tested itself.
  */
 function buildPrincipalResolutionContext(
   extra: Extra,
-  toolName: string,
+  toolName: string | null,
   args: Record<string, unknown>,
 ): PrincipalResolutionContext {
   return {
@@ -112,7 +109,7 @@ async function withinHookBudget(answer: unknown): Promise<unknown> {
     if (first !== TIMED_OUT) return first;
     warn(
       `baton: resolvePrincipal did not answer within ${String(HOOK_TIMEOUT_MS / 1000)}s; ` +
-        "this call is sent without a principal.",
+        "this request is sent without a principal.",
     );
     return null;
   } finally {
@@ -138,16 +135,16 @@ function warnIfPreRenameShape(result: unknown): void {
 /** Run a vendor's hook and turn its answer into the envelope's `principal`.
  *
  * ⚠ **Never throws.** A hook that raises, returns the wrong shape, or returns
- * `null` yields an anonymous call, not a failed one — `principal` is additive
- * analytics and a vendor's own bug in their resolver may not fail their tool
- * call (SPEC §11.2 fail-open). The prior art converged on the identical rule.
+ * `null` yields an anonymous request, not a failed one — `principal` is
+ * additive analytics and a vendor's own bug in their resolver may not fail
+ * their tool call or listing (SPEC §11.2 fail-open).
  *
  * A hook that has not answered within `HOOK_TIMEOUT_MS` is given up on, which
  * cannot bound one that blocks synchronously.
  */
 export async function resolveCallPrincipal(
   hook: ResolvePrincipalHook | undefined,
-  call: { extra: Extra; toolName: string; arguments: Record<string, unknown> },
+  call: { extra: Extra; toolName: string | null; arguments: Record<string, unknown> },
 ): Promise<PrincipalWire | null> {
   // The context is built HERE — after the hook check, inside the try — and
   // the signature takes the raw call so a caller cannot do it the other way:

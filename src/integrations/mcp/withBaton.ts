@@ -429,14 +429,13 @@ function messageOf(err: unknown): string {
 /** The envelope members every event shares, resolved off one MCP request —
  * everything except `principal`, which is deliberately not in here.
  *
- * Split out of `openCall` so the resource and prompt lifecycle seams (SPEC
- * §11.4.4) can build an envelope without the parts that are specific to a tool
- * call: there is no `principal` on those (see `installLifecycleSeam`), no
- * intent-param strip, and no `call_id`.
+ * Split out of `openCall` so the lifecycle seams (SPEC §11.4.4, §11.4.5) can
+ * build an envelope without the parts that are specific to a tool call: the
+ * intent-param strip and the `call_id`. `principal` is the caller's to
+ * resolve, because the hook's input differs between a call and a listing.
  *
  * Returns the PARTS rather than an assembled `common` so each caller spells its
- * own literal, which keeps `openCall` reading as one object and keeps
- * `principal` out of a shape that has no business resolving it.
+ * own literal, which keeps `openCall` reading as one object.
  *
  * Not for key order: Zod v4 emits output keys in SHAPE order, so
  * `envelopeShape` fixes the wire order however a caller spells its literal. */
@@ -1096,13 +1095,10 @@ interface LifecycleSchemas {
  * both majors install all four handlers through the one `_requestHandlers` map
  * `installRequestSeam` already handles, lazily and in either order.
  *
- * ⚠ **No `principal` on any of the twelve, and it is a decision.** The vendor's
- * `resolvePrincipal` hook is TOOL-shaped — it takes `{extra, toolName,
- * arguments}` — so calling it with a URI in `toolName` would stretch a contract
- * a vendor's hook cannot anticipate. The proxy stamps no principal on these
- * types either (its twelve enqueue methods take none), so omitting it is parity
- * with the producer the shapes came from rather than a gap this package
- * invented. A later release that wants identity here needs a hook shape first.
+ * ⚠ **No `principal` on the twelve resource and prompt events.** The vendor's
+ * `resolvePrincipal` hook has no slot for a URI or a prompt name, and the
+ * proxy stamps no principal on these types either. A tool listing is the
+ * exception (`LifecycleSpec.resolvesPrincipal`): `toolList.test.ts`.
  *
  * ⚠ **No `call_id` either**, same reason: no producer mints one for these, so
  * a consumer pairing a start with its end has only SPEC §11.5.4's FIFO floor.
@@ -1143,6 +1139,10 @@ interface LifecycleSpec {
   /** The `*_start` payload's `params` member, or `{}` where the family has
    * none. */
   startParams: (params: Record<string, unknown>) => Record<string, unknown>;
+  /** Ask the vendor's hook who sent the request. Only a tool listing does:
+   * on a server with no session id it is the one thing that ties a listing
+   * to the calls of the same person. */
+  resolvesPrincipal?: true;
 }
 
 function installLifecycleSeam(
@@ -1226,6 +1226,9 @@ async function openLifecycleCall(
 } | null> {
   try {
     const parts = await resolveEnvelopeParts(ctx, extra);
+    const principal = spec.resolvesPrincipal
+      ? await resolveCallPrincipal(ctx.resolvePrincipal, { extra, toolName: null, arguments: {} })
+      : null;
     return {
       sessionId: parts.sessionId,
       subject:
@@ -1237,6 +1240,7 @@ async function openLifecycleCall(
         vendor_id: ctx.vendorId,
         session_id: parts.sessionId,
         consent_token: ctx.consentToken,
+        principal,
         transport_observed: observeTransport(extra),
         client_observed: observeClient(extra, ctx),
         runtime_meta: parts.scrubbedMeta,
@@ -1332,6 +1336,7 @@ const LIFECYCLE_SPECS: readonly LifecycleSpec[] = [
     },
     countKey: "tools",
     startParams: NO_PARAMS,
+    resolvesPrincipal: true,
   },
 ];
 

@@ -233,47 +233,47 @@ describe.each(MAJORS)("resource and prompt lifecycles — $label", (major) => {
     expect(error).not.toHaveProperty("result");
   });
 
-  it("never consults the TOOL-shaped principal hook, and mints no `call_id`", async () => {
-    // ⚠ Both are decisions, not gaps. The vendor's `resolvePrincipal` hook is
-    // TOOL-shaped (`{extra, toolName, arguments}`), so calling it with a URI in
-    // `toolName` would stretch a contract a vendor's hook cannot anticipate;
-    // and the proxy — whose shapes these are — stamps neither member on these
-    // types. A consumer pairing a start with its end therefore has only SPEC
-    // §11.5.4's FIFO floor, which §11.4.4 records.
-    //
-    // ⚠ **The values are `null`, not absent, and that is the ENVELOPE's
-    // posture rather than this seam's.** `envelopeShape` defaults both members
-    // to `null`, so every event this package emits carries the keys — exactly
-    // as a tool call with no resolved identity already does. SPEC §11.4 makes
-    // null and absent equivalent on both (`principal` is "absent as a whole
-    // whenever no identity was resolved"; `call_id` is "absent wherever the
-    // producer did not mint one ... never an error"), and §11.4.3 documents
-    // this same declare-vs-omit axis between this package and the proxy for
-    // `result`. So a first version of this test asserted the keys were MISSING
-    // and was wrong about the package, not about the design.
+  it("never asks the principal hook, on any of the four requests", async () => {
     const sink = new CapturingSink();
     const server = major.make();
     major.resource(server, "doc", "file:///doc.txt", () => ({
       contents: [{ uri: "file:///doc.txt", text: "x" }],
     }));
+    major.prompt(server, "summarize", { topic: z.string() }, () => ({ messages: [] }));
+    let asked = 0;
     install(server, sink, {
-      // A hook that would THROW if the seam called it — the assertion is that
-      // it never does, which an absent-`principal` check alone would not prove
-      // (an absent hook also yields an absent principal).
       resolvePrincipal: () => {
-        throw new Error("the lifecycle seams must not consult a tool-shaped hook");
+        asked += 1;
+        return { principalId: "employee-1" };
       },
     });
+    const client = await major.connect(server);
+
+    await client.listResources();
+    await client.readResource({ uri: "file:///doc.txt" });
+    await client.listPrompts();
+    await client.getPrompt({ name: "summarize", arguments: { topic: "quarterly" } });
+
+    expect(sink.events).toHaveLength(8);
+    expect(asked).toBe(0);
+    expect(sink.events.map((e) => e.principal)).toEqual(Array(8).fill(null));
+  });
+
+  it("carries the envelope a tool call does, with a null `principal` and `call_id`", async () => {
+    // `null`, not absent: `envelopeShape` defaults both members, and SPEC
+    // §11.4 makes the two spellings equivalent.
+    const sink = new CapturingSink();
+    const server = major.make();
+    major.resource(server, "doc", "file:///doc.txt", () => ({
+      contents: [{ uri: "file:///doc.txt", text: "x" }],
+    }));
+    install(server, sink);
     const client = await major.connect(server);
     await client.readResource({ uri: "file:///doc.txt" });
 
     expect(sink.events).toHaveLength(2);
     for (const event of sink.events) {
       const wire = JSON.parse(JSON.stringify(event)) as Record<string, unknown>;
-      // Null, which is the envelope's spelling for "nobody was resolved" and
-      // "no id was minted". The hook THROWS, so a null here is also the proof
-      // that the seam never reached it — an absent-hook test could not tell
-      // "not consulted" from "consulted and resolved nothing".
       expect(wire["principal"]).toBeNull();
       expect(wire["call_id"]).toBeNull();
       // The envelope is otherwise the SAME one a tool call carries, which is

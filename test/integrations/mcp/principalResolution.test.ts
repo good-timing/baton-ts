@@ -330,7 +330,7 @@ describe("resolveCallPrincipal fail-open", () => {
   it("gives the hook the tool name and the post-strip arguments", async () => {
     // Per-call, not per-install: the hook can answer differently for the
     // annotation tool than for a lookup.
-    const seen: string[] = [];
+    const seen: (string | null)[] = [];
     const seenArgs: Record<string, unknown>[] = [];
     const hook = (c: PrincipalResolutionContext) => {
       seen.push(c.toolName);

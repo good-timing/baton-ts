@@ -165,11 +165,13 @@ export interface BatonConfig {
    * envelope's `principal` (SPEC §11.4 rung 0), which emits
    * `source: "asserted"`. It is the only provenance this SDK has.
    *
-   * Called on every captured tool call and on the annotation tool, with an
-   * adapter-neutral {@link PrincipalResolutionContext}: headers folded to ONE
-   * case-insensitive shape across both SDK majors, the call's `_meta`, the
-   * tool name, and the arguments the vendor's own handler will see. Return a
-   * `Principal`, or `null` for "no opinion about this caller".
+   * Called on every captured tool call, on the annotation tool and on every
+   * `tools/list` request, with an adapter-neutral
+   * {@link PrincipalResolutionContext}: headers folded to ONE case-insensitive
+   * shape across both SDK majors, the request's `_meta`, the tool name, and
+   * the arguments the vendor's own handler will see. On a `tools/list` request
+   * the tool name is `null` and the arguments are empty. Return a `Principal`,
+   * or `null` for "no opinion about this caller".
    *
    * **This is the only identity mechanism, on both SDKs** (SPEC §11.4): unset,
    * no event carries a `principal`. For OAuth, pass `principalFromOAuthSub` or
@@ -177,9 +179,9 @@ export interface BatonConfig {
    * carries as `authInfo`. MCP auth is HTTP middleware, so on stdio there is no
    * token and a hook names the user from whatever the vendor authenticated.
    *
-   * Never fails a tool call: a hook that throws or returns junk yields an
-   * anonymous call. A hook that has not answered after 5 seconds is given up
-   * on, and that call is anonymous. ⚠ That only bounds an async hook: one that
+   * Never fails a request: a hook that throws or returns junk yields an
+   * anonymous one. A hook that has not answered after 5 seconds is given up
+   * on, and that request is anonymous. ⚠ That only bounds an async hook: one that
    * blocks synchronously holds the whole process, and nothing can interrupt it.
    *
    * The SDK sends what the hook returns and does nothing else to it: the id
