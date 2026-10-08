@@ -17,7 +17,7 @@ import { Client } from "@modelcontextprotocol/client";
 import { z } from "zod";
 import { beforeEach, describe, expect, it } from "vitest";
 import { withBaton } from "../../../src/integrations/mcp/withBaton.js";
-import { CLIENT_INFO_META_KEY } from "../../../src/integrations/mcp/runtimeAdapter.js";
+import { CLIENT_INFO_META_KEY } from "../../../src/integrations/mcp/clientObserved.js";
 import type { Event } from "../../../src/events.js";
 import type { Sink } from "../../../src/sinks.js";
 
@@ -272,12 +272,9 @@ describe("withBaton on the official SDK v2", () => {
     expect(sink.events.map((e) => e.event_type)).toEqual(["annotation"]);
     const annotation = sink.events[0]!;
     expect(annotation.runtime_meta).toMatchObject({ "claudecode/toolUseId": "tu_ann" });
-    // The annotation tool runs its OWN copy of the ladder, outside the
-    // wrapper. Wiring only the wrapper would show up exactly here — as one
-    // session reporting two runtimes for one client, tool events naming it
-    // and annotations saying `unknown`. Same value as the tool-call leg
-    // above, on purpose.
-    expect(annotation.agent_runtime).toBe("test-client");
+    // The annotation tool builds its envelope outside the wrapper, so it is
+    // the site that would be missed.
+    expect(annotation.client_observed?.info?.name).toBe("test-client");
     expect(annotation.payload).toMatchObject({ intent: "wire up baton" });
 
     // A proactive annotation claims the session's proactive slot, so a later
@@ -402,8 +399,8 @@ describe("withBaton on the official SDK v2", () => {
 
   it("reads _meta from v2's ctx.mcpReq, not the 1.x top-level extra._meta", async () => {
     // v2's ServerContext is {sessionId, mcpReq, http} — `_meta` moved under
-    // `mcpReq`. Read only at the 1.x location, every v2 session silently
-    // degrades to agent_runtime "unknown" with no runtime_meta.
+    // `mcpReq`. Read only at the 1.x location, every v2 event silently loses
+    // its runtime_meta.
     const server = new McpServer({ name: "vendor", version: "1.0.0" });
     registerTools(server);
     install(server, sink);
@@ -419,24 +416,17 @@ describe("withBaton on the official SDK v2", () => {
     // `runtime_meta` is what proves the read location — it carries the key
     // verbatim, and is empty if `_meta` was sought at the 1.x spot.
     expect(start.runtime_meta).toMatchObject({ "claudecode/toolUseId": "tu_1" });
-    // `agent_runtime` used to carry that proof too, via the `claudecode/*`
-    // heuristic. It no longer can: this client DECLARES `test-client` in its
-    // handshake, and a declaration outranks the heuristic. The assertion is
-    // kept, pointed at what it now proves — that tier 2 reaches the client's
-    // name on v2's own dispatch path, and reports the CLIENT rather than the
-    // server (which is named `vendor`, the value a mis-wired tier 2 gives).
-    expect(start.agent_runtime).toBe("test-client");
+    // The handshake is read off the server object on v2's dispatch path, and
+    // names the CLIENT: the server is `vendor`.
+    expect(start.client_observed?.info?.name).toBe("test-client");
+    expect(start.agent_runtime).toBe("unknown");
   });
 
-  it("tier 1: reads a request-borne declaration out of v2's LIFTED envelope", async () => {
-    // The measurement that made this port more than a transcription. v2
-    // lifts every reserved `io.modelcontextprotocol/*` key OUT of the `_meta`
-    // a handler sees and re-exposes it under `ctx.mcpReq.envelope`; 1.x
-    // leaves it in `_meta`. Sending the identical `_meta` to both majors,
-    // this key arrived in two different places — so a faithful line-by-line
-    // port of Python (which reads `_meta` alone) would pass every 1.x test
-    // and be a silent `unknown` across the whole v2 major, the exact shape of
-    // the `clientInfo`/`client_info` bug one layer down.
+  it("reads a request-borne declaration out of v2's LIFTED envelope", async () => {
+    // v2 lifts every reserved `io.modelcontextprotocol/*` key out of the
+    // `_meta` a handler sees and re-exposes it under `ctx.mcpReq.envelope`;
+    // 1.x leaves it in `_meta`. Reading `_meta` alone would lose the
+    // declaration on this whole major.
     const server = new McpServer({ name: "vendor", version: "1.0.0" });
     registerTools(server);
     install(server, sink);
@@ -452,8 +442,8 @@ describe("withBaton on the official SDK v2", () => {
     });
 
     const start = sink.events.find((e) => e.event_type === "tool_call_start")!;
-    // Outranks BOTH the handshake (`test-client`) and the heuristic.
-    expect(start.agent_runtime).toBe("gateway-declared");
+    // In place of the handshake's `test-client`.
+    expect(start.client_observed?.info).toEqual({ name: "gateway-declared", version: "1" });
     // And the proof that the lift really happened on this peer: the reserved
     // key is GONE from what the handler saw as `_meta`, while the unreserved
     // one beside it survived. If v2 ever stops lifting, this flips and the

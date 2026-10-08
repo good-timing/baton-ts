@@ -306,6 +306,8 @@ const envelopeShape = {
   captured_at: z.string(),
   consent_token: z.string(),
   sdk_version: z.string().default(SDK_VERSION),
+  // Legacy (SPEC §3.4): never set by this SDK, so always the default. The
+  // consumer names the client from `client_observed`.
   agent_runtime: z.string().default("unknown"),
   principal: PrincipalWireSchema.nullable().default(null),
   transport_observed: z.string().nullable().default(null),

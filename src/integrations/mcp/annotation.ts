@@ -20,11 +20,10 @@ import { deriveAnnotationToolName } from "./annotationName.js";
 import { emit } from "./emit.js";
 import { type ResolvePrincipalHook, resolveCallPrincipal } from "./principalResolution.js";
 import { buildAnnotationToolDescription, SIGNAL_TYPES } from "./llmText.js";
-import { extraEnvelope, extraMeta, observeTransport, type Extra } from "./mcpTypes.js";
+import { extraMeta, observeTransport, type Extra } from "./mcpTypes.js";
 import type { SupportedMcpServer } from "./withBaton.js";
 import type { ProactiveTracker } from "./proactiveTracker.js";
 import { clientObservedMember } from "./clientObserved.js";
-import { detectAgentRuntime, UNKNOWN_AGENT_RUNTIME } from "./runtimeAdapter.js";
 import { resolveSessionId } from "./sessionResolution.js";
 import { scrubOrNull } from "./safeScrub.js";
 import type { SessionCounter } from "./sessionCounter.js";
@@ -87,18 +86,8 @@ export function registerAnnotationTool(
     },
     async (args: AnnotationArgs, extra: Extra) => {
       const meta = extraMeta(extra);
-      // Same ladder, same inputs as the tool-call wrapper. Wiring only one
-      // of the two would give a single session two runtimes for one client
-      // — tool events naming the client, annotations saying `unknown` —
-      // which is the split N11 hit by wiring two of its four call sites.
-      const runtime =
-        detectAgentRuntime(meta, {
-          envelope: extraEnvelope(extra),
-          server,
-          scrubber: options.scrubber,
-        }) ?? UNKNOWN_AGENT_RUNTIME;
-      // As in the tool-call wrapper: coordinates coarsened after the ladder
-      // read the raw meta, before the vendor's scrubber (handoff D5).
+      // As in the tool-call wrapper: coordinates coarsened before the
+      // vendor's scrubber.
       const scrubbedMeta = scrubOrNull(
         options.scrubber,
         meta ? roundMetaCoordinates(meta) : null,
@@ -116,8 +105,7 @@ export function registerAnnotationTool(
       // `toolName` handed over is THIS tool's own name, so a hook keyed on it
       // answers per call rather than per install. Wiring one path and not the
       // other would put an annotation and the calls it describes under two
-      // different actors, which is unjoinable downstream: the identical split
-      // the runtime ladder above already carries a comment about.
+      // different actors, which is unjoinable downstream.
       const principal = await resolveCallPrincipal(
         options.resolvePrincipal,
         { extra, toolName: name, arguments: args },
@@ -131,7 +119,6 @@ export function registerAnnotationTool(
           sequence_number: options.counter.next(sessionId),
           captured_at: new Date().toISOString(),
           consent_token: options.consentToken,
-          agent_runtime: runtime,
           principal,
           transport_observed: observeTransport(extra),
           ...clientObservedMember(extra, { server, scrubber: options.scrubber }),

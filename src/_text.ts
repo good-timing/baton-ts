@@ -13,13 +13,6 @@
  * `UnicodeEncodeError` in the first Python consumer that re-encodes it — a
  * capture-side value breaking a reader far from here. Cutting by code point
  * also keeps the two SDKs agreeing on what "128 characters" means.
- *
- * Extracted from `runtimeAdapter.clean()`, which had it first and carried this
- * reasoning alone. `identity.principalFor` then capped a raw principal id
- * with a plain `.slice()` and reintroduced exactly the defect — in a module
- * whose own `normalizePrincipal` REJECTS lone surrogates on the way in. One
- * home, so the next capped field inherits the rule instead of rediscovering
- * it.
  */
 /** Whether `value` is longer than `max` CODE POINTS — the check form of
  * `capCodePoints`, for a field that is dropped rather than cut. */

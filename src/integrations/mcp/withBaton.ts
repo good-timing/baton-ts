@@ -151,7 +151,6 @@ import {
   requiredParamNames,
 } from "./llmText.js";
 import {
-  extraEnvelope,
   extraMeta,
   isThenable,
   observeTransport,
@@ -159,7 +158,6 @@ import {
 } from "./mcpTypes.js";
 import { clientObservedMember } from "./clientObserved.js";
 import { ProactiveTracker } from "./proactiveTracker.js";
-import { detectAgentRuntime, UNKNOWN_AGENT_RUNTIME } from "./runtimeAdapter.js";
 import { resolveSessionId } from "./sessionResolution.js";
 import {
   type ResolvePrincipalHook,
@@ -433,33 +431,19 @@ function messageOf(err: unknown): string {
  * own literal, which keeps `openCall` reading as one object and keeps
  * `principal` out of a shape that has no business resolving it.
  *
- * ⚠ **NOT for key order, which a first version of this paragraph claimed.**
- * Zod v4 emits output keys in SHAPE order, not input order, so
- * `envelopeShape` fixes the wire order however a caller spells its literal.
- * Recorded because the wrong reason is the kind a later reader preserves. */
+ * Not for key order: Zod v4 emits output keys in SHAPE order, so
+ * `envelopeShape` fixes the wire order however a caller spells its literal. */
 async function resolveEnvelopeParts(
   ctx: WrapContext,
   extra: Extra,
-): Promise<{ sessionId: string; runtime: string; scrubbedMeta: unknown }> {
+): Promise<{ sessionId: string; scrubbedMeta: unknown }> {
+  // Coordinates are coarsened before the vendor's scrubber, so a vendor
+  // scrubber still gets the rule. `_meta` only; params and results keep full
+  // precision. The annotation tool does the same.
   const meta = extraMeta(extra);
-  const runtime =
-    detectAgentRuntime(meta, {
-      // v2 lifts the reserved `io.modelcontextprotocol/*` keys out of
-      // `_meta`; 1.x leaves them in. Both are handed over — see
-      // `mcpTypes.extraEnvelope`.
-      envelope: extraEnvelope(extra),
-      // Tier 2's carrier: neither peer puts client identity on the
-      // handler context, both expose the cached handshake on the server.
-      server: ctx.server,
-      scrubber: ctx.scrubber,
-    }) ?? UNKNOWN_AGENT_RUNTIME;
-  // Coordinates are coarsened here: after the ladder above has read the
-  // raw meta, and before the vendor's scrubber, so a vendor scrubber still
-  // gets the rule (handoff D5). `_meta` only; params and results keep
-  // full precision. The annotation tool does the same.
   const scrubbedMeta = scrubOrNull(ctx.scrubber, meta ? roundMetaCoordinates(meta) : null, "_meta");
   const sessionId = await resolveSessionId(ctx.fallbackSessionId, extra);
-  return { sessionId, runtime, scrubbedMeta };
+  return { sessionId, scrubbedMeta };
 }
 
 /**
@@ -497,7 +481,7 @@ async function openCall(
   // ordering invariant (snapshot BEFORE `tool_call_start`) is preserved and is
   // now structural.
   await maybeEmitSurfaceSnapshot(ctx);
-  const { sessionId, runtime, scrubbedMeta } = await resolveEnvelopeParts(ctx, extra);
+  const { sessionId, scrubbedMeta } = await resolveEnvelopeParts(ctx, extra);
 
   // Strip the injected goal params IN PLACE, before snapshotting params —
   // `params` is the SAME object forwarded to the vendor handler, so the
@@ -541,18 +525,10 @@ async function openCall(
     vendor_id: ctx.vendorId,
     session_id: sessionId,
     consent_token: ctx.consentToken,
-    agent_runtime: runtime,
-    // The five `...common` sites below are the tool-call legs — start, end,
-    // and BOTH failure shapes (SPEC §11.4.3) — plus the proactive
-    // annotation, the same five Python stamps (`middleware.py`
-    // 503/547/586/644/674; it was four until the returned shape landed
-    // there too). `surface_snapshot` is deliberately NOT among them: it
-    // describes the SERVER and is captured outside any call, so there is no
-    // caller to name (register D5).
+    // Every `...common` site is an event with a caller. `surface_snapshot`
+    // is deliberately not among them: it describes the SERVER and is captured
+    // outside any call, so it has no caller, transport or client to name.
     principal,
-    // Same five stamps, same exclusion: a surface_snapshot describes the
-    // SERVER and is captured outside any call, so it has no caller's
-    // transport to name any more than it has a caller to name.
     transport_observed: observeTransport(extra),
     ...clientObservedMember(extra, ctx),
     runtime_meta: scrubbedMeta,
@@ -1248,7 +1224,6 @@ async function openLifecycleCall(
         vendor_id: ctx.vendorId,
         session_id: parts.sessionId,
         consent_token: ctx.consentToken,
-        agent_runtime: parts.runtime,
         transport_observed: observeTransport(extra),
         ...clientObservedMember(extra, ctx),
         runtime_meta: parts.scrubbedMeta,
@@ -1973,24 +1948,6 @@ function install(
       consent_token: config.consentToken,
       sequence_number: counter.next(sessionId),
       captured_at: new Date().toISOString(),
-      // Deliberately the literal, NOT the ladder — and an earlier comment
-      // here justified that by saying no call is in scope, which is false:
-      // `maybeEmitSurfaceSnapshot` is the first line of `batonWrap`, so the
-      // handshake has happened and tier 2's carrier is live in this closure.
-      // The real reason is that the snapshot describes the VENDOR'S SURFACE,
-      // which is the same whoever is calling. It is hashed and emitted at
-      // most once per process per surface, so the client that happens to
-      // trigger it is whichever one called first — attributing the surface to
-      // that client would read as a fact about the surface and be an accident
-      // of timing. Python hardcodes it from the same in-call position
-      // (`_tool_wrap.py`), so this is parity, not a gap.
-      //
-      // ⚠ Consequence worth knowing: one session emits `surface_snapshot`
-      // with `unknown` and everything else with the client's name, so a
-      // consumer grouping on `agent_runtime` alone sees two runtimes for one
-      // client. Intended; group surfaces on `(tenant_id, vendor_id,
-      // surface_hash)`, which is what the Console's table is keyed on.
-      agent_runtime: UNKNOWN_AGENT_RUNTIME,
       payload: {
         surface_hash: digest,
         server_info: snapshot.server_info,

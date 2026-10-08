@@ -95,8 +95,7 @@ function walk(value: unknown, depth: number): unknown {
 /**
  * A copy of `meta` with every `latitude` / `longitude` value rounded to 1
  * decimal in its own type, at any depth within DEPTH_LIMIT. Pure: `meta`
- * itself is not touched, so the handler and the runtime ladder still see
- * what the client sent.
+ * itself is not touched, so the handler still sees what the client sent.
  */
 export function roundMetaCoordinates(meta: Record<string, unknown>): Record<string, unknown> {
   return walk(meta, 0) as Record<string, unknown>;

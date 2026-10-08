@@ -15,7 +15,7 @@ import { z } from "zod";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { withBaton } from "../../../src/integrations/mcp/withBaton.js";
 import { HOOK_TIMEOUT_MS } from "../../../src/integrations/mcp/principalResolution.js";
-import { CLIENT_INFO_META_KEY } from "../../../src/integrations/mcp/runtimeAdapter.js";
+import { CLIENT_INFO_META_KEY } from "../../../src/integrations/mcp/clientObserved.js";
 import type { BatonConfig } from "../../../src/integrations/mcp/config.js";
 import { identityScrub } from "../../../src/scrub.js";
 import type { Event } from "../../../src/events.js";
@@ -1377,21 +1377,16 @@ describe("withBaton — tenant_id is the ACCOUNT, not a second copy of vendor_id
   });
 });
 
-/**
- * The agent-runtime ladder against the REAL 1.x peer.
- *
- * Nothing in this file asserted `agent_runtime` before — the ladder's only
- * coverage on this major was a unit test over hand-built dicts, which is the
- * shape that let a wrong `except` tuple ship once already. The carriers here
- * are two third-party objects; these run against them.
- */
-describe("withBaton — agent_runtime, against the real 1.x peer", () => {
+describe("withBaton — the client is observed, never named, against the real 1.x peer", () => {
   let sink: CapturingSink;
   beforeEach(() => {
     sink = new CapturingSink();
   });
 
-  async function runtimeFor(meta?: Record<string, unknown>): Promise<string> {
+  async function startFor(
+    meta?: Record<string, unknown>,
+    config: Record<string, unknown> = {},
+  ): Promise<Event> {
     const server = new McpServer({ name: "vendor", version: "1.0.0" });
     registerTools(server);
     withBaton(server, {
@@ -1399,6 +1394,7 @@ describe("withBaton — agent_runtime, against the real 1.x peer", () => {
       vendorDisplayName: "Acme",
       consentToken: "ct",
       sink,
+      ...config,
     });
     const client = await connectClient(server);
     await client.callTool({
@@ -1406,62 +1402,37 @@ describe("withBaton — agent_runtime, against the real 1.x peer", () => {
       arguments: { text: "hi" },
       ...(meta ? { _meta: meta } : {}),
     });
-    return sink.events.find((e) => e.event_type === "tool_call_start")!.agent_runtime;
+    return sink.events.find((e) => e.event_type === "tool_call_start")!;
   }
 
-  it("tier 2: reports the name the client declared in its handshake", async () => {
-    // This is the tier that answers for every client shipping today. The
-    // carrier is NOT the handler context — neither peer puts client identity
-    // there — it is `McpServer.server.getClientVersion()`, measured live on
-    // sdk 1.30.0 and server 2.0.0. `vendor` is the SERVER's name, which is
-    // what a tier-2 wired to the wrong object would report.
-    expect(await runtimeFor()).toBe("test-client");
+  it("sends the handshake's declaration as info, and the client's name, not the server's", async () => {
+    const start = await startFor();
+    expect(start.client_observed).toEqual({ info: { name: "test-client", version: "1.0.0" } });
   });
 
-  it("tier 1: a request-borne declaration outranks the handshake", async () => {
-    // On 1.x the reserved key stays in `_meta`. On v2 it does NOT — it is
-    // lifted to `mcpReq.envelope` — which is why the same assertion lives in
-    // `withBatonV2.test.ts` too and why reading one location is a silent
-    // `unknown` across a whole major.
-    expect(
-      await runtimeFor({ [CLIENT_INFO_META_KEY]: { name: "gateway-declared", version: "1" } }),
-    ).toBe("gateway-declared");
+  it("sends the request's own declaration in place of the handshake's", async () => {
+    // On 1.x the reserved key stays in `_meta`; v2 lifts it out, which
+    // `withBatonV2.test.ts` covers.
+    const start = await startFor({
+      [CLIENT_INFO_META_KEY]: { name: "gateway-declared", version: "1" },
+    });
+    expect(start.client_observed).toEqual({ info: { name: "gateway-declared", version: "1" } });
   });
 
-  it("ignores a defaultAgentRuntime a caller still passes", async () => {
-    // The removal is an ABSENCE, and deleting the field reddened nothing —
-    // same fact as the override removal this file's sibling exists for. TS
-    // refuses the key at compile time, so the shape that can still reach us
-    // is a JS consumer (or an `as` cast) carrying it across an upgrade: it
-    // must be inert, not quietly beat a client that named itself.
-    const server = new McpServer({ name: "vendor", version: "1.0.0" });
-    registerTools(server);
-    withBaton(server, {
-      vendorId: "acme",
-      vendorDisplayName: "Acme",
-      consentToken: "ct",
-      sink,
-      defaultAgentRuntime: "acme-runtime",
-    } as Parameters<typeof withBaton>[1]);
-
-    const client = await connectClient(server);
-    await client.callTool({ name: "echo", arguments: { text: "hi" } });
-
+  it("sends agent_runtime as unknown whatever the client declared or its meta carries", async () => {
+    await startFor(
+      {
+        [CLIENT_INFO_META_KEY]: { name: "gateway-declared", version: "1" },
+        "claudecode/toolUseId": "tu_1",
+      },
+      // A JS caller can still pass the knob a past release removed.
+      { defaultAgentRuntime: "acme-runtime" },
+    );
+    expect(sink.events.length).toBeGreaterThan(1);
+    for (const event of sink.events) expect(event.agent_runtime).toBe("unknown");
+    // The consumer recognises Claude Code from this key, so it must arrive.
     const start = sink.events.find((e) => e.event_type === "tool_call_start")!;
-    expect(start.agent_runtime).toBe("test-client");
-    // Including where the ladder is deliberately not consulted: `unknown` is
-    // the SDK's literal, not a value a vendor can substitute. The surface
-    // snapshot is the one event that takes the literal unconditionally, so
-    // it is where a resurrected knob would show up first.
-    const snapshot = sink.events.find((e) => e.event_type === "surface_snapshot")!;
-    expect(snapshot.agent_runtime).toBe("unknown");
-  });
-
-  it("tier 3: the claudecode/* heuristic is BELOW both declarations", async () => {
-    // A proxy forwards `_meta` verbatim, so `claudecode/*` says where the
-    // metadata came from, not who the caller is. The client here declares
-    // `test-client` and sends a Claude Code key; the declaration wins.
-    expect(await runtimeFor({ "claudecode/toolUseId": "tu_1" })).toBe("test-client");
+    expect(start.runtime_meta).toMatchObject({ "claudecode/toolUseId": "tu_1" });
   });
 });
 
@@ -1495,9 +1466,7 @@ describe("withBaton — coordinates in runtime_meta", () => {
     return connectClient(server);
   }
 
-  it("runtime_meta carries rounded coordinates; agent_runtime still reads the raw meta", async () => {
-    // The request declares `openai-mcp`, so that name (not the handshake's
-    // `test-client`) proves the ladder ran on this very meta.
+  it("runtime_meta carries rounded coordinates, and the declaration beside them is still read", async () => {
     const client = await connect();
     const meta = {
       ...CHATGPT_IPHONE_META,
@@ -1510,7 +1479,7 @@ describe("withBaton — coordinates in runtime_meta", () => {
     );
     expect(legs).toHaveLength(2);
     for (const e of legs) {
-      expect(e.agent_runtime).toBe("openai-mcp");
+      expect(e.client_observed?.info?.name).toBe("openai-mcp");
       expect(e.runtime_meta).toEqual({ ...meta, "openai/userLocation": ROUNDED_IPHONE_LOCATION });
     }
   });

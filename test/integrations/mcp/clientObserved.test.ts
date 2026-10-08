@@ -1,7 +1,7 @@
 /**
  * `client_observed` (SPEC §11.4): the client's declared `clientInfo` and the
- * registered request headers, sent beside `agent_runtime` and never instead
- * of it.
+ * registered request headers. The SDK names no client: `agent_runtime` is
+ * always `unknown`.
  */
 
 import { createServer } from "node:http";
@@ -15,11 +15,11 @@ import { z } from "zod";
 import { describe, expect, it } from "vitest";
 
 import {
-  HEADER_VALUE_MAX_LEN,
+  CLIENT_INFO_META_KEY,
+  clientObservedMember,
   observeClient,
 } from "../../../src/integrations/mcp/clientObserved.js";
 import type { Extra } from "../../../src/integrations/mcp/mcpTypes.js";
-import { CLIENT_INFO_META_KEY, CLIENT_NAME_MAX_LEN } from "../../../src/integrations/mcp/runtimeAdapter.js";
 import { createBaton, withBaton } from "../../../src/integrations/mcp/withBaton.js";
 import { ClientObservedSchema } from "../../../src/events.js";
 import { identityScrub, Scrubber } from "../../../src/scrub.js";
@@ -44,9 +44,15 @@ function observe(extra: Extra, server?: unknown) {
 
 describe("observeClient", () => {
   it("copies the registered headers, lower-cased, on both majors' header shapes", () => {
-    const sent = { "User-Agent": CLAUDE_CODE_UA, "X-Anthropic-Client": "ClaudeCode" };
+    const sent = {
+      "User-Agent": CLAUDE_CODE_UA,
+      "X-Anthropic-Client": "ClaudeCode",
+    };
     const expected = {
-      headers: { "user-agent": CLAUDE_CODE_UA, "x-anthropic-client": "ClaudeCode" },
+      headers: {
+        "user-agent": CLAUDE_CODE_UA,
+        "x-anthropic-client": "ClaudeCode",
+      },
     };
     expect(observe(extraV1(sent))).toEqual(expected);
     expect(observe(extraV2(sent))).toEqual(expected);
@@ -54,7 +60,7 @@ describe("observeClient", () => {
 
   it("never copies a header that is not registered", () => {
     const observed = observe(
-extraV1({
+      extraV1({
         "user-agent": CLAUDE_CODE_UA,
         authorization: "Bearer secret",
         cookie: "sid=secret",
@@ -62,9 +68,7 @@ extraV1({
       }),
     );
     expect(observed).toEqual({ headers: { "user-agent": CLAUDE_CODE_UA } });
-    expect(JSON.stringify(observe(extraV1({ authorization: "Bearer secret" })))).toBe(
-      undefined,
-    );
+    expect(JSON.stringify(observe(extraV1({ authorization: "Bearer secret" })))).toBe(undefined);
   });
 
   it("is undefined, not an empty object, when nothing was observed", () => {
@@ -74,7 +78,9 @@ extraV1({
   });
 
   it("takes info from the request's own declaration before the handshake's", () => {
-    const server = { getClientVersion: () => ({ name: "from-handshake", version: "1.0.0" }) };
+    const server = {
+      getClientVersion: () => ({ name: "from-handshake", version: "1.0.0" }),
+    };
     const onRequest = extraV1(
       {},
       { [CLIENT_INFO_META_KEY]: { name: "from-request", version: "9.9.9" } },
@@ -89,19 +95,28 @@ extraV1({
 
   it("omits a name or version the client did not send", () => {
     const server = { getClientVersion: () => ({ name: "only-a-name" }) };
-    expect(observe({} as any, server)).toEqual({ info: { name: "only-a-name" } });
+    expect(observe({} as any, server)).toEqual({
+      info: { name: "only-a-name" },
+    });
   });
 
-  it("leaves info out when the client is only recognised by the claudecode/* heuristic", () => {
+  it("leaves info out when only a claudecode/* key is present", () => {
     const guessed = extraV1({}, { "claudecode/toolUseId": "toolu_1" });
     expect(observe(guessed)).toBeUndefined();
   });
 
   it("passes every value through the vendor's scrubber, and drops one it does not return as text", () => {
-    const server = { getClientVersion: () => ({ name: "alice-laptop", version: "1.0.0" }) };
+    const server = {
+      getClientVersion: () => ({ name: "alice-laptop", version: "1.0.0" }),
+    };
     const scrubber = (value: unknown) =>
       typeof value === "string" && value.includes("alice") ? null : `scrubbed:${String(value)}`;
-    expect(observeClient(extraV1({ "user-agent": CLAUDE_CODE_UA }), { server, scrubber })).toEqual({
+    expect(
+      observeClient(extraV1({ "user-agent": CLAUDE_CODE_UA }), {
+        server,
+        scrubber,
+      }),
+    ).toEqual({
       info: { version: "scrubbed:1.0.0" },
       headers: { "user-agent": `scrubbed:${CLAUDE_CODE_UA}` },
     });
@@ -121,7 +136,9 @@ extraV1({
       });
     }
     const leaked = observeClient(
-      extraV1({ "user-agent": "my-agent/1.0 (token sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA)" }),
+      extraV1({
+        "user-agent": "my-agent/1.0 (token sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA)",
+      }),
       { scrubber },
     );
     expect(leaked?.headers?.["user-agent"]).not.toContain("sk-ant-api03");
@@ -133,22 +150,97 @@ extraV1({
   });
 
   it("keeps the request's own pair even when it has no name, never mixing two sources", () => {
-    const server = { getClientVersion: () => ({ name: "from-handshake", version: "1.0.0" }) };
+    const server = {
+      getClientVersion: () => ({ name: "from-handshake", version: "1.0.0" }),
+    };
     const versionOnly = extraV1({}, { [CLIENT_INFO_META_KEY]: { version: "9.9.9" } });
-    expect(observe(versionOnly, server)).toEqual({ info: { version: "9.9.9" } });
+    expect(observe(versionOnly, server)).toEqual({
+      info: { version: "9.9.9" },
+    });
   });
 
-  it("cuts a declared name and version to the cap", () => {
-    const long = "n".repeat(CLIENT_NAME_MAX_LEN * 2);
-    const server = { getClientVersion: () => ({ name: long, version: long }) };
-    const info = observe({}, server)?.info;
-    expect(info?.name).toHaveLength(CLIENT_NAME_MAX_LEN);
-    expect(info?.version).toHaveLength(CLIENT_NAME_MAX_LEN);
+  it.each([{}, { name: "" }, { name: 5, version: null }])(
+    "yields to the handshake when the request's declaration holds no text: %j",
+    (onRequest) => {
+      const server = {
+        getClientVersion: () => ({ name: "from-handshake", version: "1.0.0" }),
+      };
+      const extra = extraV1({}, { [CLIENT_INFO_META_KEY]: onRequest });
+      expect(observe(extra, server)).toEqual({
+        info: { name: "from-handshake", version: "1.0.0" },
+      });
+    },
+  );
+
+  // Literal lengths: SPEC §11.4 states them, so a changed constant must fail.
+  it.each([
+    [127, 127],
+    [128, 128],
+    [129, 128],
+    [5000, 128],
+  ])("cuts a declared name and version of %i to %i", (sent, kept) => {
+    const server = {
+      getClientVersion: () => ({
+        name: "n".repeat(sent),
+        version: "v".repeat(sent),
+      }),
+    };
+    expect(observe({}, server)).toEqual({
+      info: { name: "n".repeat(kept), version: "v".repeat(kept) },
+    });
   });
 
-  it("cuts a header value to the cap", () => {
-    const observed = observe(extraV1({ "user-agent": "a".repeat(HEADER_VALUE_MAX_LEN * 4) }));
-    expect(observed?.headers?.["user-agent"]).toHaveLength(HEADER_VALUE_MAX_LEN);
+  it.each([
+    [255, 255],
+    [256, 256],
+    [257, 256],
+    [5000, 256],
+  ])("cuts a header value of %i to %i", (sent, kept) => {
+    const observed = observe(extraV1({ "user-agent": "a".repeat(sent) }));
+    expect(observed).toEqual({ headers: { "user-agent": "a".repeat(kept) } });
+  });
+
+  it("leaves the key out of the envelope, never null, when nothing was observed", () => {
+    expect(clientObservedMember({}, { scrubber: identityScrub })).toEqual({});
+  });
+
+  it("joins a 1.x header that arrived as several lines", () => {
+    const observed = observe(extraV1({ "User-Agent": ["agent/1.0", "proxy/2"] }));
+    expect(observed).toEqual({ headers: { "user-agent": "agent/1.0, proxy/2" } });
+  });
+
+  it("hands the scrubber the whole value, before the cap", () => {
+    const seen: unknown[] = [];
+    const scrubber = (value: unknown) => {
+      seen.push(value);
+      return value;
+    };
+    observeClient(extraV1({ "user-agent": "a".repeat(300) }), { scrubber });
+    expect(seen).toEqual(["a".repeat(300)]);
+  });
+
+  it("applies the cap to what the scrubber returned", () => {
+    const server = { getClientVersion: () => ({ name: "zed" }) };
+    const observed = observeClient({}, { server, scrubber: () => "r".repeat(5000) });
+    expect(observed).toEqual({ info: { name: "r".repeat(128) } });
+  });
+
+  it("drops one value its scrubber throws on, and keeps the rest", () => {
+    const server = {
+      getClientVersion: () => ({ name: "zed", version: "0.9" }),
+    };
+    const scrubber = (value: unknown) => {
+      if (value === "zed") throw new Error("vendor scrubber bug");
+      return value;
+    };
+    const observed = observeClient(extraV1({ "user-agent": "agent/1.0" }), {
+      server,
+      scrubber,
+    });
+    expect(observed).toEqual({
+      info: { version: "0.9" },
+      headers: { "user-agent": "agent/1.0" },
+    });
   });
 
   it("never throws: a server or headers object that raises yields nothing", () => {
@@ -173,6 +265,20 @@ describe.each(MAJORS.map((m) => [m.label, m] as const))("on %s", (_label, major)
     major.tool(server, "lookup", { name: z.string() }, async () => ({
       content: [{ type: "text" as const, text: "ok" }],
     }));
+    major.tool(server, "broken", {}, async () => {
+      throw new Error("vendor bug");
+    });
+    major.tool(server, "refused", {}, async () => ({
+      isError: true,
+      content: [{ type: "text" as const, text: "not allowed" }],
+    }));
+    major.tool(
+      server,
+      "mistyped",
+      {},
+      async () => ({ content: [], structuredContent: { count: "three" } }),
+      { count: z.number() },
+    );
     major.resource(server, "readme", "probe://readme", () => ({
       contents: [{ uri: "probe://readme", text: "hello" }],
     }));
@@ -183,7 +289,12 @@ describe.each(MAJORS.map((m) => [m.label, m] as const))("on %s", (_label, major)
       sink,
     });
     const client = await major.connect(server);
-    await client.callTool({ name: "lookup", arguments: { name: "alice" } });
+    // Each call ends at its own emit site; the first also opens the session's
+    // proactive annotation.
+    await client.callTool({ name: "lookup", arguments: { name: "alice", user_goal: "find her" } });
+    for (const name of ["broken", "refused", "mistyped", "no-such-tool"]) {
+      await client.callTool({ name, arguments: {} }).catch(() => undefined);
+    }
     await client.listResources();
     await client.callTool({
       name: handle.annotationToolName,
@@ -194,6 +305,7 @@ describe.each(MAJORS.map((m) => [m.label, m] as const))("on %s", (_label, major)
     for (const expected of [
       "tool_call_start",
       "tool_call_end",
+      "tool_call_error",
       "resource_list_start",
       "resource_list_end",
       "annotation",
@@ -201,6 +313,11 @@ describe.each(MAJORS.map((m) => [m.label, m] as const))("on %s", (_label, major)
     ]) {
       expect(types).toContain(expected);
     }
+    const failures = sink.events
+      .filter((e) => e.event_type === "tool_call_error")
+      .map((e) => (e.payload as { tool_name: string }).tool_name);
+    expect(failures.sort()).toEqual(["broken", "mistyped", "no-such-tool", "refused"]);
+    expect(sink.events.filter((e) => e.event_type === "annotation")).toHaveLength(2);
     for (const event of sink.events) {
       if (event.event_type === "surface_snapshot") {
         expect(Object.keys(event)).not.toContain("client_observed");
@@ -210,7 +327,7 @@ describe.each(MAJORS.map((m) => [m.label, m] as const))("on %s", (_label, major)
       expect(event.client_observed, event.event_type).toEqual({
         info: { name: "test-client", version: "1.0.0" },
       });
-      expect(event.agent_runtime).toBe("test-client");
+      expect(event.agent_runtime).toBe("unknown");
     }
   });
 });
@@ -237,6 +354,9 @@ describe("on a server built per request, over real HTTP", () => {
         server.registerTool("lookup", { inputSchema: { name: z.string() } }, () => ({
           content: [{ type: "text" as const, text: "ok" }],
         }));
+        server.registerResource("readme", "probe://readme", {}, () => ({
+          contents: [{ uri: "probe://readme", text: "hello" }],
+        }));
         baton.wrap(server);
         const transport = new StreamableHTTPServerTransport({});
         res.on("close", () => void transport.close());
@@ -251,11 +371,21 @@ describe("on a server built per request, over real HTTP", () => {
       await client.connect(
         new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${String(port)}/mcp`), {
           requestInit: {
-            headers: { "user-agent": "my-agent/1.0 (secret)", authorization: "Bearer nope" },
+            headers: {
+              "user-agent": "my-agent/1.0 (secret)",
+              authorization: "Bearer nope",
+            },
           },
         }) as any,
       );
       await client.callTool({ name: "lookup", arguments: { name: "alice" } });
+      await client.listResources();
+      const { tools } = await client.listTools();
+      const annotate = tools.find((tool) => tool.name !== "lookup")!.name;
+      await client.callTool({
+        name: annotate,
+        arguments: { user_goal: "look up", signal_type: "failure" },
+      });
       await client.close();
     } finally {
       await new Promise((resolve) => http.close(resolve));
@@ -263,7 +393,12 @@ describe("on a server built per request, over real HTTP", () => {
 
     const withCaller = sink.events.filter((e) => e.event_type !== "surface_snapshot");
     expect(withCaller.map((e) => e.event_type)).toEqual(
-      expect.arrayContaining(["tool_call_start", "tool_call_end"]),
+      expect.arrayContaining([
+        "tool_call_start",
+        "tool_call_end",
+        "resource_list_end",
+        "annotation",
+      ]),
     );
     for (const event of withCaller) {
       expect(event.client_observed, event.event_type).toEqual({

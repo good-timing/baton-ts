@@ -11,20 +11,19 @@
  * ever read — three for `_meta`/session, two more for headers.
  *
  * The divergence that matters: v2's `ServerContext` is
- * `{ sessionId, mcpReq, http }` (measured 2026-08-28) — it keeps `sessionId`
+ * `{ sessionId, mcpReq, http }` — it keeps `sessionId`
  * but moves the request `_meta` down under `mcpReq`. Read only at the 1.x
- * location and every v2 session silently degrades to
- * `agent_runtime: "unknown"` with no `runtime_meta`: no error, just worse
- * data. Use {@link extraMeta}, never `extra._meta`.
+ * location and every v2 event silently loses its `runtime_meta`: no error,
+ * just worse data. Use {@link extraMeta}, never `extra._meta`.
  *
- * The SECOND divergence, same shape, measured 2026-09-11: v2 LIFTS every
+ * The SECOND divergence, same shape: v2 LIFTS every
  * reserved `io.modelcontextprotocol/*` key OUT of the `_meta` a handler sees
  * and re-exposes them under `mcpReq.envelope`. Sending one identical
  * hand-crafted `_meta` to both majors, `io.modelcontextprotocol/clientInfo`
  * arrived in `extra._meta` on sdk 1.30.0 and in `ctx.mcpReq.envelope` on
  * server 2.0.0, whose `_meta` retained only the unreserved
  * `claudecode/toolUseId`. So a reserved key read at the 1.x location alone
- * is a silent `unknown` across the whole v2 major. Use {@link extraEnvelope}.
+ * silently loses `client_observed.info` across the whole v2 major. Use {@link extraEnvelope}.
  */
 export interface Extra {
   /** Transport-supplied session id; present on both majors. */
@@ -94,8 +93,7 @@ export function extraAuthInfo(extra: Extra): AuthInfo | null {
 /** The call's `_meta`, from wherever this SDK major keeps it.
  *
  * ⚠ On v2 this is `_meta` MINUS the reserved keys — see {@link extraEnvelope}
- * for those. It is the right input for the `claudecode/*` heuristic and for
- * `runtime_meta`, and the wrong one for anything `io.modelcontextprotocol/*`. */
+ * for those. It is the right input for `runtime_meta`, and the wrong one for anything `io.modelcontextprotocol/*`. */
 export function extraMeta(extra: Extra): Record<string, unknown> | null {
   const direct = extra._meta as Record<string, unknown> | undefined;
   if (direct) return direct;

@@ -528,22 +528,11 @@ describe("cross-SDK emitter conformance (Phase 3)", () => {
     expect(asRequired.properties).toHaveProperty("expected_result");
   });
 
-  it("reports the client that declared itself, over the claudecode/* heuristic", () => {
-    // Tier 2 of the ladder, on a real handshake: this harness's client names
-    // itself `spec-scenario` and declares nowhere else, which before the
-    // ladder landed made it — and Claude Desktop, and Cursor — `unknown`.
-    // Paired with the `agent_runtime` exemption above, which would otherwise
-    // leave the field unasserted.
+  it("names no client itself, and sends what this harness's client declared", () => {
     for (const event of events) {
-      if (event.event_type === "surface_snapshot") {
-        // The ladder is deliberately not consulted: a surface is the
-        // vendor's, and the client that triggers the once-per-process flush
-        // is an accident of who called first. The handshake IS available
-        // here — this is a choice, not a limitation.
-        expect(event.agent_runtime).toBe("unknown");
-        continue;
-      }
-      expect(event.agent_runtime).toBe("spec-scenario");
+      expect(event.agent_runtime).toBe("unknown");
+      if (event.event_type === "surface_snapshot") continue;
+      expect(event.client_observed?.info?.name).toBe("spec-scenario");
     }
   });
 
@@ -619,7 +608,7 @@ describe("cross-SDK emitter conformance (Phase 3)", () => {
 
     // Null on the snapshot: it describes the SERVER and is flushed outside any
     // caller's context, so there is no transport of a caller's to name — the
-    // same reason it carries UNKNOWN_AGENT_RUNTIME and a null principal.
+    // same reason it carries no `client_observed` and a null principal.
     expect(
       events.find((e) => e.event_type === "surface_snapshot")!.transport_observed,
     ).toBeNull();

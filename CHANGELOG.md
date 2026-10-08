@@ -14,19 +14,25 @@
   what it did before.
 
   Session ids are unchanged: each request is still its own session, which is
-  what the Python SDK sends from a stateless server. `agent_runtime` is still
-  `unknown` there for any client the SDK cannot recognise from the request
-  itself, because the handshake is not on the request's server.
+  what the Python SDK sends from a stateless server.
 
 - **`client_observed` on every event that has a caller.** It carries what
   the client said about itself, uninterpreted: `info` is the `name` and
   `version` it declared, and `headers` holds the request's `user-agent` and
   `x-anthropic-client` when there is an HTTP request. No other header is ever
   copied. Values pass through your scrubber. The key is left out when there
-  is nothing to carry. `agent_runtime` is unchanged; on a server built per
-  request it is often `unknown`, and the `User-Agent` is still sent there.
+  is nothing to carry.
 
 ### Changed
+
+- **The SDK no longer names the client: `agent_runtime` is always
+  `"unknown"`.** It used to hold the name the client declared, or
+  `claude-code` when a `claudecode/*` key was present. The collector now
+  names the client from `client_observed` and `runtime_meta`, so a new client
+  needs no SDK release, and a server built per request, which never sees the
+  handshake, is named from the `User-Agent`. **A collector must read
+  `client_observed` before it receives events from this version**, or every
+  client shows as unknown. The hosted Console does.
 
 - **`expected_result` is advertised as required too.** Under the default
   `intentParamMode: "required"`, `tools/list` now lists `user_goal` and

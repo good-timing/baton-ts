@@ -12,7 +12,6 @@ import {
  * warning set below to one line per field per process: a `string` would leave
  * that bound resting on every caller happening to pass a literal. */
 export type ScrubbedField =
-  | "agent-runtime name"
   | "client_observed"
   | "_meta"
   | typeof USER_GOAL_PARAM_NAME
@@ -42,8 +41,7 @@ const warned = new Set<ScrubbedField>();
  * visibly rather than be remembered.
  *
  * `null` on failure because every caller already treats `null` as "this field is
- * not available": runtime detection loses the TIER and falls through to the
- * next, `_meta` becomes absent, an unscrubbed goal param becomes no captured
+ * not available": a `client_observed` value is left out, `_meta` becomes absent, an unscrubbed goal param becomes no captured
  * intent. So the field degrades and the call lives. `null` IN is returned
  * unchanged without calling the scrubber, which is what lets each caller drop
  * its own `x !== null ?` guard.
@@ -65,9 +63,8 @@ export function scrubOrNull<T>(
     return scrubber(value) as T;
   } catch (err) {
     // Once per field per process. `safeWrite` logs per event because a sink
-    // failure is one write per event; this fires up to five times per CALL, and
-    // runtime detection fires unconditionally — so the unbounded form would put
-    // a line on stderr for every tool call forever. Bounded the way
+    // failure is one write per event; this fires several times per CALL, so
+    // the unbounded form would put a line on stderr for every tool call forever. Bounded the way
     // `principalResolution`'s pre-rename warning and `HttpSink.overflowWarned`
     // already are.
     if (!warned.has(field)) {

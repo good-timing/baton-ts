@@ -13,10 +13,10 @@
  * the assertion a broken fixture satisfies by never running the tool.
  *
  * ⚠ The legs are not interchangeable, and that is the point rather than
- * thoroughness. A test covering only runtime detection would leave every
- * in-handler site unguarded and still pass, because detection is reached from a
+ * thoroughness. A test covering only `client_observed` would leave every
+ * in-handler site unguarded and still pass, because it is reached from a
  * different module. They differ on HOW the scrubber is reached: through the
- * runtime ladder, through `_meta` on the tool path, through a goal param whose
+ * client's declared name, through `_meta` on the tool path, through a goal param whose
  * key `extractGoalParam` has already stripped from `params` in place, and
  * through `_meta` again on Baton's own annotate tool.
  */
@@ -29,7 +29,7 @@ import { MAJORS, CapturingSink, CFG, terminal } from "./_majors.js";
 const ANSWER = "the-vendors-real-answer";
 const GOAL = "find the row";
 
-/** The name `_majors.connect` gives its client, which runtime detection scrubs on
+/** The name `_majors.connect` gives its client, which `client_observed` scrubs on
  * every call. A literal, not read off the harness: reading it there would make
  * this leg pass if the harness stopped sending a name at all. */
 const CLIENT_NAME = "test-client";
@@ -130,12 +130,12 @@ describe.each(MAJORS)("a throwing vendor scrubber never breaks the call [$label]
     expect(terminal(sink, "tool_call_end").payload.tool_name).toBe("lookup");
   });
 
-  it("runtime-detection leg — fires on EVERY call, and the TIER degrades", async () => {
+  it("client_observed leg — fires on EVERY call, and the member degrades", async () => {
     const { res, sink } = await drive(throwingOn(CLIENT_NAME), { name: "x" });
     expectAnswered(res);
     // The event survives and the field degrades — as opposed to dropping either.
     expect(terminal(sink, "tool_call_end").payload.tool_name).toBe("lookup");
-    expect(terminal(sink, "tool_call_end").agent_runtime).toBe("unknown");
+    expect(terminal(sink, "tool_call_end").client_observed?.info?.name).toBeUndefined();
   });
 
   it("goal-param leg — the key is already stripped from params, so no throw may escape", async () => {
