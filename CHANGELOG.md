@@ -1,6 +1,14 @@
 # Changelog
 
-## Unreleased
+## 0.5.3: a server built per request, the client as observed, and tool listings
+
+Nothing in your code has to change. Two things do change around it:
+
+- **What an agent is shown.** `tools/list` now lists all three intent params
+  as required, and the server instructions gain one sentence.
+- **What is sent.** Three new event types record each `tools/list` request.
+  A collector must accept them before it receives events from this version.
+  The hosted Console does.
 
 ### Added
 
