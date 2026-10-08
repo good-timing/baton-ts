@@ -81,12 +81,17 @@ export function buildSeamAugmentations(options: {
   injectedToolNames: string[];
   intentParamNames: string[];
   intentParamMode: "optional" | "required" | "off";
+  requiredParamNames: string[];
 }): Record<string, unknown> {
   return {
     injected_tools: [...options.injectedToolNames].sort(),
     intent_param:
       options.intentParamMode !== "off"
-        ? { names: [...options.intentParamNames].sort(), mode: options.intentParamMode }
+        ? {
+            names: [...options.intentParamNames].sort(),
+            required_names: [...options.requiredParamNames].sort(),
+            mode: options.intentParamMode,
+          }
         : null,
     instructions_suffix: true,
   };

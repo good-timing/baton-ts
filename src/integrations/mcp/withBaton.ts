@@ -148,8 +148,15 @@ import {
   INTENT_SOURCE_PARAM,
   OVERALL_TASK_PARAM_NAME,
   USER_GOAL_PARAM_NAME,
+  requiredParamNames,
 } from "./llmText.js";
-import { extraEnvelope, extraMeta, observeTransport, type Extra } from "./mcpTypes.js";
+import {
+  extraEnvelope,
+  extraMeta,
+  isThenable,
+  observeTransport,
+  type Extra,
+} from "./mcpTypes.js";
 import { ProactiveTracker } from "./proactiveTracker.js";
 import { detectAgentRuntime, UNKNOWN_AGENT_RUNTIME } from "./runtimeAdapter.js";
 import { resolveSessionId } from "./sessionResolution.js";
@@ -159,7 +166,7 @@ import {
 } from "./principalResolution.js";
 import { SessionCounter } from "./sessionCounter.js";
 import {
-  advertiseUserGoalRequired,
+  advertiseIntentParamsRequired,
   injectGoalParams,
   injectGoalParamsV2,
   toolInputJsonSchema,
@@ -919,6 +926,7 @@ async function maybeEmitSurfaceSnapshot(ctx: WrapContext): Promise<void> {
     injectedToolNames: [ctx.annotationToolName],
     intentParamNames: [USER_GOAL_PARAM_NAME, EXPECTED_RESULT_PARAM_NAME, OVERALL_TASK_PARAM_NAME],
     intentParamMode: ctx.intentParamMode,
+    requiredParamNames: requiredParamNames(ctx.intentParamMode),
   });
   try {
     await ctx.emitSurface(ctx.fallbackSessionId, digest, { ...snapshot, seam_augmentations: seam });
@@ -1039,8 +1047,9 @@ function installRequestSeam(
 
 /**
  * The `tools/list` RESPONSE seam, which is what lets `intentParamMode:
- * "required"` advertise `user_goal` as required without the validator
- * enforcing it (see `schemaCompat.buildIntentFields` for why zod cannot).
+ * "required"` advertise `requiredParamNames` as required without the
+ * validator enforcing them (see `schemaCompat.buildIntentFields` for why zod
+ * cannot).
  *
  * ⚠ Fail-open, twice. A throw from the transform is logged and the SDK's own
  * result goes out untouched, because a vendor's `tools/list` may never break
@@ -1048,11 +1057,12 @@ function installRequestSeam(
  * which costs the advertisement and nothing else.
  */
 function installToolsListSeam(lowLevel: RequestHandlerInternals, ctx: WrapContext): void {
-  const isInjected = (toolName: string): boolean =>
-    ctx.paramRegistry.get(toolName)?.[USER_GOAL_PARAM_NAME] === "injected";
+  const names = requiredParamNames(ctx.intentParamMode);
+  const isInjected = (toolName: string, paramName: string): boolean =>
+    ctx.paramRegistry.get(toolName)?.[paramName] === "injected";
   const advertise = (result: unknown): unknown => {
     try {
-      return advertiseUserGoalRequired(result, isInjected);
+      return advertiseIntentParamsRequired(result, names, isInjected);
     } catch (err) {
       process.stderr.write(
         `baton: tools/list advertisement failed; serving the SDK's own result: ${String(err)}\n`,
@@ -1675,10 +1685,6 @@ async function emitRequestSideFailure(
   );
 }
 
-function isThenable(value: unknown): value is PromiseLike<unknown> {
-  return typeof (value as { then?: unknown } | null | undefined)?.then === "function";
-}
-
 /** Wrap the entry's CURRENT dispatch target iff it isn't already Baton's
  * wrapper. The `BATON_WRAPPED` tag lives on the wrapped FUNCTION, not the
  * entry object, so a `.update()` that swaps in a fresh vendor callback
@@ -1925,9 +1931,6 @@ function install(
   // the server's name as an input, two resolutions could register one name
   // while the wrapper skips another and the instructions cite a third.
   const annotationToolName = resolveAnnotationToolName(serverName, config);
-  // "required" by default since 2026-09-15 (Ujwal, #features): advertised
-  // through the `tools/list` seam, never enforced, so the default asks every
-  // agent for `user_goal` and refuses no call that omits it.
   const intentParamMode: IntentParamMode = config.intentParamMode ?? "required";
   const counter = new SessionCounter();
   const fallbackSessionId = `sdk-${uuid7()}`;

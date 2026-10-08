@@ -18,6 +18,21 @@
   `unknown` there for any client the SDK cannot recognise from the request
   itself, because the handshake is not on the request's server.
 
+### Changed
+
+- **`expected_result` is advertised as required too.** Under the default
+  `intentParamMode: "required"`, `tools/list` now lists `user_goal` and
+  `expected_result` in each wrapped tool's `required`, as the Python SDK does
+  since 0.8.12, and `expected_result`'s description opens "REQUIRED.".
+  Neither is enforced: a call that omits them still reaches your handler.
+  `overall_task` stays optional. `surface_snapshot` reports the two names in
+  `seam_augmentations.intent_param.required_names`.
+- **`resolvePrincipal` has 5 seconds to answer.** A hook that has not answered
+  by then is given up on, and the call is sent without a principal. Before,
+  a hook waiting on a lookup that never returned held the tool call open for
+  as long as it waited. This bounds an async hook. A hook that blocks
+  synchronously still cannot be interrupted.
+
 ### Fixed
 
 - **The CommonJS build loads under Jest.** `dist/index.cjs` required `uuid`,

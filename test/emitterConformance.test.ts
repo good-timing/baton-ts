@@ -435,20 +435,9 @@ describe("cross-SDK emitter conformance (Phase 3)", () => {
     }
   });
 
-  // -------------------------------------------------------------------------
-  // X-2 — the producer-parity pin. `intent_param_mode` is ONE SPELLING with
-  // TWO MEANINGS across producers, and until 2026-09-01 no conformance test
-  // could see the difference: Python advertised `user_goal` as required and
-  // served the omitting call, TypeScript built a non-optional zod field on
-  // the VENDOR'S schema and refused it. Same config value, opposite effect on
-  // a customer's traffic, and the vectors cannot catch it because they carry
-  // no intent-bearing call (see the coverage gap in this file's header).
-  //
-  // So the assertion is behavioural and local, and it is deliberately stated
-  // as the SEMANTIC rather than as the implementation: fail-open. Whatever
-  // this package does about advertising, it must never be the reason a
-  // vendor's own call is refused.
-  // -------------------------------------------------------------------------
+  // X-2: the vectors carry no intent-bearing call, so the two producers'
+  // handling of `required` is compared here by behaviour: advertised, and
+  // never the reason a vendor's own call is refused.
   it("X-2: `required` never refuses a vendor call that omits user_goal", async () => {
     const sink = new CapturingSink();
     const server = new McpServer({ name: "parity", version: "1.0.0" });
@@ -497,12 +486,7 @@ describe("cross-SDK emitter conformance (Phase 3)", () => {
     ).toBeNull();
   });
 
-  it("X-2: `required` advertises user_goal after the vendor's own, as Python does", async () => {
-    // Flipped 2026-09-15. This pinned the one half TypeScript could not match:
-    // Python advertises `user_goal` as required by editing the rendered JSON
-    // Schema of a `tools/list` response, and this package had no such hook.
-    // It has one now, so the producers agree: Python appends the name to the
-    // tool's advertised `required`, and so does this.
+  it("X-2: `required` advertises both names after the vendor's own, as Python does", async () => {
     const advertised = async (mode: "optional" | "required") => {
       const server = new McpServer({ name: "parity", version: "1.0.0" });
       server.registerTool(
@@ -530,8 +514,9 @@ describe("cross-SDK emitter conformance (Phase 3)", () => {
     const asRequired = await advertised("required");
     // The vendor's own requirement survives both; ours is appended after it.
     expect(asOptional.required).toEqual(["name"]);
-    expect(asRequired.required).toEqual(["name", "user_goal"]);
+    expect(asRequired.required).toEqual(["name", "user_goal", "expected_result"]);
     expect(asRequired.properties).toHaveProperty("user_goal");
+    expect(asRequired.properties).toHaveProperty("expected_result");
   });
 
   it("reports the client that declared itself, over the claudecode/* heuristic", () => {

@@ -224,3 +224,7 @@ export function extraHeaders(extra: Extra): Headers | null {
   }
   return null;
 }
+
+export function isThenable(value: unknown): value is PromiseLike<unknown> {
+  return typeof (value as { then?: unknown } | null | undefined)?.then === "function";
+}

@@ -91,6 +91,8 @@ withBaton(server, {
 
 ⚠ **They read the claims from `authInfo.extra`.** The MCP SDK's `AuthInfo` has no `claims` field, so these hooks expect your token verifier to put the decoded JWT claims (`sub`, `iss`, `email`) at the top level of `extra`. If yours keeps them elsewhere, write the three-line hook that reads them from there. A token exists only on HTTP with auth configured; on stdio, write a hook that names the user from whatever you authenticated them with.
 
+The hook runs on every call, before your handler. If it has not answered after 5 seconds, the SDK stops waiting and that call is sent without a principal. That covers an async hook waiting on a slow lookup. A hook that blocks synchronously cannot be interrupted, so keep the work in it async.
+
 The id is sent exactly as your hook returns it, so the hook decides what is safe to send. To send a pseudonym instead, hash the id inside your hook and return `form: "hashed"` with it.
 
 ## Not capturing responses at all

@@ -63,8 +63,8 @@ const EMPTY_OBJECT_JSON_SCHEMA = { type: "object", properties: {} };
  * Python's JSON-schema-dict injection has no equivalent loss (JSON Schema
  * has no refinement concept to lose); this is a TS-specific, accepted gap.
  *
- * `intentParamMode` selects only `user_goal`'s description label ("REQUIRED."
- * or "OPTIONAL."). It never makes a field enforcing: the advertisement of
+ * `intentParamMode` selects only the description labels ("REQUIRED." or
+ * "OPTIONAL."). It never makes a field enforcing: the advertisement of
  * `required` happens on the `tools/list` RESPONSE, in withBaton.ts, and
  * `buildIntentFields` says why it cannot happen here.
  */
@@ -94,8 +94,8 @@ export function injectGoalParams(
 
 /** The intent fields to splice, and what each name's disposition is. Shared
  * by both SDK majors so the two injection paths cannot drift on which
- * params exist, which are promoted by `mode`, or when a vendor's own field
- * of the same name wins. */
+ * params exist, how `mode` labels them, or when a vendor's own field of the
+ * same name wins. */
 function buildIntentFields(
   existingShape: Record<string, unknown>,
   zodImpl: StringFieldFactory,
@@ -107,49 +107,12 @@ function buildIntentFields(
   const dispositions: IntentParamDispositions = {};
   const toInject: Record<string, unknown> = {};
 
-  // EVERY injected field is optional in the zod schema, in EVERY mode. That
-  // is the change of 2026-09-01 (D7 in baton-internal
-  // `intent_param_injection.md`), not an oversight.
-  //
-  // `required` used to build a non-optional zod field here, on the VENDOR'S
-  // OWN schema, so an agent that omitted `user_goal` had its call refused by
-  // the vendor's server: Baton breaking a customer's product to collect a
-  // telemetry string. For a wrapper whose whole claim is that it does not
-  // change how the wrapped server behaves, that is the wrong trade at any
-  // capture rate, so `required` means what it means in the proxy and in
-  // Python: ADVERTISED as required, never enforced.
-  //
-  // The advertisement cannot come from a zod expression, and the reason is
-  // structural. Measured 2026-09-01 against both zod majors this package
-  // supports:
-  //
-  //   zod v4  .optional()            -> required: ["a"]              parses: true
-  //   zod v4  union([string,undef])  -> required: ["a","user_goal"]  parses: FALSE
-  //   zod v3  .optional()            -> required: ["a"]              parses: true
-  //   zod v3  union([string,undef])  -> required: ["a"]              parses: true
-  //
-  // In v4 advertised-required and enforced are the same bit; in v3 the
-  // advertisement is unreachable at all. Python holds the two apart by
-  // editing the rendered JSON Schema of a `tools/list` RESPONSE, and since
-  // 2026-09-15 this package does the same: withBaton.ts wraps the SDK's
-  // `tools/list` handler and `advertiseUserGoalRequired` (below) appends
-  // `user_goal` to each injected tool's advertised `required`. The zod field
-  // built here stays optional, so validation is unchanged and a call that
-  // omits `user_goal` still reaches the vendor's handler.
-  //
-  // What `intentParamMode` still selects here is the description's leading
-  // label, so the text never contradicts the schema it ships inside.
-  if (USER_GOAL_PARAM_NAME in existingShape) {
-    dispositions[USER_GOAL_PARAM_NAME] = "native";
-  } else {
-    dispositions[USER_GOAL_PARAM_NAME] = "injected";
-    toInject[USER_GOAL_PARAM_NAME] = zodImpl
-      .string()
-      .optional()
-      .describe(buildUserGoalParamDescription({ intentParamMode }));
-  }
-
+  // Every field is optional in the zod schema, in every mode: a required one
+  // would make the vendor's server refuse a call that omits it. Zod cannot
+  // advertise required without enforcing it, so `required` is advertised on
+  // the `tools/list` response instead, by `advertiseIntentParamsRequired`.
   for (const [name, buildDescription] of [
+    [USER_GOAL_PARAM_NAME, buildUserGoalParamDescription],
     [EXPECTED_RESULT_PARAM_NAME, buildExpectedResultParamDescription],
     [OVERALL_TASK_PARAM_NAME, buildOverallTaskParamDescription],
   ] as const) {
@@ -157,7 +120,7 @@ function buildIntentFields(
       dispositions[name] = "native";
     } else {
       dispositions[name] = "injected";
-      toInject[name] = zodImpl.string().optional().describe(buildDescription());
+      toInject[name] = zodImpl.string().optional().describe(buildDescription({ intentParamMode }));
     }
   }
 
@@ -203,7 +166,7 @@ function buildIntentFields(
  * `injectGoalParams`; it is not changed here because it goes through
  * `objectFromShape` and the zod-mini objects 1.x itself renders.
  *
- * `intentParamMode` selects the `user_goal` label only, as in
+ * `intentParamMode` selects the description labels only, as in
  * `injectGoalParams` above.
  */
 export function injectGoalParamsV2(
@@ -236,34 +199,35 @@ export function injectGoalParamsV2(
 
 /**
  * The advertisement half of `intentParamMode: "required"`, applied to a
- * RENDERED `tools/list` result: `user_goal` is appended to the `required`
- * array (created when absent) of every tool `isInjected` names, and nothing
- * else changes. Copy on write, so the SDK's own result, and anything it
- * shares with a memo, is never mutated, and a caller that catches a throw
- * from here can serve the original untouched.
+ * rendered `tools/list` result: each of `names` that `isInjected` says Baton
+ * added to a tool is appended to that tool's `required` array.
  *
- * Only the RESPONSE changes. The zod schema the SDK validates with is never
- * touched, so a call omitting `user_goal` still passes validation and still
- * reaches the vendor's handler: advertised as required, never enforced.
+ * Copy on write, so a caller that catches a throw from here can serve the
+ * original. Only the response changes; the zod schema stays optional, which
+ * is what keeps the names advertised and never enforced
+ * (`intentAdvertise.test.ts`, "serves a call with NEITHER name").
  */
-export function advertiseUserGoalRequired(
+export function advertiseIntentParamsRequired(
   result: unknown,
-  isInjected: (toolName: string) => boolean,
+  names: readonly string[],
+  isInjected: (toolName: string, paramName: string) => boolean,
 ): unknown {
   const tools = (result as { tools?: unknown } | null | undefined)?.tools;
   if (!Array.isArray(tools)) return result;
   let changed = false;
   const advertised = tools.map((tool: unknown) => {
     const entry = tool as { name?: unknown; inputSchema?: unknown } | null;
-    if (typeof entry?.name !== "string" || !isInjected(entry.name)) return tool;
-    const schema = entry.inputSchema as { required?: unknown } | null | undefined;
+    const toolName = entry?.name;
+    if (typeof toolName !== "string") return tool;
+    const schema = entry?.inputSchema as { required?: unknown } | null | undefined;
     if (!schema || typeof schema !== "object") return tool;
     const declared: unknown = schema.required ?? [];
     if (!Array.isArray(declared)) return tool;
     const required = declared as unknown[];
-    if (required.includes(USER_GOAL_PARAM_NAME)) return tool;
+    const missing = names.filter((name) => isInjected(toolName, name) && !required.includes(name));
+    if (missing.length === 0) return tool;
     changed = true;
-    return { ...entry, inputSchema: { ...schema, required: [...required, USER_GOAL_PARAM_NAME] } };
+    return { ...entry, inputSchema: { ...schema, required: [...required, ...missing] } };
   });
   return changed ? { ...(result as Record<string, unknown>), tools: advertised } : result;
 }

@@ -14,6 +14,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { z } from "zod";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { withBaton } from "../../../src/integrations/mcp/withBaton.js";
+import { HOOK_TIMEOUT_MS } from "../../../src/integrations/mcp/principalResolution.js";
 import { CLIENT_INFO_META_KEY } from "../../../src/integrations/mcp/runtimeAdapter.js";
 import type { BatonConfig } from "../../../src/integrations/mcp/config.js";
 import { identityScrub } from "../../../src/scrub.js";
@@ -700,10 +701,7 @@ describe("withBaton — intent-param injection", () => {
     sink = new CapturingSink();
   });
 
-  it("injects user_goal/expected_result by default, advertising only user_goal as required", async () => {
-    // The default moved from "optional" to "required" on 2026-09-15, so the
-    // advertised `required` gains `user_goal` (and only it). Enforcement is
-    // unchanged: see "intentParamMode 'required' does NOT refuse" below.
+  it("injects the intent params by default, advertising user_goal and expected_result as required", async () => {
     const server = new McpServer({ name: "vendor", version: "1.0.0" });
     registerTools(server);
     withBaton(server, {
@@ -719,7 +717,8 @@ describe("withBaton — intent-param injection", () => {
 
     expect(echo.inputSchema.properties).toHaveProperty("user_goal");
     expect(echo.inputSchema.properties).toHaveProperty("expected_result");
-    expect(echo.inputSchema.required).toEqual(["text", "user_goal"]);
+    expect(echo.inputSchema.properties).toHaveProperty("overall_task");
+    expect(echo.inputSchema.required).toEqual(["text", "user_goal", "expected_result"]);
   });
 
   it("does not add a schema to a tool registered with none (zero-arg tools are left alone)", async () => {
@@ -872,12 +871,6 @@ describe("withBaton — intent-param injection", () => {
     });
   });
 
-  // 2026-09-01 (D7). These two tests asserted the OPPOSITE until today: that
-  // `required` put `user_goal` into the vendor's own required array. It did,
-  // and the consequence was that an agent omitting the param had its call
-  // refused by the VENDOR'S server — Baton breaking a customer's product to
-  // collect a telemetry string. `required` now means what it means in the
-  // proxy: never enforced.
   it("intentParamMode 'required' does NOT refuse a call that omits user_goal", async () => {
     const server = new McpServer({ name: "vendor", version: "1.0.0" });
     registerTools(server);
@@ -890,8 +883,6 @@ describe("withBaton — intent-param injection", () => {
     });
 
     const client = await connectClient(server);
-    // The behaviour that matters, asserted through a real client: the call is
-    // SERVED. Before today this rejected, naming `user_goal`.
     const res = (await client.callTool({
       name: "echo",
       arguments: { text: "hi" },
@@ -906,13 +897,7 @@ describe("withBaton — intent-param injection", () => {
     expect(echo.inputSchema.required).toContain("text");
   });
 
-  it("intentParamMode 'required' advertises user_goal as required, and nothing else changes", async () => {
-    // Flipped 2026-09-15. This test used to pin the opposite: that the two
-    // modes advertised the same schema, because this package had no
-    // `tools/list` hook and zod cannot advertise a field it does not enforce.
-    // The hook exists now (`installToolsListSeam` in withBaton.ts) and edits
-    // the RESPONSE, never the zod schema, which is why the test above this one
-    // still holds: the omitting call is served.
+  it("intentParamMode 'required' advertises two names as required, and nothing else changes", async () => {
     const advertised = async (mode: "optional" | "required") => {
       const server = new McpServer({ name: "vendor", version: "1.0.0" });
       server.registerTool(
@@ -935,20 +920,24 @@ describe("withBaton — intent-param injection", () => {
     const asOptional = await advertised("optional");
     const asRequired = await advertised("required");
     expect(asOptional.required).toBeUndefined();
-    expect(asRequired.required).toEqual(["user_goal"]);
+    expect(asRequired.required).toEqual(["user_goal", "expected_result"]);
 
-    // Apart from `required`, the only difference is the label on user_goal's
-    // own description, which names the mode.
+    // Apart from `required`, the only difference is the label on those two
+    // params' descriptions, which names the mode.
     type Advertised = typeof asRequired;
     const properties = (s: Advertised) => s.properties as Record<string, { description?: string }>;
     expect(properties(asRequired).user_goal!.description).toMatch(/^REQUIRED\. /);
     expect(properties(asOptional).user_goal!.description).toMatch(/^OPTIONAL\. /);
+    expect(properties(asRequired).expected_result!.description).toMatch(/^REQUIRED\. /);
+    expect(properties(asOptional).expected_result!.description).toMatch(/^OPTIONAL\. /);
+    expect(properties(asRequired).overall_task).toEqual(properties(asOptional).overall_task);
     const unlabelled = (s: Advertised) => ({
       ...s,
       required: undefined,
       properties: {
         ...properties(s),
         user_goal: { ...properties(s).user_goal, description: undefined },
+        expected_result: { ...properties(s).expected_result, description: undefined },
       },
     });
     expect(unlabelled(asRequired)).toEqual(unlabelled(asOptional));
@@ -1058,7 +1047,8 @@ describe("withBaton — surface_snapshot", () => {
       injected_tools: ["vendor_annotate"],
       intent_param: {
         names: ["expected_result", "overall_task", "user_goal"],
-        // The default since 2026-09-15; this install sets no mode.
+        required_names: ["expected_result", "user_goal"],
+        // This install sets no mode, so this is the default.
         mode: "required",
       },
       instructions_suffix: true,
@@ -1621,6 +1611,35 @@ describe("withBaton principal", () => {
     expect(carriers.some((e) => e.event_type === "annotation")).toBe(true);
     return carriers;
   }
+
+  it("serves the vendor's result, without a principal, when the hook never answers", async () => {
+    const sink = new CapturingSink();
+    const server = new McpServer({ name: "vendor", version: "1.0.0" });
+    withBaton(server, {
+      vendorId: "acme",
+      vendorDisplayName: "Acme",
+      consentToken: "ct",
+      tenantId: TENANT,
+      sink,
+      resolvePrincipal: () => new Promise<null>(() => {}),
+    });
+    registerTools(server);
+    const client = await connectClient(server);
+    const stderr = vi.spyOn(process, "emitWarning").mockImplementation(() => {});
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const pending = client.callTool({ name: "echo", arguments: { text: "hi" } });
+      await vi.advanceTimersByTimeAsync(HOOK_TIMEOUT_MS);
+      const res = (await pending) as { isError?: boolean };
+      expect(res.isError).toBeFalsy();
+    } finally {
+      vi.useRealTimers();
+      stderr.mockRestore();
+    }
+    const legs = sink.events.filter((e) => e.event_type.startsWith("tool_call"));
+    expect(legs.map((e) => e.event_type)).toEqual(["tool_call_start", "tool_call_end"]);
+    for (const event of legs) expect(event.principal).toBeNull();
+  });
 
   it("sends the id as the hook returned it and calls it raw, on both emit paths", async () => {
     const events = await drive(new CapturingSink(), {

@@ -1,6 +1,7 @@
 /**
- * `intentParamMode: "required"` advertises `user_goal` as required and never
- * enforces it, on both SDK majors, through a real client.
+ * `intentParamMode: "required"` advertises `user_goal` and `expected_result`
+ * as required and never enforces them, on both SDK majors, through a real
+ * client.
  *
  * The advertisement is made on the `tools/list` RESPONSE by the seam in
  * withBaton.ts, and the zod schema stays optional. So the cases below ask two
@@ -13,7 +14,11 @@ import { beforeEach, describe, expect, it } from "vitest";
 
 import { withBaton } from "../../../src/integrations/mcp/withBaton.js";
 import type { BatonConfig } from "../../../src/integrations/mcp/config.js";
-import { buildUserGoalParamDescription } from "../../../src/integrations/mcp/llmText.js";
+import {
+  buildExpectedResultParamDescription,
+  buildUserGoalParamDescription,
+  requiredParamNames,
+} from "../../../src/integrations/mcp/llmText.js";
 import { CapturingSink, MAJORS, type Major } from "./_majors.js";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -26,7 +31,8 @@ beforeEach(() => {
   vendorSaw = [];
 });
 
-/** One tool Baton injects into, and one that declares its own `user_goal`. */
+/** One tool Baton injects into, and one each that declares its own
+ * `user_goal` or `expected_result`. */
 function registerVendorTools(major: Major, server: any): void {
   major.tool(server, "lookup", { name: z.string() }, async (args: any) => {
     vendorSaw.push({ ...args });
@@ -36,6 +42,12 @@ function registerVendorTools(major: Major, server: any): void {
     server,
     "own_goal",
     { q: z.string(), user_goal: z.string().optional() },
+    async (args: any) => ({ content: [{ type: "text" as const, text: `q=${String(args.q)}` }] }),
+  );
+  major.tool(
+    server,
+    "own_expected",
+    { q: z.string(), expected_result: z.string().optional() },
     async (args: any) => ({ content: [{ type: "text" as const, text: `q=${String(args.q)}` }] }),
   );
 }
@@ -72,24 +84,52 @@ describe("the user_goal description", () => {
   });
 });
 
+describe("the expected_result description", () => {
+  it("leads with REQUIRED under 'required', as Python's does, and keeps the body", () => {
+    const body =
+      "One sentence: what a successful result should look like, so a " +
+      "silent/thin failure can be told apart from success.";
+    expect(buildExpectedResultParamDescription({ intentParamMode: "required" })).toBe(
+      `REQUIRED. ${body}`,
+    );
+    expect(buildExpectedResultParamDescription({ intentParamMode: "optional" })).toBe(
+      `OPTIONAL. ${body}`,
+    );
+    expect(buildExpectedResultParamDescription()).toBe(`OPTIONAL. ${body}`);
+  });
+});
+
+describe("requiredParamNames", () => {
+  it("names user_goal and expected_result under 'required', and nothing otherwise", () => {
+    expect(requiredParamNames("required")).toEqual(["user_goal", "expected_result"]);
+    expect(requiredParamNames("optional")).toEqual([]);
+    expect(requiredParamNames("off")).toEqual([]);
+  });
+});
+
 describe.each(MAJORS.map((m) => [m.label, m] as const))("on %s", (_label, major) => {
-  it("advertises user_goal as required under the default, and not on a tool that declares its own", async () => {
+  it("advertises both names as required under the default, and never one a tool declares itself", async () => {
     const server = major.make();
     registerVendorTools(major, server);
     const handle = install(server);
     const schemas = await listed(await major.connect(server));
 
-    expect(schemas.lookup.required).toEqual(["name", "user_goal"]);
+    expect(schemas.lookup.required).toEqual(["name", "user_goal", "expected_result"]);
     expect(schemas.lookup.properties.user_goal.description).toBe(
       buildUserGoalParamDescription({ intentParamMode: "required" }),
     );
-    // Declared by the vendor as optional, so it stays exactly as they wrote it.
-    expect(schemas.own_goal.required).toEqual(["q"]);
-    // Baton's own tool requires user_goal natively, and it is not listed twice.
+    expect(schemas.lookup.properties.expected_result.description).toBe(
+      buildExpectedResultParamDescription({ intentParamMode: "required" }),
+    );
+    // A name the vendor declared stays as they wrote it; the other is still Baton's.
+    expect(schemas.own_goal.required).toEqual(["q", "expected_result"]);
+    expect(schemas.own_expected.required).toEqual(["q", "user_goal"]);
+    // Baton's own tool is not wrapped, so nothing is added to it.
     expect(schemas[handle.annotationToolName].required).toEqual(["user_goal"]);
+    expect(schemas.lookup.required).not.toContain("overall_task");
   });
 
-  it("serves a call WITHOUT user_goal: the vendor's result, no error, no intent on the event", async () => {
+  it("serves a call with NEITHER name: the vendor's result, no error, no intent on the event", async () => {
     const server = major.make();
     registerVendorTools(major, server);
     install(server);
@@ -102,11 +142,12 @@ describe.each(MAJORS.map((m) => [m.label, m] as const))("on %s", (_label, major)
     expect(startEvent().payload).toMatchObject({
       tool_name: "lookup",
       call_intent: null,
+      call_expected: null,
       intent_source: null,
     });
   });
 
-  it("carries user_goal onto the start event when the call sends it, and strips it from the vendor", async () => {
+  it("carries both onto the start event when the call sends them, and strips them from the vendor", async () => {
     const server = major.make();
     registerVendorTools(major, server);
     install(server);
@@ -114,17 +155,22 @@ describe.each(MAJORS.map((m) => [m.label, m] as const))("on %s", (_label, major)
 
     const res = await client.callTool({
       name: "lookup",
-      arguments: { name: "alice", user_goal: "open the customer record" },
+      arguments: {
+        name: "alice",
+        user_goal: "open the customer record",
+        expected_result: "one record for alice",
+      },
     });
     expect(res.isError).toBeFalsy();
     expect(vendorSaw).toEqual([{ name: "alice" }]);
     expect(startEvent().payload).toMatchObject({
       call_intent: "open the customer record",
+      call_expected: "one record for alice",
       intent_source: "injected_param",
     });
   });
 
-  it("advertises no required user_goal under 'optional'", async () => {
+  it("advertises neither name as required under 'optional'", async () => {
     const server = major.make();
     registerVendorTools(major, server);
     install(server, { intentParamMode: "optional" });
@@ -132,6 +178,7 @@ describe.each(MAJORS.map((m) => [m.label, m] as const))("on %s", (_label, major)
 
     expect(schemas.lookup.required).toEqual(["name"]);
     expect(schemas.lookup.properties.user_goal.description).toMatch(/^OPTIONAL\. /);
+    expect(schemas.lookup.properties.expected_result.description).toMatch(/^OPTIONAL\. /);
   });
 
   it("emits the same surface hash under 'optional' and 'required'", async () => {
@@ -145,7 +192,7 @@ describe.each(MAJORS.map((m) => [m.label, m] as const))("on %s", (_label, major)
       const snapshot = sink.events.find((e) => e.event_type === "surface_snapshot")!;
       return snapshot.payload as unknown as {
         surface_hash: string;
-        seam_augmentations: { intent_param: { mode: string } };
+        seam_augmentations: { intent_param: { mode: string; required_names: string[] } };
       };
     };
 
@@ -155,6 +202,11 @@ describe.each(MAJORS.map((m) => [m.label, m] as const))("on %s", (_label, major)
     // The mode is reported beside the hash, never inside it.
     expect(optional.seam_augmentations.intent_param.mode).toBe("optional");
     expect(required.seam_augmentations.intent_param.mode).toBe("required");
+    expect(optional.seam_augmentations.intent_param.required_names).toEqual([]);
+    expect(required.seam_augmentations.intent_param.required_names).toEqual([
+      "expected_result",
+      "user_goal",
+    ]);
   });
 
   it("wraps a tools/list handler the SDK installs AFTER withBaton", async () => {
@@ -165,8 +217,8 @@ describe.each(MAJORS.map((m) => [m.label, m] as const))("on %s", (_label, major)
     registerVendorTools(major, server);
     const schemas = await listed(await major.connect(server));
 
-    expect(schemas.lookup.required).toEqual(["name", "user_goal"]);
-    expect(schemas.own_goal.required).toEqual(["q"]);
+    expect(schemas.lookup.required).toEqual(["name", "user_goal", "expected_result"]);
+    expect(schemas.own_goal.required).toEqual(["q", "expected_result"]);
   });
 
   it("wraps a tools/list handler that already exists at install", async () => {
@@ -178,6 +230,6 @@ describe.each(MAJORS.map((m) => [m.label, m] as const))("on %s", (_label, major)
     install(server);
     const schemas = await listed(await major.connect(server));
 
-    expect(schemas.lookup.required).toEqual(["name", "user_goal"]);
+    expect(schemas.lookup.required).toEqual(["name", "user_goal", "expected_result"]);
   });
 });

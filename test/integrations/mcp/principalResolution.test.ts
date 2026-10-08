@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   PRINCIPAL_FORM_HASHED,
@@ -8,6 +8,7 @@ import {
 } from "../../../src/identity.js";
 import { extraHeaders } from "../../../src/integrations/mcp/mcpTypes.js";
 import {
+  HOOK_TIMEOUT_MS,
   resolveCallPrincipal,
   type PrincipalResolutionContext,
 } from "../../../src/integrations/mcp/principalResolution.js";
@@ -184,6 +185,91 @@ describe("resolveCallPrincipal fail-open", () => {
       await resolveCallPrincipal(async, call),
     );
     expect(await resolveCallPrincipal(sync, call)).not.toBeNull();
+  });
+
+  describe("when the hook is slow", () => {
+    afterEach(() => {
+      vi.useRealTimers();
+      vi.restoreAllMocks();
+    });
+
+    const answerAfter = (ms: number) => () =>
+      new Promise<{ principalId: string }>((resolve) => {
+        setTimeout(() => resolve({ principalId: "employee-4417" }), ms);
+      });
+
+    it("keeps an answer that lands inside the budget", async () => {
+      vi.useFakeTimers();
+      const pending = resolveCallPrincipal(answerAfter(HOOK_TIMEOUT_MS - 1), call);
+      await vi.advanceTimersByTimeAsync(HOOK_TIMEOUT_MS - 1);
+      expect((await pending)?.id).toBe("employee-4417");
+    });
+
+    it("gives up on a hook that never answers, and warns", async () => {
+      vi.useFakeTimers();
+      const { seen } = spyWarnings();
+      const never = () => new Promise<null>(() => {});
+
+      let settled = false;
+      const pending = resolveCallPrincipal(never, call).then((p) => {
+        settled = true;
+        return p;
+      });
+      await vi.advanceTimersByTimeAsync(HOOK_TIMEOUT_MS - 1);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(await pending).toBeNull();
+      expect(seen.join("")).toMatch(/baton: resolvePrincipal did not answer within 5s/);
+    });
+
+    it("ignores a hook that rejects after the budget, without an unhandled rejection", async () => {
+      vi.useFakeTimers();
+      spyWarnings();
+      const unhandled = vi.fn();
+      process.on("unhandledRejection", unhandled);
+      const lateBoom = () =>
+        new Promise<null>((_resolve, reject) => {
+          setTimeout(() => reject(new Error("vendor bug, late")), HOOK_TIMEOUT_MS * 2);
+        });
+
+      const pending = resolveCallPrincipal(lateBoom, call);
+      await vi.advanceTimersByTimeAsync(HOOK_TIMEOUT_MS);
+      expect(await pending).toBeNull();
+      await vi.advanceTimersByTimeAsync(HOOK_TIMEOUT_MS);
+      vi.useRealTimers();
+      await new Promise((resolve) => setImmediate(resolve));
+      process.off("unhandledRejection", unhandled);
+      expect(unhandled).not.toHaveBeenCalled();
+    });
+
+    it("leaves no timer behind once the hook has answered or failed", async () => {
+      vi.useFakeTimers();
+      await resolveCallPrincipal(() => Promise.resolve({ principalId: "employee-4417" }), call);
+      expect(vi.getTimerCount()).toBe(0);
+      await resolveCallPrincipal(() => Promise.reject(new Error("vendor bug")), call);
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it("does not hold the process open while it waits", async () => {
+      const unref = vi.spyOn(globalThis, "setTimeout");
+      await resolveCallPrincipal(() => Promise.resolve({ principalId: "employee-4417" }), call);
+      const timer = unref.mock.results[0]!.value as NodeJS.Timeout;
+      expect(timer.hasRef()).toBe(false);
+    });
+
+    it("still resolves the principal where a timer is a plain number", async () => {
+      const real = globalThis.setTimeout;
+      vi.stubGlobal("setTimeout", (fn: () => void, ms: number) => Number(real(fn, ms)));
+      try {
+        const hook = () =>
+          new Promise<{ principalId: string }>((resolve) => {
+            setImmediate(() => resolve({ principalId: "employee-4417" }));
+          });
+        expect((await resolveCallPrincipal(hook, call))?.id).toBe("employee-4417");
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    });
   });
 
   it("sends the form the hook stated, with the id untouched", async () => {

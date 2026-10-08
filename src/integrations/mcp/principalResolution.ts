@@ -17,7 +17,14 @@ import {
   principalFor,
 } from "../../identity.js";
 import { warn } from "./annotationName.js";
-import { type AuthInfo, type Extra, extraAuthInfo, extraHeaders, extraMeta } from "./mcpTypes.js";
+import {
+  type AuthInfo,
+  type Extra,
+  extraAuthInfo,
+  extraHeaders,
+  extraMeta,
+  isThenable,
+} from "./mcpTypes.js";
 
 /** What a vendor's `resolvePrincipal` hook is handed.
  *
@@ -85,6 +92,34 @@ function buildPrincipalResolutionContext(
   };
 }
 
+/** How long a vendor's hook may take, the same budget Python gives one. */
+export const HOOK_TIMEOUT_MS = 5000;
+
+const TIMED_OUT = Symbol("hookTimedOut");
+
+async function withinHookBudget(answer: unknown): Promise<unknown> {
+  if (!isThenable(answer)) return answer;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<typeof TIMED_OUT>((resolve) => {
+    timer = setTimeout(() => resolve(TIMED_OUT), HOOK_TIMEOUT_MS);
+    // A pending hook must not hold a finished process open. Outside Node a
+    // timer is a number with no `unref`: `principalResolution.test.ts`,
+    // "where a timer is a plain number".
+    (timer as { unref?: () => void }).unref?.();
+  });
+  try {
+    const first = await Promise.race([answer, deadline]);
+    if (first !== TIMED_OUT) return first;
+    warn(
+      `baton: resolvePrincipal did not answer within ${String(HOOK_TIMEOUT_MS / 1000)}s; ` +
+        "this call is sent without a principal.",
+    );
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 let warnedPreRenameShape = false;
 
 /** A hook still returning the pre-0.3.5 `{ userId }` resolves nobody on every
@@ -107,10 +142,8 @@ function warnIfPreRenameShape(result: unknown): void {
  * analytics and a vendor's own bug in their resolver may not fail their tool
  * call (SPEC §11.2 fail-open). The prior art converged on the identical rule.
  *
- * ⚠ **No timeout, and that is a DIVERGENCE from Python.** Python runs vendor
- * hooks off the event loop under a 5s budget (`integrations/_hooks.py`); this
- * arm awaits the hook inline, as it does `scrubber`, the only other vendor
- * code on the per-call path. A hook that blocks stalls this request.
+ * A hook that has not answered within `HOOK_TIMEOUT_MS` is given up on, which
+ * cannot bound one that blocks synchronously.
  */
 export async function resolveCallPrincipal(
   hook: ResolvePrincipalHook | undefined,
@@ -123,7 +156,7 @@ export async function resolveCallPrincipal(
   if (hook === undefined) return null;
   try {
     const context = buildPrincipalResolutionContext(call.extra, call.toolName, call.arguments);
-    const result: unknown = await hook(context);
+    const result: unknown = await withinHookBudget(hook(context));
     // Reading the result stays inside the try: a getter or Proxy on what the
     // hook returned is still the vendor's code.
     const principal = normalizePrincipal(result);

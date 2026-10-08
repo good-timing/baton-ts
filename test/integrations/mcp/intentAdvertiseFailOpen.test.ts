@@ -20,7 +20,7 @@ vi.mock("../../../src/integrations/mcp/schemaCompat.js", async (importOriginal) 
   const actual = await importOriginal<Record<string, unknown>>();
   return {
     ...actual,
-    advertiseUserGoalRequired: () => {
+    advertiseIntentParamsRequired: () => {
       throw new Error("seam boom");
     },
   };

@@ -125,10 +125,10 @@ export interface BatonConfig {
   /** Per-tool intent-param injection (mirrors baton-extmcp's vendor-neutral
    * naming). `"required"` (default) injects `user_goal`/`expected_result`/
    * `overall_task` string params on every wrapped tool's advertised schema
-   * and ADVERTISES `user_goal` as required in `tools/list`, without enforcing
-   * it: a call that omits it still reaches your handler, and its event simply
-   * carries no intent. `"optional"` injects the same params and advertises
-   * none of them as required. `"off"` disables injection. The params are
+   * and ADVERTISES `user_goal` and `expected_result` as required in
+   * `tools/list`, without enforcing them: a call that omits them still reaches
+   * your handler, and its event simply carries no intent. `"optional"` injects
+   * the same params and advertises none of them as required. `"off"` disables injection. The params are
    * stripped before the vendor handler runs, so the tool never sees them.
    * This is what captures intent on runtimes that drop `instructions`
    * (notably Claude Desktop) — where the annotation tool alone yields
@@ -178,8 +178,9 @@ export interface BatonConfig {
    * token and a hook names the user from whatever the vendor authenticated.
    *
    * Never fails a tool call: a hook that throws or returns junk yields an
-   * anonymous call. ⚠ It is awaited INLINE with no timeout — a blocking hook
-   * stalls its own request.
+   * anonymous call. A hook that has not answered after 5 seconds is given up
+   * on, and that call is anonymous. ⚠ That only bounds an async hook: one that
+   * blocks synchronously holds the whole process, and nothing can interrupt it.
    *
    * The SDK sends what the hook returns and does nothing else to it: the id
    * as given, `form` to say whether the hook hashed it, and `displayName` for

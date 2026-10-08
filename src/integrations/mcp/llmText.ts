@@ -147,19 +147,21 @@ export const OVERALL_TASK_PARAM_NAME = "overall_task";
 export const INTENT_SOURCE_PARAM = "injected_param";
 
 // The leading label tracks `intentParamMode`: under "required" the
-// `tools/list` seam in withBaton.ts adds `user_goal` to the advertised
-// `required` list, so a description still opening "OPTIONAL." would
-// contradict the schema it ships inside. Only the label moves; the body is
-// the measured text. Mirrors Python's `build_user_goal_param_description`.
+// `tools/list` seam in withBaton.ts adds `requiredParamNames` to the
+// advertised `required` list, so a description still opening "OPTIONAL."
+// would contradict the schema it ships inside. Only the label moves; the body
+// is the measured text, as in Python's `_llm_text.py`.
 const USER_GOAL_PARAM_BODY =
   "One sentence: what the user is actually trying to accomplish " +
   "with this call (their goal, not a restatement of the arguments).";
 const USER_GOAL_PARAM_DESCRIPTION = "OPTIONAL. " + USER_GOAL_PARAM_BODY;
 const USER_GOAL_PARAM_DESCRIPTION_REQUIRED = "REQUIRED. " + USER_GOAL_PARAM_BODY;
 
-const EXPECTED_RESULT_PARAM_DESCRIPTION =
-  "OPTIONAL. One sentence: what a successful result should look like, so a " +
+const EXPECTED_RESULT_PARAM_BODY =
+  "One sentence: what a successful result should look like, so a " +
   "silent/thin failure can be told apart from success.";
+const EXPECTED_RESULT_PARAM_DESCRIPTION = "OPTIONAL. " + EXPECTED_RESULT_PARAM_BODY;
+const EXPECTED_RESULT_PARAM_DESCRIPTION_REQUIRED = "REQUIRED. " + EXPECTED_RESULT_PARAM_BODY;
 
 // The stability contract is the load-bearing design element: user_goal/
 // expected_result are call-scoped diagnostics that reword freely, so they
@@ -213,6 +215,19 @@ export function buildOverallTaskParamDescription(): string {
   return OVERALL_TASK_PARAM_DESCRIPTION;
 }
 
-export function buildExpectedResultParamDescription(): string {
-  return EXPECTED_RESULT_PARAM_DESCRIPTION;
+export function buildExpectedResultParamDescription(
+  options: { intentParamMode?: string } = {},
+): string {
+  return options.intentParamMode === "required"
+    ? EXPECTED_RESULT_PARAM_DESCRIPTION_REQUIRED
+    : EXPECTED_RESULT_PARAM_DESCRIPTION;
+}
+
+/** Which injected params `intentParamMode` advertises as required.
+ * `overall_task` is never one: a grouping label the agent is forced to invent
+ * splits one task into several. */
+export function requiredParamNames(intentParamMode: string): string[] {
+  return intentParamMode === "required"
+    ? [USER_GOAL_PARAM_NAME, EXPECTED_RESULT_PARAM_NAME]
+    : [];
 }
