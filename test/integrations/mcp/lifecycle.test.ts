@@ -233,17 +233,17 @@ describe.each(MAJORS)("resource and prompt lifecycles — $label", (major) => {
     expect(error).not.toHaveProperty("result");
   });
 
-  it("never asks the principal hook, on any of the four requests", async () => {
+  it("asks the principal hook once per request, with no tool name or arguments", async () => {
     const sink = new CapturingSink();
     const server = major.make();
     major.resource(server, "doc", "file:///doc.txt", () => ({
       contents: [{ uri: "file:///doc.txt", text: "x" }],
     }));
     major.prompt(server, "summarize", { topic: z.string() }, () => ({ messages: [] }));
-    let asked = 0;
+    const asked: unknown[] = [];
     install(server, sink, {
-      resolvePrincipal: () => {
-        asked += 1;
+      resolvePrincipal: (context) => {
+        asked.push({ toolName: context.toolName, arguments: context.arguments });
         return { principalId: "employee-1" };
       },
     });
@@ -254,12 +254,55 @@ describe.each(MAJORS)("resource and prompt lifecycles — $label", (major) => {
     await client.listPrompts();
     await client.getPrompt({ name: "summarize", arguments: { topic: "quarterly" } });
 
+    expect(asked).toEqual(Array(4).fill({ toolName: null, arguments: {} }));
     expect(sink.events).toHaveLength(8);
-    expect(asked).toBe(0);
-    expect(sink.events.map((e) => e.principal)).toEqual(Array(8).fill(null));
+    for (const event of sink.events) {
+      expect(event.principal, event.event_type).toEqual({
+        id: "employee-1",
+        source: "asserted",
+        form: "raw",
+      });
+    }
   });
 
-  it("carries the envelope a tool call does, with a null `principal` and `call_id`", async () => {
+  it("a failed read carries the principal too", async () => {
+    const sink = new CapturingSink();
+    const server = major.make();
+    major.resource(server, "doc", "file:///doc.txt", () => {
+      throw new Error("no such file");
+    });
+    install(server, sink, { resolvePrincipal: () => ({ principalId: "employee-1" }) });
+    const client = await major.connect(server);
+
+    await expect(client.readResource({ uri: "file:///doc.txt" })).rejects.toThrow();
+
+    expect(sink.events.map((e) => e.event_type)).toEqual([
+      "resource_read_start",
+      "resource_read_error",
+    ]);
+    expect(sink.events.map((e) => e.principal?.id)).toEqual(["employee-1", "employee-1"]);
+  });
+
+  it("a hook that throws costs the principal, not the read", async () => {
+    const sink = new CapturingSink();
+    const server = major.make();
+    major.resource(server, "doc", "file:///doc.txt", () => ({
+      contents: [{ uri: "file:///doc.txt", text: "x" }],
+    }));
+    install(server, sink, {
+      resolvePrincipal: () => {
+        throw new Error("the vendor's hook is broken");
+      },
+    });
+    const client = await major.connect(server);
+
+    const read = await client.readResource({ uri: "file:///doc.txt" });
+
+    expect(read.contents).toHaveLength(1);
+    expect(sink.events.map((e) => e.principal)).toEqual([null, null]);
+  });
+
+  it("carries the envelope a tool call does, with a null `call_id`, and a null `principal` when no hook is set", async () => {
     // `null`, not absent: `envelopeShape` defaults both members, and SPEC
     // §11.4 makes the two spellings equivalent.
     const sink = new CapturingSink();

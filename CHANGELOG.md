@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- **Resource and prompt events carry the person.** Until now they carried
+  none. `resolvePrincipal` now
+  also runs on every `resources/list`, `resources/read`, `prompts/list` and
+  `prompts/get` request, once per request, and its answer is on both events
+  of that request. As on a `tools/list` request, `toolName` is `null` and
+  `arguments` is empty. A hook that reads the headers or `authInfo` needs no
+  change.
+
 ## 0.5.3: a server built per request, the client as observed, and tool listings
 
 Two edits may be needed. A server that builds an `McpServer` per request

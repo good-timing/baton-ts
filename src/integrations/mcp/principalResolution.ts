@@ -45,11 +45,11 @@ export interface PrincipalResolutionContext {
   meta: Record<string, unknown> | null;
   /** The tool being called — the annotation tool's own name on that path, so a
    * hook can answer differently per call rather than per install. `null` on a
-   * `tools/list` request, which names no tool. */
+   * request that is not a tool call. */
   toolName: string | null;
   /** The call's arguments, AFTER Baton's injected intent params are stripped,
    * so a hook sees exactly what the vendor's own handler will. Empty on a
-   * `tools/list` request. */
+   * request that is not a tool call. */
   arguments: Record<string, unknown>;
   /** The validated access token for this request, read from wherever this
    * major keeps it — see `extraAuthInfo`. `null` on stdio and on any
@@ -69,8 +69,8 @@ export type ResolvePrincipalHook = (
 
 /** Build the hook's input from whichever major's context arrived.
  *
- * ⚠ **ONE factory, called by every emit path.** The tool-call wrapper, the
- * annotation tool and the tool listing go through here rather than each
+ * ⚠ **ONE factory, called by every emit path.** Every request that resolves
+ * a principal goes through here rather than each
  * assembling a context, because per-site assembly is exactly how the Python SDK ended up
  * with two adapters delivering different header shapes behind one declared
  * type — and no test could see it, because each path only ever tested itself.
@@ -137,7 +137,7 @@ function warnIfPreRenameShape(result: unknown): void {
  * ⚠ **Never throws.** A hook that raises, returns the wrong shape, or returns
  * `null` yields an anonymous request, not a failed one — `principal` is
  * additive analytics and a vendor's own bug in their resolver may not fail
- * their tool call or listing (SPEC §11.2 fail-open).
+ * their request (SPEC §11.2 fail-open).
  *
  * A hook that has not answered within `HOOK_TIMEOUT_MS` is given up on, which
  * cannot bound one that blocks synchronously.
@@ -149,7 +149,7 @@ export async function resolveCallPrincipal(
   // The context is built HERE — after the hook check, inside the try — and
   // the signature takes the raw call so a caller cannot do it the other way:
   // a server with no hook pays nothing, and a throw from the header read
-  // cannot escape into the vendor's tool call.
+  // cannot escape into the vendor's request.
   if (hook === undefined) return null;
   try {
     const context = buildPrincipalResolutionContext(call.extra, call.toolName, call.arguments);
@@ -169,7 +169,7 @@ export async function resolveCallPrincipal(
     });
   } catch {
     // Broad on purpose: this calls code a VENDOR wrote, and an identity read
-    // may not be able to fail a tool call. Nothing is logged to stdout — that
+    // may not be able to fail a request. Nothing is logged to stdout — that
     // stream is the MCP JSON-RPC frame (AGENTS.md boundary rule 2).
     return null;
   }

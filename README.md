@@ -110,7 +110,7 @@ withBaton(server, {
 
 ⚠ **They read the claims from `authInfo.extra`.** The MCP SDK's `AuthInfo` has no `claims` field, so these hooks expect your token verifier to put the decoded JWT claims (`sub`, `iss`, `email`) at the top level of `extra`. If yours keeps them elsewhere, write the three-line hook that reads them from there. A token exists only on HTTP with auth configured; on stdio, write a hook that names the user from whatever you authenticated them with.
 
-The hook runs on every tool call and every `tools/list` request, before your handler. On a `tools/list` request `toolName` is `null` and `arguments` is empty, so a hook that names the person from the headers or `authInfo` needs no change. If it has not answered after 5 seconds, the SDK stops waiting and that request is sent without a principal. That covers an async hook waiting on a slow lookup. A hook that blocks synchronously cannot be interrupted, so keep the work in it async.
+The hook runs on every tool call, every `tools/list` request and every resource and prompt request (list, read, get), before your handler. On a request that is not a tool call `toolName` is `null` and `arguments` is empty, so a hook that names the person from the headers or `authInfo` needs no change. If it has not answered after 5 seconds, the SDK stops waiting and that request is sent without a principal. That covers an async hook waiting on a slow lookup. A hook that blocks synchronously cannot be interrupted, so keep the work in it async.
 
 The id is sent exactly as your hook returns it, so the hook decides what is safe to send. To send a pseudonym instead, hash the id inside your hook and return `form: "hashed"` with it.
 
@@ -189,6 +189,9 @@ tells a consumer what happened, and here there is no marker. If your read fails
 with `could not parse ${body.slice(0, 200)}`, that content leaves your process
 under a mode you set to stop exactly that. Throw a message that names the
 resource, not its contents.
+
+These events carry the principal your `resolvePrincipal` hook returns
+([Who is calling](#who-is-calling)).
 
 ## Tool listings
 

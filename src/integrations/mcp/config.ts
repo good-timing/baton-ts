@@ -165,12 +165,13 @@ export interface BatonConfig {
    * envelope's `principal` (SPEC §11.4 rung 0), which emits
    * `source: "asserted"`. It is the only provenance this SDK has.
    *
-   * Called on every captured tool call, on the annotation tool and on every
-   * `tools/list` request, with an adapter-neutral
+   * Called on every captured tool call, on the annotation tool, on every
+   * `tools/list` request and on every resource and prompt request, with an
+   * adapter-neutral
    * {@link PrincipalResolutionContext}: headers folded to ONE case-insensitive
    * shape across both SDK majors, the request's `_meta`, the tool name, and
-   * the arguments the vendor's own handler will see. On a `tools/list` request
-   * the tool name is `null` and the arguments are empty. Return a `Principal`,
+   * the arguments the vendor's own handler will see. On a request that is not
+   * a tool call the tool name is `null` and the arguments are empty. Return a `Principal`,
    * or `null` for "no opinion about this caller".
    *
    * **This is the only identity mechanism, on both SDKs** (SPEC §11.4): unset,

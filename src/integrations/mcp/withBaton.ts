@@ -1095,13 +1095,8 @@ interface LifecycleSchemas {
  * both majors install all four handlers through the one `_requestHandlers` map
  * `installRequestSeam` already handles, lazily and in either order.
  *
- * ⚠ **No `principal` on the twelve resource and prompt events.** The vendor's
- * `resolvePrincipal` hook has no slot for a URI or a prompt name, and the
- * proxy stamps no principal on these types either. A tool listing is the
- * exception (`LifecycleSpec.resolvesPrincipal`): `toolList.test.ts`.
- *
- * ⚠ **No `call_id` either**, same reason: no producer mints one for these, so
- * a consumer pairing a start with its end has only SPEC §11.5.4's FIFO floor.
+ * ⚠ **No `call_id`**: no producer mints one for these, so a consumer pairing
+ * a start with its end has only SPEC §11.5.4's FIFO floor.
  * §11.4.4 records that rather than leaving it to be discovered.
  *
  * ⚠ **Fail-open throughout (SPEC §11.2).** Every event goes through `emit`,
@@ -1139,10 +1134,6 @@ interface LifecycleSpec {
   /** The `*_start` payload's `params` member, or `{}` where the family has
    * none. */
   startParams: (params: Record<string, unknown>) => Record<string, unknown>;
-  /** Ask the vendor's hook who sent the request. Only a tool listing does:
-   * on a server with no session id it is the one thing that ties a listing
-   * to the calls of the same person. */
-  resolvesPrincipal?: true;
 }
 
 function installLifecycleSeam(
@@ -1226,9 +1217,11 @@ async function openLifecycleCall(
 } | null> {
   try {
     const parts = await resolveEnvelopeParts(ctx, extra);
-    const principal = spec.resolvesPrincipal
-      ? await resolveCallPrincipal(ctx.resolvePrincipal, { extra, toolName: null, arguments: {} })
-      : null;
+    const principal = await resolveCallPrincipal(ctx.resolvePrincipal, {
+      extra,
+      toolName: null,
+      arguments: {},
+    });
     return {
       sessionId: parts.sessionId,
       subject:
@@ -1336,7 +1329,6 @@ const LIFECYCLE_SPECS: readonly LifecycleSpec[] = [
     },
     countKey: "tools",
     startParams: NO_PARAMS,
-    resolvesPrincipal: true,
   },
 ];
 
