@@ -243,7 +243,7 @@ describe.each(MAJORS)("end to end on $label", (major) => {
     await client.callTool({ name: "lookup", arguments: { name: "x" } });
     await client.callTool({
       name: handle.annotationToolName,
-      arguments: { user_goal: "look up", signal_type: "failure" },
+      arguments: { user_goal: "look up", what_happened: "it returned nothing" },
     });
     const annotations = sink.events.filter((e) => e.event_type === "annotation");
     expect(annotations.length).toBeGreaterThan(0);

@@ -293,7 +293,7 @@ describe.each(MAJORS.map((m) => [m.label, m] as const))("on %s", (_label, major)
     await client.listResources();
     await client.callTool({
       name: handle.annotationToolName,
-      arguments: { user_goal: "look up", signal_type: "failure" },
+      arguments: { user_goal: "look up", what_happened: "it returned nothing" },
     });
 
     const types = new Set(sink.events.map((e) => e.event_type));
@@ -379,7 +379,7 @@ describe("on a server built per request, over real HTTP", () => {
       const annotate = tools.find((tool) => tool.name !== "lookup")!.name;
       await client.callTool({
         name: annotate,
-        arguments: { user_goal: "look up", signal_type: "failure" },
+        arguments: { user_goal: "look up", what_happened: "it returned nothing" },
       });
       await client.close();
     } finally {

@@ -110,7 +110,7 @@ import {
   ToolListStartEventSchema,
 } from "../../events.js";
 import { StdoutSink, type Sink } from "../../sinks.js";
-import { registerAnnotationTool } from "./annotation.js";
+import { registerAnnotationTool, TOOL_NAME_PARAM_NAME } from "./annotation.js";
 import { Scrubber } from "../../scrub.js";
 import { scrubOrNull } from "./safeScrub.js";
 import { roundMetaCoordinates } from "../../metaCoordinates.js";
@@ -542,9 +542,8 @@ async function openCall(
 
   // The session's FIRST injected intent also becomes a proactive
   // annotation (carrying expected_result too, if present), sequenced
-  // BEFORE the tool_call_start it explains. `claim` dedups per session
-  // and is suppressed when a real annotation-tool proactive already
-  // fired. Later param intents ride only the start event.
+  // BEFORE the tool_call_start it explains. `claim` dedups per session.
+  // Later param intents ride only the start event.
   if (scrubbedIntent !== null && ctx.tracker.claim(sessionId)) {
     await emit(ctx.sink, () =>
       AnnotationEventSchema.parse({
@@ -1035,10 +1034,12 @@ function installRequestSeam(
 }
 
 /**
- * The `tools/list` RESPONSE seam, which is what lets `intentParamMode:
- * "required"` advertise `requiredParamNames` as required without the
- * validator enforcing them (see `schemaCompat.buildIntentFields` for why zod
- * cannot).
+ * The `tools/list` RESPONSE seam, which is what lets a name be advertised as
+ * required without the validator enforcing it (see
+ * `schemaCompat.buildIntentFields` for why zod cannot). Two sets of names:
+ * `requiredParamNames` on each tool Baton injected them into, under
+ * `intentParamMode: "required"`, and `tool_name` on the annotate tool, in
+ * every mode (SPEC §5.1.1).
  *
  * ⚠ Fail-open, twice. A throw from the transform is logged and the SDK's own
  * result goes out untouched, because a vendor's `tools/list` may never break
@@ -1046,9 +1047,11 @@ function installRequestSeam(
  * which costs the advertisement and nothing else.
  */
 function installToolsListSeam(lowLevel: RequestHandlerInternals, ctx: WrapContext): void {
-  const names = requiredParamNames(ctx.intentParamMode);
+  const names = [...requiredParamNames(ctx.intentParamMode), TOOL_NAME_PARAM_NAME];
   const isInjected = (toolName: string, paramName: string): boolean =>
-    ctx.paramRegistry.get(toolName)?.[paramName] === "injected";
+    toolName === ctx.annotationToolName
+      ? paramName === TOOL_NAME_PARAM_NAME
+      : ctx.paramRegistry.get(toolName)?.[paramName] === "injected";
   const advertise = (result: unknown): unknown => {
     try {
       return advertiseIntentParamsRequired(result, names, isInjected);
@@ -1474,9 +1477,8 @@ function dispatchTarget(entry: ToolEntry): TaggedHandler | undefined {
  * supplies the missing events itself, and it hands the inner's parked
  * terminal event the outcome so a false success can be replaced.
  *
- * ⚠ **Unconditional, unlike the `tools/list` seam** (which only installs
- * under `intentParamMode: "required"`): the correction it makes is not
- * configurable. A server with no reachable handler map gets no seam, and then
+ * ⚠ **Unconditional**: the correction it makes is not configurable. A
+ * server with no reachable handler map gets no seam, and then
  * this producer has one seam again and correctly omits `failure_kind`
  * entirely — `CallSlot` and `terminate` carry that degradation.
  *
@@ -2081,7 +2083,7 @@ function install(
   // Before the annotate tool registers: on a server with no tools yet, that
   // registration is what makes the SDK install its `tools/list` handler, and
   // the seam has to be in place to wrap it as it lands.
-  if (intentParamMode === "required") installToolsListSeam(internals.server, ctx);
+  installToolsListSeam(internals.server, ctx);
 
   // The SECOND tool-call seam (SPEC §11.4.3's `failure_kind`) — unconditional,
   // and installed here for the same reason the `tools/list` seam is: the
@@ -2128,7 +2130,6 @@ function install(
     // raw override and letting the registration re-derive would register
     // `srv-..._annotate` while the instructions name the server-derived one.
     annotationToolName,
-    tracker,
   });
 
   // Retroactive: sweep whatever's already registered, regardless of call order.

@@ -130,8 +130,8 @@ describe.each(MAJORS.map((m) => [m.label, m] as const))("on %s", (_label, major)
     // A name the vendor declared stays as they wrote it; the other is still Baton's.
     expect(schemas.own_goal.required).toEqual(["q", "expected_result", "overall_task"]);
     expect(schemas.own_expected.required).toEqual(["q", "user_goal", "overall_task"]);
-    // Baton's own tool is not wrapped, so nothing is added to it.
-    expect(schemas[handle.annotationToolName].required).toEqual(["user_goal"]);
+    // Baton's own tool is not wrapped, so no intent param is added to it.
+    expect(schemas[handle.annotationToolName].required).toEqual(["user_goal", "tool_name"]);
   });
 
   it("serves a call with NEITHER name: the vendor's result, no error, no intent on the event", async () => {

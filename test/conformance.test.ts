@@ -115,6 +115,7 @@ describe("baton-spec conformance", () => {
     annotation: {
       intent: "why",
       expected_outcome: "what",
+      what_happened: "what went wrong",
       signal_type: "feature_gap",
       workflow: "task",
       suggested_improvement: "how",

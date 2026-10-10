@@ -1,7 +1,35 @@
 # Changelog
 
-## 0.5.4: resource and prompt events carry the person
+## 0.5.4: reports in the agent's own words; resource and prompt events carry the person
 
+**Breaking, for agents.** Install this only against a collector that already
+tells a report from a note by `what_happened` (SPEC §11.4). An older
+collector stores the report but reads it as a note, so no report count
+includes it. Nothing in your code has to change.
+
+- **An agent reports a problem in its own words; it no longer picks a
+  category.** The annotation tool takes `what_happened` (what it asked for,
+  what came back, why that was unusable) and `tool_name` (the tool that went
+  wrong, or the word `none` when no tool exists for the request). The
+  `signal_type` parameter and its eight values are gone from the tool, its
+  description and the server instructions. The collector assigns the group
+  (SPEC §11.5.5). The `annotation` event gains `what_happened`; `signal_type`
+  is always null.
+- **A call with no `what_happened` is refused.** The tool answers
+  `{"ok": false, "error": ...}` and sends no event, as the Python SDK does by
+  default. Until now this package took such a call and sent it as a note.
+  The note sent for the first tool call that carries a `user_goal` is
+  unchanged.
+- **A missing tool is reported once per user request.** The instructions say
+  so; an agent looping over a single-item tool used to file once per call.
+- `tool_name` on an annotation has three states: a name, `none` (or `""`)
+  for "no tool exists", and null for not stated. The SDK sends what it was
+  given.
+- **The annotation tool lists `tool_name` as required** in its advertised
+  schema, under every `intentParamMode`. A report that leaves it out is still
+  taken. Without the listing, agents with no tool to name left the field out.
+- `what_happened` and `tool_name` go through your `scrubber`, like the other
+  annotation text.
 - **Resource and prompt events carry the person.** Until now they carried
   none. `resolvePrincipal` now
   also runs on every `resources/list`, `resources/read`, `prompts/list` and

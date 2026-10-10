@@ -266,7 +266,7 @@ describe("withBaton on the official SDK v2", () => {
     const client = await connectClient(server);
     const result = await client.callTool({
       name: "vendor_annotate",
-      arguments: { user_goal: "wire up baton" },
+      arguments: { user_goal: "wire up baton", what_happened: "it returned nothing" },
       _meta: { "claudecode/toolUseId": "tu_ann" },
     });
 
@@ -279,13 +279,13 @@ describe("withBaton on the official SDK v2", () => {
     expect(annotation.client_observed?.info?.name).toBe("test-client");
     expect(annotation.payload).toMatchObject({ intent: "wire up baton" });
 
-    // A proactive annotation claims the session's proactive slot, so a later
-    // injected user_goal must NOT synthesise a second one.
+    // A report does not claim the session's proactive slot, so a later
+    // injected user_goal still synthesises its one proactive.
     await client.callTool({ name: "echo", arguments: { text: "hi", user_goal: "g" } });
-    expect(sink.events.filter((e) => e.event_type === "annotation")).toHaveLength(1);
     expect(sink.events.map((e) => e.event_type)).toEqual([
       "annotation",
       "surface_snapshot",
+      "annotation",
       "tool_call_start",
       "tool_call_end",
     ]);

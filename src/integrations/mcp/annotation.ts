@@ -2,11 +2,11 @@
  * Annotation tool registration — SPEC §5.1.1. Registers a vendor-namespaced
  * tool (named by `annotationName.ts`: explicit, else the server's own name
  * slugged, else `{vendorId}_annotate`) that accepts the annotation
- * signature (user_goal / expected_result / signal_type / overall_task /
- * suggested_improvement / context) and emits an `annotation` event.
- * Faithful port of `baton` (Python)'s `integrations/fastmcp/annotation.py`
- * (`user_goal` required, everything else optional — same as the Python tool's
- * signature, not a TS-specific choice).
+ * signature (user_goal / what_happened / tool_name / expected_result /
+ * overall_task / suggested_improvement / context) and emits an `annotation`
+ * event. Port of `baton` (Python)'s `integrations/official/annotation.py`
+ * with `proactive_mode="off"`, the only mode this package has: `user_goal`
+ * is required by the schema, and a call that is not a report is refused.
  *
  * Tool-name pattern (`^[a-zA-Z0-9_-]{1,64}$`) is the strictest known client
  * pattern (Claude Desktop) — dots, slashes, and other separators rejected.
@@ -19,10 +19,9 @@ import type { Sink } from "../../sinks.js";
 import { deriveAnnotationToolName } from "./annotationName.js";
 import { emit } from "./emit.js";
 import { type ResolvePrincipalHook, resolveCallPrincipal } from "./principalResolution.js";
-import { buildAnnotationToolDescription, SIGNAL_TYPES } from "./llmText.js";
+import { buildAnnotationToolDescription } from "./llmText.js";
 import { extraMeta, observeTransport, type Extra } from "./mcpTypes.js";
 import type { SupportedMcpServer } from "./withBaton.js";
-import type { ProactiveTracker } from "./proactiveTracker.js";
 import { observeClient } from "./clientObserved.js";
 import { resolveSessionId } from "./sessionResolution.js";
 import { scrubOrNull } from "./safeScrub.js";
@@ -37,7 +36,8 @@ import type { SessionCounter } from "./sessionCounter.js";
 interface AnnotationArgs extends Record<string, unknown> {
   user_goal: string;
   expected_result?: string | undefined;
-  signal_type?: (typeof SIGNAL_TYPES)[number] | undefined;
+  what_happened?: string | undefined;
+  tool_name?: string | null | undefined;
   overall_task?: string | undefined;
   suggested_improvement?: string | undefined;
   context?: Record<string, unknown> | undefined;
@@ -53,12 +53,18 @@ export interface RegisterAnnotationToolOptions {
   fallbackSessionId: string;
   scrubber: (value: unknown) => unknown;
   annotationToolName?: string | undefined;
-  /** Shared with the tool-call wrapper so a session opens at most one
-   * proactive annotation regardless of which path fires first. */
-  tracker?: ProactiveTracker | undefined;
   /** The vendor's identity resolver — the SAME one the tool-call wrapper
    * holds. */
   resolvePrincipal?: ResolvePrincipalHook | undefined;
+}
+
+/** Advertised as required on the annotate tool by the `tools/list` seam in
+ * withBaton.ts, and never enforced: the zod schema keeps it optional. */
+export const TOOL_NAME_PARAM_NAME = "tool_name";
+
+/** SPEC §11.4: an annotation is a report when its account is filled. */
+export function isReport(whatHappened: string | null | undefined): whatHappened is string {
+  return typeof whatHappened === "string" && whatHappened.trim() !== "";
 }
 
 /** Register the annotation tool on `server`. Returns the resolved tool name. */
@@ -78,13 +84,43 @@ export function registerAnnotationTool(
       inputSchema: {
         user_goal: z.string(),
         expected_result: z.string().optional(),
-        signal_type: z.enum(SIGNAL_TYPES).optional(),
+        what_happened: z.string().optional(),
+        // Nullable so a report whose agent sends an explicit null is taken,
+        // not rejected by validation.
+        tool_name: z.string().nullable().optional(),
         overall_task: z.string().optional(),
         suggested_improvement: z.string().optional(),
         context: z.record(z.string(), z.unknown()).optional(),
       },
     },
     async (args: AnnotationArgs, extra: Extra) => {
+      // Refused in the handler, not by requiring `what_happened` in the
+      // schema: an agent that must fill it to get a call through invents a
+      // problem, and that corrupts the reports.
+      const whatHappened = args.what_happened;
+      if (!isReport(whatHappened)) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify({
+                ok: false,
+                error:
+                  `${name} is reactive-only on this server. Call it only AFTER ` +
+                  "a tool call returns an unhelpful, empty, failed or " +
+                  "contradictory result, or when no tool covers what the user " +
+                  "asked for — and say what_happened. What the user is trying to " +
+                  "do is already recorded on each tool call, so no pre-call " +
+                  "annotation is needed.",
+              }),
+            },
+          ],
+        };
+      }
+      // Sent as given (SPEC §5.1.1): "" means the agent said no tool exists,
+      // null means it said nothing, and the two must not merge.
+      const reportedTool = args.tool_name ?? null;
+
       const meta = extraMeta(extra);
       // As in the tool-call wrapper: coordinates coarsened before the
       // vendor's scrubber.
@@ -94,12 +130,6 @@ export function registerAnnotationTool(
         "_meta",
       );
       const sessionId = await resolveSessionId(options.fallbackSessionId, extra);
-      // A proactive annotation (no signal_type) claims the session's
-      // proactive slot so the tool wrapper won't also synthesise one from
-      // an injected `user_goal` param.
-      if (args.signal_type === undefined) {
-        options.tracker?.mark(sessionId);
-      }
 
       // Same hook, same context factory as the tool wrapper — and the
       // `toolName` handed over is THIS tool's own name, so a hook keyed on it
@@ -133,15 +163,10 @@ export function registerAnnotationTool(
               // eslint-disable-next-line no-restricted-syntax -- inside the emit() build thunk: a throw is already contained, and null here would fabricate a shape
               ? options.scrubber(args.expected_result)
               : null,
-            // `signal_type` is a closed enum — nothing to scrub. The task label
-            // is agent-authored free text ("processing invoice for
-            // bob@example.com" is a realistic value), so it IS scrubbed.
-            // Python's annotation.py does NOT scrub this field — a shared
-            // gap found 2026-08-11, fixed here and flagged for the sibling
-            // rather than mirrored. Not a wire divergence: scrubbing changes
-            // content, not shape, and it's deterministic, so the
-            // exact-string continuity rung 3b groups on survives.
-            signal_type: args.signal_type ?? null,
+            // eslint-disable-next-line no-restricted-syntax -- inside the emit() build thunk: a throw is already contained, and null here would fabricate a shape
+            what_happened: options.scrubber(whatHappened),
+            // eslint-disable-next-line no-restricted-syntax -- inside the emit() build thunk: a throw is already contained, and null here would fabricate a shape
+            tool_name: reportedTool ? options.scrubber(reportedTool) : reportedTool,
             // Agent-facing param `overall_task` -> wire key `workflow`, the same
             // split the injected params use (`overall_task` -> `call_workflow`):
             // renaming the param must not move the key the console groups on.

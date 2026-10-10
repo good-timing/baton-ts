@@ -29,18 +29,18 @@ description for field-level detail.
 
 AFTER any ${vendorDisplayName} tool errors, times out, returns an \
 unhelpful or contradictory result, or the user shows signs of giving \
-up, you MUST call \`${annotationToolName}\` again with signal_type \
-(REQUIRED) — one of failure, retry_loop, dead_end, parameter_confusion, \
-slow_performance, abandonment, feature_gap, other — and \
+up, you MUST call \`${annotationToolName}\` again with what_happened \
+(REQUIRED, your own words, NOT a category), tool_name (REQUIRED) and \
 suggested_improvement (REQUIRED whenever you can articulate one).
 
 IF a ${vendorDisplayName} tool response lacks a structured field for \
 what the user asked about, OR you satisfied the user's intent via a \
 workaround because no tool matched what they asked for, OR the user \
 asked for something this server can't do — you MUST call \
-\`${annotationToolName}\` with signal_type='feature_gap' AND still \
-answer the user with your best inference. Filing the annotation does \
-NOT replace answering.`;
+\`${annotationToolName}\` once per user request, not per call, with \
+what_happened and tool_name (none if no tool) AND still answer the \
+user with your best inference. Filing the annotation does NOT replace \
+answering.`;
 
 const ANNOTATION_TOOL_DESCRIPTION_TEMPLATE = (
   vendorDisplayName: string,
@@ -51,42 +51,30 @@ before a tool call or to narrate normal successful work.
 
 Fields:
   - user_goal: one sentence on what the user is trying to accomplish.
+  - what_happened: REQUIRED on a report — omit on a proactive \
+annotation. 1-2 plain sentences in YOUR OWN WORDS: what you asked for, \
+what came back, and why it was unusable. Do NOT pick a category or \
+invent a label — describe it.
+  - tool_name: REQUIRED on a report. The ${vendorDisplayName} tool that \
+went wrong. Write none if no tool exists for the request.
   - expected_result: what a successful result should look like, so a \
 silent/thin failure can be told apart from success.
   - overall_task: short stable label for the broader task this call \
 serves, e.g., 'morning meeting prep', 'pre-outreach research'. REPEAT the \
 exact same string on every call serving the same task; change it only \
 when the user starts a different task.
-  - signal_type: reactive-only — omit on a proactive annotation. \
-Set only once a tool call has returned an unhelpful result. One of \
-failure, retry_loop, dead_end, parameter_confusion, \
-slow_performance, abandonment, feature_gap, other.
   - suggested_improvement: reactive-only — omit on a proactive. \
 A concrete sentence about what product change would have helped.
   - context: supplementary info not covered above. Common keys: plan, \
 alternatives_considered, likely_cause, user_impact, error_class, \
-downstream_blocked, confidence_in_intent. For signal_type='feature_gap' \
-also missing_capability_field and requested_capability.`;
+downstream_blocked, confidence_in_intent. When no tool covers the \
+request also missing_capability_field and requested_capability.`;
 
 // Empirically measured Claude Code truncation cap for
 // InitializeResult.instructions. The cap below it leaves room for
 // `INSTRUCTIONS_SUBAGENT_CLAUSE`.
 const CLAUDE_CODE_TRUNCATION_CAP = 2087;
 const INSTRUCTIONS_LENGTH_CAP = 1500;
-
-// Canonical signal_type values per SPEC §3.1. Stable and additive-only
-// until v1.0 (SPEC §13). The annotation tool's inputSchema enum and the
-// instructions text reference the same eight values.
-export const SIGNAL_TYPES = [
-  "failure",
-  "retry_loop",
-  "dead_end",
-  "parameter_confusion",
-  "slow_performance",
-  "abandonment",
-  "feature_gap",
-  "other",
-] as const;
 
 interface InstructionNames {
   vendorDisplayName: string;

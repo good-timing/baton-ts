@@ -64,6 +64,25 @@ describe("agent-facing text", () => {
   });
 });
 
+describe("the report wording", () => {
+  const instructions = buildServerInstructions({
+    vendorDisplayName: "Acme",
+    annotationToolName: "acme_annotate",
+  });
+  const description = buildAnnotationToolDescription({ vendorDisplayName: "Acme" });
+
+  it("asks for one report per user request and the word none for no tool", () => {
+    expect(instructions).toContain("once per user request, not per call");
+    expect(instructions).toContain("tool_name (none if no tool)");
+    expect(description).toContain("Write none if no tool exists for the request");
+  });
+
+  it.each(['""', "empty string", "signal_type"])("never says %s", (retired) => {
+    expect(instructions).not.toContain(retired);
+    expect(description).not.toContain(retired);
+  });
+});
+
 // Python's own rendering, generated from the release named in the file's
 // `generated_by`, whose default (`proactive_mode="off"`) text this arm carries.
 // Regenerate it from Python rather than editing it by hand: the point is that

@@ -366,8 +366,6 @@ describe("withBaton", () => {
   });
 
   it("scrubs the annotation tool's task-label field", async () => {
-    // Python's annotation.py does NOT scrub this field (shared gap, found
-    // 2026-08-11). Closed on this side; see the comment in annotation.ts.
     const server = new McpServer({ name: "vendor", version: "1.0.0" });
     withBaton(server, {
       vendorId: "acme",
@@ -381,6 +379,7 @@ describe("withBaton", () => {
       name: "vendor_annotate",
       arguments: {
         user_goal: "do a thing",
+        what_happened: "it returned nothing",
         overall_task: "invoice for bob@example.com",
       },
     });
@@ -572,67 +571,9 @@ describe("withBaton — instructions + annotation tool", () => {
 
     const result = await client.callTool({
       name: "vendor_annotate",
-      arguments: { user_goal: "look something up", expected_result: "a match" },
+      arguments: { user_goal: "look something up", what_happened: "it returned nothing" },
     });
     expect(result.isError).toBeFalsy();
-  });
-
-  it("emits a proactive annotation event and does NOT emit tool_call_start/end for the annotate call itself", async () => {
-    const server = new McpServer({ name: "vendor", version: "1.0.0" });
-    withBaton(server, {
-      vendorId: "acme",
-      vendorDisplayName: "Acme",
-      consentToken: "ct",
-      sink,
-    });
-
-    const client = await connectClient(server);
-    await client.callTool({
-      name: "vendor_annotate",
-      arguments: {
-        user_goal: "look something up",
-        expected_result: "a match",
-        overall_task: "lookup",
-      },
-    });
-
-    expect(sink.events.map((e) => e.event_type)).toEqual(["annotation"]);
-    expect(sink.events[0]!.payload).toMatchObject({
-      intent: "look something up",
-      expected_outcome: "a match",
-      workflow: "lookup",
-      signal_type: null,
-    });
-  });
-
-  it("emits a reactive annotation event with signal_type + suggested_improvement", async () => {
-    const server = new McpServer({ name: "vendor", version: "1.0.0" });
-    registerTools(server);
-    withBaton(server, {
-      vendorId: "acme",
-      vendorDisplayName: "Acme",
-      consentToken: "ct",
-      sink,
-    });
-
-    const client = await connectClient(server);
-    await client.callTool({ name: "echo", arguments: { text: "hi" } }); // start/end noise
-    sink.events.length = 0;
-
-    await client.callTool({
-      name: "vendor_annotate",
-      arguments: {
-        user_goal: "look something up",
-        signal_type: "feature_gap",
-        suggested_improvement: "add a bulk lookup tool",
-      },
-    });
-
-    expect(sink.events.map((e) => e.event_type)).toEqual(["annotation"]);
-    expect(sink.events[0]!.payload).toMatchObject({
-      signal_type: "feature_gap",
-      suggested_improvement: "add a bulk lookup tool",
-    });
   });
 
   it("annotate call and regular tool calls share one monotonic sequence per session", async () => {
@@ -649,7 +590,7 @@ describe("withBaton — instructions + annotation tool", () => {
     await client.callTool({ name: "echo", arguments: { text: "hi" } });
     await client.callTool({
       name: "vendor_annotate",
-      arguments: { user_goal: "x" },
+      arguments: { user_goal: "x", what_happened: "it returned nothing" },
     });
 
     expect(sink.events.map((e) => [e.event_type, e.sequence_number])).toEqual([
@@ -1297,7 +1238,7 @@ describe("withBaton — tenant_id is the ACCOUNT, not a second copy of vendor_id
     await client.callTool({ name: "echo", arguments: { text: "hi" } });
     await client.callTool({
       name: "vendor_annotate",
-      arguments: { user_goal: "g", expected_result: "r", overall_task: "t" },
+      arguments: { user_goal: "g", what_happened: "it returned nothing", overall_task: "t" },
     });
     return sink.events;
   }
@@ -1371,7 +1312,7 @@ describe("withBaton — tenant_id is the ACCOUNT, not a second copy of vendor_id
     process.env.BATON_TENANT_ID = "ten_b";
     await client.callTool({
       name: "vendor_annotate",
-      arguments: { user_goal: "g", expected_result: "r", overall_task: "t" },
+      arguments: { user_goal: "g", what_happened: "it returned nothing", overall_task: "t" },
     });
 
     expect(sink.events.map((e) => e.event_type)).toEqual([
@@ -1519,7 +1460,7 @@ describe("withBaton — coordinates in runtime_meta", () => {
     const client = await connect();
     await client.callTool({
       name: "vendor_annotate",
-      arguments: { user_goal: "find the thing" },
+      arguments: { user_goal: "find the thing", what_happened: "it returned nothing" },
       _meta: CHATGPT_IPHONE_META,
     });
 
@@ -1558,7 +1499,7 @@ describe("withBaton principal", () => {
     await client.callTool({ name: "echo", arguments: { text: "hi" } });
     await client.callTool({
       name: "vendor_annotate",
-      arguments: { user_goal: "look up", signal_type: "failure" },
+      arguments: { user_goal: "look up", what_happened: "it returned nothing" },
     });
     return sink.events;
   }

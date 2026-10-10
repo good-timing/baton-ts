@@ -339,7 +339,7 @@ describe.each(MAJORS)("failures above the handler — $label", (major) => {
     const { client, handle } = await connected(sink);
     const before = sink.events.length;
     await client
-      .callTool({ name: handle.annotationToolName, arguments: { signal_type: 42 } })
+      .callTool({ name: handle.annotationToolName, arguments: { what_happened: 42 } })
       .catch(() => {});
 
     expect(sink.events.slice(before).filter((e) => e.event_type !== "surface_snapshot")).toEqual(

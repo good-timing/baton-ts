@@ -198,9 +198,10 @@ export function injectGoalParamsV2(
 }
 
 /**
- * The advertisement half of `intentParamMode: "required"`, applied to a
- * rendered `tools/list` result: each of `names` that `isInjected` says Baton
- * added to a tool is appended to that tool's `required` array.
+ * Applied to a rendered `tools/list` result: each of `names` that
+ * `isInjected` says Baton added to a tool is appended to that tool's
+ * `required` array. Serves `intentParamMode: "required"` and the annotate
+ * tool's `tool_name`.
  *
  * Copy on write, so a caller that catches a throw from here can serve the
  * original. Only the response changes; the zod schema stays optional, which

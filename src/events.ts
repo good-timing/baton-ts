@@ -154,14 +154,14 @@ export const ToolCallErrorPayloadSchema = z
   .strict();
 export type ToolCallErrorPayload = z.infer<typeof ToolCallErrorPayloadSchema>;
 
-/** Agent-supplied context. All fields nullable per SPEC §5.1.1 — the agent
- * populates what it has. Proactive annotations typically populate
- * `intent`/`expected_outcome`/`workflow`; reactive annotations typically
- * populate `signal_type`/`suggested_improvement`. */
+/** Agent-supplied context, all nullable. An annotation with `what_happened`
+ * filled is a report; one without is a note (SPEC §11.4). `signal_type` is
+ * kept for events from older producers: this SDK always sends it null. */
 export const AnnotationPayloadSchema = z
   .object({
     intent: z.string().nullable().default(null),
     expected_outcome: z.string().nullable().default(null),
+    what_happened: z.string().nullable().default(null),
     signal_type: z.string().nullable().default(null),
     workflow: z.string().nullable().default(null),
     suggested_improvement: z.string().nullable().default(null),

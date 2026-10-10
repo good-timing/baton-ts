@@ -111,11 +111,16 @@ describe.each(MAJORS)("a throwing vendor scrubber never breaks the call [$label]
    * report, not the vendor's tool failing. */
   async function annotate(
     scrubber: (value: unknown) => unknown,
+    report: Record<string, string> = {},
   ): Promise<{ res: Result; sink: CapturingSink }> {
     const { client, sink, annotateTool } = await build(scrubber);
     const res = (await client.callTool({
       name: annotateTool,
-      arguments: { user_goal: "report the friction", signal_type: "dead_end" },
+      arguments: {
+        user_goal: "report the friction",
+        what_happened: "it returned nothing",
+        ...report,
+      },
       _meta: { [META_MARKER]: "1" },
     })) as Result;
     return { res, sink };
@@ -174,6 +179,17 @@ describe.each(MAJORS)("a throwing vendor scrubber never breaks the call [$label]
     const annotation = sink.events.find((e) => e.event_type === "annotation")!;
     expect(annotation.runtime_meta).toBeNull();
   });
+
+  it.each(["what_happened", "tool_name"])(
+    "ANNOTATION %s is scrubbed inside the build thunk: a throw drops the event, not the call",
+    async (field) => {
+      const sentinel = `sentinel for ${field}`;
+      const { res, sink } = await annotate(throwingOn(sentinel), { [field]: sentinel });
+      expect(res.isError).toBeFalsy();
+      expect(JSON.stringify(res.content)).toContain('{\\"ok\\":true}');
+      expect(sink.events.some((e) => e.event_type === "annotation")).toBe(false);
+    },
+  );
 
   it("CONTROL for the annotation leg — identity scrubber, same call", async () => {
     const { res, sink } = await annotate(identityScrub);

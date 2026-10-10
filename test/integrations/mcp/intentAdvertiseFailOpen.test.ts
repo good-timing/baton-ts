@@ -42,7 +42,6 @@ describe.each(MAJORS.map((m) => [m.label, m] as const))("on %s", (_label, major)
     major.tool(server, "lookup", { name: z.string() }, async (args: any) => ({
       content: [{ type: "text" as const, text: `found ${String(args.name)}` }],
     }));
-    // The default mode, "required", is the one that installs the seam.
     withBaton(server, {
       vendorId: "acme",
       vendorDisplayName: "Acme",
