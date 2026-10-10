@@ -282,8 +282,7 @@ describe("the instructions cap", () => {
     // Python 0.8.5's tie-break, for both SDKs. The tie is found by rendering
     // rather than written down as a length: the shortest name that fits
     // beside `srv-c8eca135_annotate` but not beside its own readable tool
-    // name. Under this arm's template (Python's proactive-off text) that is 85
-    // characters; Python's test uses 31 because it pins the proactive-on
+    // name. Python's test finds a shorter tie because it pins the proactive-on
     // text, which spends more of the budget.
     const readable = (n: number) => `${"q".repeat(Math.min(n, 30))}_annotate`;
     let tie = 0;

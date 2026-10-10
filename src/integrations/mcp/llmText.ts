@@ -29,7 +29,7 @@ description for field-level detail.
 
 AFTER any ${vendorDisplayName} tool errors, times out, returns an \
 unhelpful or contradictory result, or the user shows signs of giving \
-up, you MUST call \`${annotationToolName}\` again with what_happened \
+up, you MUST call \`${annotationToolName}\` with what_happened \
 (REQUIRED, your own words, NOT a category), tool_name (REQUIRED) and \
 suggested_improvement (REQUIRED whenever you can articulate one).
 

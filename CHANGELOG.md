@@ -23,6 +23,8 @@ includes it. Nothing in your code has to change.
 - **The tool description no longer mentions a note.** Two field lines said
   "omit on a proactive", which reads as if a note before a call were
   allowed.
+- **The instructions no longer say "call … again".** No earlier call exists
+  for the word to point at.
 - **The refusal says what to do next.** An agent with a failed call or a
   missing tool is told to call again and say `what_happened`. Any other
   agent is told not to re-send. The text is the same in `baton-sdk`,
