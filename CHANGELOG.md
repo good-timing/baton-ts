@@ -20,6 +20,9 @@ includes it. Nothing in your code has to change.
   default. Until now this package took such a call and sent it as a note.
   The note sent for the first tool call that carries a `user_goal` is
   unchanged.
+- **The tool description no longer mentions a note.** Two field lines said
+  "omit on a proactive", which reads as if a note before a call were
+  allowed.
 - **The refusal says what to do next.** An agent with a failed call or a
   missing tool is told to call again and say `what_happened`. Any other
   agent is told not to re-send. The text is the same in `baton-sdk`,

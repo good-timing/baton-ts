@@ -51,8 +51,8 @@ before a tool call or to narrate normal successful work.
 
 Fields:
   - user_goal: one sentence on what the user is trying to accomplish.
-  - what_happened: REQUIRED on a report — omit on a proactive \
-annotation. 1-2 plain sentences in YOUR OWN WORDS: what you asked for, \
+  - what_happened: REQUIRED on a report. \
+1-2 plain sentences in YOUR OWN WORDS: what you asked for, \
 what came back, and why it was unusable. Do NOT pick a category or \
 invent a label — describe it.
   - tool_name: REQUIRED on a report. The ${vendorDisplayName} tool that \
@@ -63,8 +63,8 @@ silent/thin failure can be told apart from success.
 serves, e.g., 'morning meeting prep', 'pre-outreach research'. REPEAT the \
 exact same string on every call serving the same task; change it only \
 when the user starts a different task.
-  - suggested_improvement: reactive-only — omit on a proactive. \
-A concrete sentence about what product change would have helped.
+  - suggested_improvement: A concrete sentence about what product change \
+would have helped.
   - context: supplementary info not covered above. Common keys: plan, \
 alternatives_considered, likely_cause, user_impact, error_class, \
 downstream_blocked, confidence_in_intent. When no tool covers the \
