@@ -88,8 +88,11 @@ describe.each(MAJORS)("reports on $label", (major) => {
         error:
           `${name} is reactive-only on this server. Call it only AFTER a tool call ` +
           "returns an unhelpful, empty, failed or contradictory result, or when no tool " +
-          "covers what the user asked for — and say what_happened. What the user is trying " +
-          "to do is already recorded on each tool call, so no pre-call annotation is needed.",
+          "covers what the user asked for. What the user is trying to do is already " +
+          "recorded on each tool call, so no pre-call annotation is needed — nothing was " +
+          "lost. If a tool call really went wrong, or no tool covers the request, call " +
+          "this again and say what_happened. If neither is true, do NOT re-send: that " +
+          "would file a report for a call that did not go wrong.",
       });
       expect(sink.events).toEqual([]);
     },

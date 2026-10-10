@@ -20,6 +20,10 @@ includes it. Nothing in your code has to change.
   default. Until now this package took such a call and sent it as a note.
   The note sent for the first tool call that carries a `user_goal` is
   unchanged.
+- **The refusal says what to do next.** An agent with a failed call or a
+  missing tool is told to call again and say `what_happened`. Any other
+  agent is told not to re-send. The text is the same in `baton-sdk`,
+  `baton-proxy` and `baton-ts`.
 - **A missing tool is reported once per user request.** The instructions say
   so; an agent looping over a single-item tool used to file once per call.
 - `tool_name` on an annotation has three states: a name, `none` (or `""`)
