@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.5.4: resource and prompt events carry the person
 
 - **Resource and prompt events carry the person.** Until now they carried
   none. `resolvePrincipal` now
