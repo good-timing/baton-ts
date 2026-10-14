@@ -311,6 +311,7 @@ const envelopeShape = {
   agent_runtime: z.string().default("unknown"),
   principal: PrincipalWireSchema.nullable().default(null),
   transport_observed: z.string().nullable().default(null),
+  session_id_origin: z.string().nullable().default(null),
   client_observed: ClientObservedSchema.nullable().default(null),
   call_id: z.string().nullable().default(null),
   runtime_meta: z.record(z.string(), z.unknown()).nullable().default(null),

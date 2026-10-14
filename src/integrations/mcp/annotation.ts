@@ -132,7 +132,7 @@ export function registerAnnotationTool(
         meta ? roundMetaCoordinates(meta) : null,
         "_meta",
       );
-      const sessionId = await resolveSessionId(options.fallbackSessionId, extra);
+      const { sessionId, origin } = await resolveSessionId(options.fallbackSessionId, extra);
 
       // Same hook, same context factory as the tool wrapper — and the
       // `toolName` handed over is THIS tool's own name, so a hook keyed on it
@@ -154,6 +154,7 @@ export function registerAnnotationTool(
           consent_token: options.consentToken,
           principal,
           transport_observed: observeTransport(extra),
+          session_id_origin: origin,
           client_observed: observeClient(extra, { server, scrubber: options.scrubber }),
           runtime_meta: scrubbedMeta,
           payload: {

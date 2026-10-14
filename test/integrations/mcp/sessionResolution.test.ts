@@ -18,16 +18,18 @@ import { resolveSessionId } from "../../../src/integrations/mcp/sessionResolutio
 import type { Extra } from "../../../src/integrations/mcp/mcpTypes.js";
 
 const extra = (sessionId?: unknown): Extra => ({ sessionId }) as unknown as Extra;
+const MINTED = { sessionId: "install-fallback", origin: "minted" };
 
 describe("resolveSessionId", () => {
   it("prefers the transport session id over the process-wide fallback", async () => {
-    expect(await resolveSessionId("install-fallback", extra("from-transport"))).toBe(
-      "from-transport",
-    );
+    expect(await resolveSessionId("install-fallback", extra("from-transport"))).toEqual({
+      sessionId: "from-transport",
+      origin: "observed",
+    });
   });
 
   it("falls back when the transport carries no session id", async () => {
-    expect(await resolveSessionId("install-fallback", extra(undefined))).toBe("install-fallback");
+    expect(await resolveSessionId("install-fallback", extra(undefined))).toEqual(MINTED);
   });
 
   it("falls back on an EMPTY transport session id rather than filing under ''", async () => {
@@ -35,15 +37,15 @@ describe("resolveSessionId", () => {
     // alone would let it through and file every such call under one id —
     // the merge-strangers shape rung 4's blank guard exists for on the
     // Python side.
-    expect(await resolveSessionId("install-fallback", extra(""))).toBe("install-fallback");
+    expect(await resolveSessionId("install-fallback", extra(""))).toEqual(MINTED);
   });
 
   it("falls back on a NON-STRING transport session id", async () => {
     // `Extra` is the MCP SDK's own shape and this value crosses a library
     // boundary; a number here would otherwise become a `session_id` of the
     // wrong type on the wire.
-    expect(await resolveSessionId("install-fallback", extra(42))).toBe("install-fallback");
-    expect(await resolveSessionId("install-fallback", extra(null))).toBe("install-fallback");
+    expect(await resolveSessionId("install-fallback", extra(42))).toEqual(MINTED);
+    expect(await resolveSessionId("install-fallback", extra(null))).toEqual(MINTED);
   });
 
   it("does not consult any vendor hook — rung 0 is gone", async () => {

@@ -75,8 +75,11 @@ export interface Major {
   /** `authInfo`, when given, rides every request the client sends — the
    * in-memory transports of BOTH majors accept it on `send` and deliver it
    * where a real bearer-auth middleware would, so a test can drive an
-   * authenticated call without standing up an OAuth server. */
-  connect(server: any, options?: { authInfo?: unknown }): Promise<any>;
+   * authenticated call without standing up an OAuth server.
+   *
+   * `sessionId`, when given, is the id the server's transport reports, as a
+   * stateful HTTP transport does. */
+  connect(server: any, options?: { authInfo?: unknown; sessionId?: string }): Promise<any>;
   /** Register a static resource. The two majors agree here, which is itself
    * worth keeping in ONE place: a future divergence lands on the interface
    * rather than in whichever test noticed. */
@@ -132,6 +135,7 @@ const V1: Major = {
   connect: async (server, options) => {
     const [clientTransport, serverTransport] = TransportV1.createLinkedPair();
     withAuthInfo(clientTransport, options?.authInfo);
+    if (options?.sessionId !== undefined) serverTransport.sessionId = options.sessionId;
     const client = new ClientV1({ name: "test-client", version: "1.0.0" });
     await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
     return client;
@@ -163,6 +167,7 @@ const V2: Major = {
   connect: async (server, options) => {
     const [clientTransport, serverTransport] = TransportV2.createLinkedPair();
     withAuthInfo(clientTransport, options?.authInfo);
+    if (options?.sessionId !== undefined) serverTransport.sessionId = options.sessionId;
     const client = new ClientV2({ name: "test-client", version: "1.0.0" });
     await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
     return client;

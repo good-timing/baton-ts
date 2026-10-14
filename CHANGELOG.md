@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+Install this only against a collector that already accepts `session_id_origin`.
+A collector that refuses unknown envelope fields refuses every event.
+
+- **Every event says where its `session_id` came from (SPEC §11.4).** The new
+  envelope field `session_id_origin` is `"observed"` when the id is the one
+  the transport reported, and `"minted"` when it is the id this package made
+  at install. A collector uses `"minted"` on an HTTP request to recognise a
+  stateless server and join one person's calls into turns. Up to 0.5.4 a
+  collector could only infer this from the `sdk-` prefix of the id, and SPEC
+  allows that for those versions only.
+
 ## 0.5.4: reports in the agent's own words; resource and prompt events carry the person
 
 **Breaking, for agents.** Install this only against a collector that already

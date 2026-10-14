@@ -1,5 +1,12 @@
 import type { Extra } from "./mcpTypes.js";
 
+/** A `session_id` with the envelope's `session_id_origin` (SPEC §11.4). The
+ * rung that answered decides the origin, never the id's spelling. */
+export interface ResolvedSession {
+  sessionId: string;
+  origin: "observed" | "minted";
+}
+
 /** Real per-call session id, shared by the tool-call wrapper and the
  * annotation tool so both file events under the same id. Falls back to the
  * transport-supplied `extra.sessionId`, then the process-wide fallback.
@@ -15,7 +22,9 @@ import type { Extra } from "./mcpTypes.js";
 export async function resolveSessionId(
   fallbackSessionId: string,
   extra: Extra,
-): Promise<string> {
-  if (typeof extra.sessionId === "string" && extra.sessionId) return extra.sessionId;
-  return fallbackSessionId;
+): Promise<ResolvedSession> {
+  if (typeof extra.sessionId === "string" && extra.sessionId) {
+    return { sessionId: extra.sessionId, origin: "observed" };
+  }
+  return { sessionId: fallbackSessionId, origin: "minted" };
 }

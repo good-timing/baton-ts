@@ -161,7 +161,7 @@ import {
 } from "./mcpTypes.js";
 import { observeClient } from "./clientObserved.js";
 import { ProactiveTracker } from "./proactiveTracker.js";
-import { resolveSessionId } from "./sessionResolution.js";
+import { resolveSessionId, type ResolvedSession } from "./sessionResolution.js";
 import {
   type ResolvePrincipalHook,
   resolveCallPrincipal,
@@ -442,14 +442,14 @@ function messageOf(err: unknown): string {
 async function resolveEnvelopeParts(
   ctx: WrapContext,
   extra: Extra,
-): Promise<{ sessionId: string; scrubbedMeta: unknown }> {
+): Promise<ResolvedSession & { scrubbedMeta: unknown }> {
   // Coordinates are coarsened before the vendor's scrubber, so a vendor
   // scrubber still gets the rule. `_meta` only; params and results keep full
   // precision. The annotation tool does the same.
   const meta = extraMeta(extra);
   const scrubbedMeta = scrubOrNull(ctx.scrubber, meta ? roundMetaCoordinates(meta) : null, "_meta");
-  const sessionId = await resolveSessionId(ctx.fallbackSessionId, extra);
-  return { sessionId, scrubbedMeta };
+  const session = await resolveSessionId(ctx.fallbackSessionId, extra);
+  return { ...session, scrubbedMeta };
 }
 
 /**
@@ -487,7 +487,7 @@ async function openCall(
   // ordering invariant (snapshot BEFORE `tool_call_start`) is preserved and is
   // now structural.
   await maybeEmitSurfaceSnapshot(ctx);
-  const { sessionId, scrubbedMeta } = await resolveEnvelopeParts(ctx, extra);
+  const { sessionId, origin, scrubbedMeta } = await resolveEnvelopeParts(ctx, extra);
 
   // Strip the injected goal params IN PLACE, before snapshotting params —
   // `params` is the SAME object forwarded to the vendor handler, so the
@@ -536,6 +536,7 @@ async function openCall(
     // outside any call, so it has no caller, transport or client to name.
     principal,
     transport_observed: observeTransport(extra),
+    session_id_origin: origin,
     client_observed: observeClient(extra, ctx),
     runtime_meta: scrubbedMeta,
   };
@@ -1238,6 +1239,7 @@ async function openLifecycleCall(
         consent_token: ctx.consentToken,
         principal,
         transport_observed: observeTransport(extra),
+        session_id_origin: parts.origin,
         client_observed: observeClient(extra, ctx),
         runtime_meta: parts.scrubbedMeta,
       },
@@ -1968,6 +1970,7 @@ function install(
       tenant_id: tenantId,
       vendor_id: config.vendorId,
       session_id: sessionId,
+      session_id_origin: "minted",
       consent_token: config.consentToken,
       sequence_number: counter.next(sessionId),
       captured_at: new Date().toISOString(),
