@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.5.5: every event says where its session id came from
 
 Install this only against a collector that already accepts `session_id_origin`.
 A collector that refuses unknown envelope fields refuses every event.
