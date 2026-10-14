@@ -12,6 +12,10 @@ A collector that refuses unknown envelope fields refuses every event.
   stateless server and join one person's calls into turns. Up to 0.5.4 a
   collector could only infer this from the `sdk-` prefix of the id, and SPEC
   allows that for those versions only.
+- **A stateless transport no longer hides the client's session id.** When
+  the transport reports no session id, the `mcp-session-id` request header is
+  read instead, as SPEC §3.4 defines the rung. Before, such a call went out
+  under the install-time id.
 
 ## 0.5.4: reports in the agent's own words; resource and prompt events carry the person
 

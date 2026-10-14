@@ -48,6 +48,41 @@ describe("resolveSessionId", () => {
     expect(await resolveSessionId("install-fallback", extra(null))).toEqual(MINTED);
   });
 
+  it("reads the mcp-session-id header when the transport reports no id", async () => {
+    const v1 = { requestInfo: { headers: { "mcp-session-id": " from-header " } } } as Extra;
+    const v2 = {
+      http: { req: { headers: new Headers({ "Mcp-Session-Id": "from-header" }) } },
+    } as unknown as Extra;
+    for (const e of [v1, v2]) {
+      expect(await resolveSessionId("install-fallback", e)).toEqual({
+        sessionId: "from-header",
+        origin: "observed",
+      });
+    }
+  });
+
+  it("prefers the transport's id over the header", async () => {
+    const e = {
+      sessionId: "from-transport",
+      requestInfo: { headers: { "mcp-session-id": "from-header" } },
+    } as unknown as Extra;
+    expect(await resolveSessionId("install-fallback", e)).toEqual({
+      sessionId: "from-transport",
+      origin: "observed",
+    });
+  });
+
+  it("falls back on a blank header or a request that cannot be read", async () => {
+    const blank = { requestInfo: { headers: { "mcp-session-id": "  " } } } as Extra;
+    const throwing = {
+      get http(): never {
+        throw new TypeError("unexpected context shape");
+      },
+    } as unknown as Extra;
+    expect(await resolveSessionId("install-fallback", blank)).toEqual(MINTED);
+    expect(await resolveSessionId("install-fallback", throwing)).toEqual(MINTED);
+  });
+
   it("does not consult any vendor hook — rung 0 is gone", async () => {
     // The signature is the assertion: two parameters, neither of them a
     // callable. Pinned so re-adding a hook to this function is a deliberate
