@@ -279,16 +279,15 @@ describe("withBaton on the official SDK v2", () => {
     expect(annotation.client_observed?.info?.name).toBe("test-client");
     expect(annotation.payload).toMatchObject({ intent: "wire up baton" });
 
-    // A report does not claim the session's proactive slot, so a later
-    // injected user_goal still synthesises its one proactive.
+    // An injected user_goal rides its own tool_call_start and nothing else.
     await client.callTool({ name: "echo", arguments: { text: "hi", user_goal: "g" } });
     expect(sink.events.map((e) => e.event_type)).toEqual([
       "annotation",
       "surface_snapshot",
-      "annotation",
       "tool_call_start",
       "tool_call_end",
     ]);
+    expect(sink.events[2]!.payload).toMatchObject({ call_intent: "g" });
   });
 
   it("injection preserves the vendor's own object semantics (.refine / strictObject)", async () => {

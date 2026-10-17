@@ -68,7 +68,6 @@ describe.each(MAJORS)("reports on $label", (major) => {
       workflow: null,
       suggested_improvement: "say why",
       context: null,
-      intent_source: null,
       tool_name: "lookup",
     });
   });
@@ -162,10 +161,12 @@ describe.each(MAJORS)("reports on $label", (major) => {
     expect(annotations(sink)[0]!.payload.tool_name).toBeNull();
   });
 
-  it("a report does not use up the session's synthesised proactive", async () => {
+  it("an injected intent after a report sends no second annotation", async () => {
     const { sink, client, annotate } = await connected();
     await annotate({ user_goal: "look something up", what_happened: "it failed" });
     await client.callTool({ name: "lookup", arguments: { name: "a", user_goal: "find a" } });
-    expect(annotations(sink).map((e) => e.payload.intent_source)).toEqual([null, "injected_param"]);
+    expect(annotations(sink).map((e) => e.payload.what_happened)).toEqual(["it failed"]);
+    const start = sink.events.find((e) => e.event_type === "tool_call_start")!;
+    expect(start.payload).toMatchObject({ call_intent: "find a", intent_source: "injected_param" });
   });
 });

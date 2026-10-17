@@ -166,7 +166,6 @@ export const AnnotationPayloadSchema = z
     workflow: z.string().nullable().default(null),
     suggested_improvement: z.string().nullable().default(null),
     context: z.record(z.string(), z.unknown()).nullable().default(null),
-    intent_source: z.string().nullable().default(null),
     tool_name: z.string().nullable().default(null),
   })
   .strict();

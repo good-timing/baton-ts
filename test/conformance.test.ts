@@ -109,7 +109,7 @@ describe("baton-spec conformance", () => {
       failure_kind: "output_schema_mismatch",
     },
     // ⚠ `AnnotationPayloadSchema` and `SurfaceSnapshotPayloadSchema` are
-    // `.default()` throughout today, so the minimal case reaches every member by
+    // `.default()` throughout, so the minimal case reaches every member by
     // accident. The first `.optional()` on either reopens the `result_capture`
     // hole on the one payload pair nothing else here watches.
     annotation: {
@@ -120,7 +120,6 @@ describe("baton-spec conformance", () => {
       workflow: "task",
       suggested_improvement: "how",
       context: { a: 1 },
-      intent_source: "injected_param",
       tool_name: "x",
     },
     surface_snapshot: {

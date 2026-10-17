@@ -284,9 +284,7 @@ describe.each(MAJORS.map((m) => [m.label, m] as const))("on %s", (_label, major)
       sink,
     });
     const client = await major.connect(server);
-    // Each call ends at its own emit site; the first also opens the session's
-    // proactive annotation.
-    await client.callTool({ name: "lookup", arguments: { name: "alice", user_goal: "find her" } });
+    await client.callTool({ name: "lookup", arguments: { name: "alice" } });
     for (const name of ["broken", "refused", "mistyped", "no-such-tool"]) {
       await client.callTool({ name, arguments: {} }).catch(() => undefined);
     }
@@ -312,7 +310,7 @@ describe.each(MAJORS.map((m) => [m.label, m] as const))("on %s", (_label, major)
       .filter((e) => e.event_type === "tool_call_error")
       .map((e) => (e.payload as { tool_name: string }).tool_name);
     expect(failures.sort()).toEqual(["broken", "mistyped", "no-such-tool", "refused"]);
-    expect(sink.events.filter((e) => e.event_type === "annotation")).toHaveLength(2);
+    expect(sink.events.filter((e) => e.event_type === "annotation")).toHaveLength(1);
     for (const event of sink.events) {
       if (event.event_type === "surface_snapshot") {
         expect(event.client_observed).toBeNull();

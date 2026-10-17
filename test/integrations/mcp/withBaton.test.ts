@@ -268,39 +268,6 @@ describe("withBaton", () => {
     });
   });
 
-  it("keeps call_id OFF the proactive annotation it emits from the same scope", async () => {
-    // The param-sourced proactive annotation is built by spreading the SAME
-    // `common` object as the three tool-call legs, so `call_id` living in
-    // `common` would silently stamp it — and SPEC defines no `call_id` for an
-    // annotation. The emitter-conformance suite cannot see this: the
-    // annotation IT captures comes from the annotation TOOL, a different
-    // scope that never had a call_id to leak. This is the only place the
-    // proactive path and the minted id meet.
-    const server = new McpServer({ name: "vendor", version: "1.0.0" });
-    registerTools(server);
-    withBaton(server, {
-      vendorId: "acme",
-      vendorDisplayName: "Acme",
-      consentToken: "ct",
-      sink,
-    });
-
-    const client = await connectClient(server);
-    await client.callTool({
-      name: "echo",
-      arguments: { text: "hi", user_goal: "find the thing" },
-    });
-
-    const annotation = sink.events.find((e) => e.event_type === "annotation")!;
-    const start = sink.events.find((e) => e.event_type === "tool_call_start")!;
-    // The annotation really is the proactive one from batonWrap's scope...
-    expect(annotation.payload).toMatchObject({ intent_source: "injected_param" });
-    // ...and the call it explains really did mint an id, so a null below is
-    // the stamp being withheld rather than there being nothing to stamp.
-    expect(start.call_id).toEqual(expect.any(String));
-    expect(annotation.call_id).toBeNull();
-  });
-
   it("advertises overall_task on the wrapped tool's schema and never leaks it to the handler", async () => {
     const server = new McpServer({ name: "vendor", version: "1.0.0" });
     let seenArgs: Record<string, unknown> | undefined;
@@ -689,7 +656,7 @@ describe("withBaton — intent-param injection", () => {
     expect(result.isError).toBe(true);
   });
 
-  it("captures call_intent from an injected user_goal, strips it before the vendor handler, and synthesises one proactive annotation", async () => {
+  it("captures call_intent from an injected user_goal, strips it before the vendor handler, and sends no annotation", async () => {
     const server = new McpServer({ name: "vendor", version: "1.0.0" });
     let receivedArgs: Record<string, unknown> | undefined;
     server.registerTool(
@@ -724,26 +691,19 @@ describe("withBaton — intent-param injection", () => {
 
     expect(sink.events.map((e) => e.event_type)).toEqual([
       "surface_snapshot",
-      "annotation",
       "tool_call_start",
       "tool_call_end",
     ]);
-    const annotation = sink.events[1]!;
-    expect(annotation.payload).toMatchObject({
-      intent: "find the invoice",
-      expected_outcome: "a total",
-      intent_source: "injected_param",
-      tool_name: "echo",
-    });
-    const start = sink.events[2]!;
+    const start = sink.events[1]!;
     expect(start.payload).toMatchObject({
       call_intent: "find the invoice",
+      call_expected: "a total",
       intent_source: "injected_param",
       params: { text: "hi" },
     });
   });
 
-  it("emits at most one proactive annotation per session even across multiple calls carrying user_goal", async () => {
+  it("each tool_call_start carries its own call's intent", async () => {
     const server = new McpServer({ name: "vendor", version: "1.0.0" });
     registerTools(server);
     withBaton(server, {
@@ -763,11 +723,7 @@ describe("withBaton — intent-param injection", () => {
       arguments: { text: "two", user_goal: "goal two" },
     });
 
-    expect(
-      sink.events.filter((e) => e.event_type === "annotation"),
-    ).toHaveLength(1);
-    // The second call's start event still carries its own call_intent even
-    // though it didn't open a new proactive.
+    expect(sink.events.filter((e) => e.event_type === "annotation")).toEqual([]);
     const starts = sink.events.filter(
       (e) => e.event_type === "tool_call_start",
     );
@@ -803,8 +759,7 @@ describe("withBaton — intent-param injection", () => {
 
     // Native disposition: forwarded to the vendor untouched, not stripped.
     expect(receivedArgs).toEqual({ user_goal: "the vendor's own field" });
-    // Not treated as captured Baton intent — no proactive annotation, and
-    // tool_call_start's call_intent stays null.
+    // Not treated as captured Baton intent: call_intent stays null.
     expect(sink.events.map((e) => e.event_type)).toEqual([
       "surface_snapshot",
       "tool_call_start",

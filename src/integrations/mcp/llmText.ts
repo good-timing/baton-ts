@@ -136,9 +136,8 @@ export const EXPECTED_RESULT_PARAM_NAME = "expected_result";
  * label. */
 export const OVERALL_TASK_PARAM_NAME = "overall_task";
 
-/** Provenance value stamped on `tool_call_start.payload.intent_source` and
- * on the synthesised proactive annotation when intent came from an injected
- * param (vs a real annotation-tool call). The Console reads this string. */
+/** Provenance value stamped on `tool_call_start.payload.intent_source` when
+ * intent came from an injected param. The Console reads this string. */
 export const INTENT_SOURCE_PARAM = "injected_param";
 
 // The leading label tracks `intentParamMode`: under "required" the

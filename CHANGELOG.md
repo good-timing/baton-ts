@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+Install this only against a collector that reads a call's intent from the
+call (SPEC §11.4). A collector that reads intent only from notes shows none
+for sessions whose agent writes no note.
+
+- **`withBaton` no longer copies a call's intent into a note.** It sent one
+  `annotation` per session built from the first call's injected params
+  (`intent_source: "injected_param"`). That intent already rides every
+  `tool_call_start` as `call_intent`, `call_expected` and `call_workflow`. A
+  note the agent writes through the annotation tool is unchanged.
+- **`intent_source` leaves the annotation payload.** Only the copied note set
+  it. The field stays on `tool_call_start`. The baton-spec pin moves to
+  f4e1754. A consumer that validates with the exported
+  `AnnotationPayloadSchema` now refuses an older producer's annotation that
+  carries it.
+
 ## 0.5.5: every event says where its session id came from
 
 Install this only against a collector that already accepts `session_id_origin`.

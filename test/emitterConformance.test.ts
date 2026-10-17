@@ -19,8 +19,7 @@
  * JSONL — they are real Python-emitted envelopes, not hand-authored
  * examples. The vectors therefore ARE the cross-SDK reference, and shelling
  * to Python from a standalone TS repo's CI would add a Python toolchain, a
- * baton checkout, and a silently-wrong-build failure mode (cf. the 08-10 A5
- * incident) to re-derive bytes already committed here. When the Python SDK
+ * baton checkout, and a silently-wrong-build failure mode to re-derive bytes already committed here. When the Python SDK
  * changes its wire output, `generate.py` is re-run and the updated vectors
  * land here through the submodule bump — which is what should fail this
  * test.
@@ -29,18 +28,12 @@
  * token, tool names, arguments, and call order. Keep them in sync — if that
  * script's scenario changes, change this one.
  *
- * **Known coverage gap (verified by mutation, 2026-08-11):** `generate.py`
- * never calls a tool carrying `user_goal`/`expected_result`, so every
- * vector has `call_intent: null` / `intent_source: null` and no
- * param-sourced proactive annotation. Deleting the emitter's `intent_source`
- * assignment therefore does NOT fail this file — the Python reference run
- * doesn't exercise that path either, so there's nothing to diff against.
- * Cross-SDK agreement on the intent fields is currently asserted only
- * locally (withBaton.test.ts's intent-param suite, which does catch that
- * mutation). Closing it properly means adding an intent-carrying call to
- * `generate.py` and regenerating the vectors — a baton-spec change that
- * ripples to all four producer repos, so it's tracked in the sdk-hardening
- * thread rather than done here.
+ * **Known coverage gap:** `generate.py` never calls a tool with
+ * `user_goal`/`expected_result`, so the `tool_call_start` vector has
+ * `call_intent: null` and `intent_source: null`. Deleting the emitter's
+ * `intent_source` assignment does not fail this file; withBaton.test.ts's
+ * intent-param suite catches it. Closing the gap needs an intent-carrying
+ * call in `generate.py`.
  */
 
 import { readFileSync, readdirSync } from "node:fs";

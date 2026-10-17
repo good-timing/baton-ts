@@ -87,7 +87,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { uuid7 } from "../../uuid7.js";
 import {
-  AnnotationEventSchema,
   type Event,
   PromptGetEndEventSchema,
   PromptGetErrorEventSchema,
@@ -160,7 +159,6 @@ import {
   type Extra,
 } from "./mcpTypes.js";
 import { observeClient } from "./clientObserved.js";
-import { ProactiveTracker } from "./proactiveTracker.js";
 import { resolveSessionId, type ResolvedSession } from "./sessionResolution.js";
 import {
   type ResolvePrincipalHook,
@@ -215,7 +213,6 @@ interface WrapContext {
    * resolutions could disagree, and an annotation naming a different actor
    * than the call it describes is worse than one naming nobody. */
   resolvePrincipal: ResolvePrincipalHook | undefined;
-  tracker: ProactiveTracker;
   surfaceState: SurfaceState;
   emitSurface: (
     sessionId: string,
@@ -455,7 +452,6 @@ async function resolveEnvelopeParts(
 /**
  * Open a tool call: resolve everything the envelope needs, strip Baton's
  * injected intent params out of `params` IN PLACE, and emit the opening
- * events — the session's first proactive annotation, when there is one, then
  * `tool_call_start`.
  *
  * ⚠ **Extracted so BOTH seams open a call the same way.** The inner executor
@@ -464,11 +460,10 @@ async function resolveEnvelopeParts(
  * §11.4.3's three request-side `failure_kind`s), and those events must carry
  * the same identity, the same `principal`, the same stripped `params` and the
  * same `call_id` discipline. Two copies of this would be two chances for one
- * of them to drift — which is the miss-mechanism this thread has already paid
- * for twice.
+ * of them to drift.
  *
- * Returns what the TERMINAL event needs and nothing more: the envelope, the
- * minted `call_id`, and the session the counter is keyed on.
+ * Returns what the TERMINAL event needs and nothing more: the envelope, with
+ * this call's `call_id` in it, and the session the counter is keyed on.
  */
 async function openCall(
   ctx: WrapContext,
@@ -479,13 +474,8 @@ async function openCall(
    * `tools/call` seam's `unknown_tool` path, and it suppresses one warning
    * whose diagnosis would be wrong there — see `extractGoalParam`. */
   registered = true,
-): Promise<{ common: Record<string, unknown>; callId: string; sessionId: string }> {
-  // ⚠ HERE, not in the callers. It was a caller obligation in both of them,
-  // and this function exists precisely so the two cannot drift — a third
-  // caller inheriting "remember the snapshot first" would silently stop
-  // emitting it, which is the drift `openCall` was extracted to prevent. The
-  // ordering invariant (snapshot BEFORE `tool_call_start`) is preserved and is
-  // now structural.
+): Promise<{ common: Record<string, unknown>; sessionId: string }> {
+  // Snapshot BEFORE tool_call_start, from inside openCall so every caller inherits the order.
   await maybeEmitSurfaceSnapshot(ctx);
   const { sessionId, origin, scrubbedMeta } = await resolveEnvelopeParts(ctx, extra);
 
@@ -511,13 +501,6 @@ async function openCall(
   // the same output on every call.
   const scrubbedWorkflow = scrubOrNull(ctx.scrubber, rawWorkflow, OVERALL_TASK_PARAM_NAME);
 
-  // The per-call correlation key, minted HERE — in the one scope that emits
-  // both legs — so start and end carry the same value by construction. It
-  // is deliberately NOT part of `common`: `common` is also spread into the
-  // proactive annotation below, and SPEC defines no `call_id` for an
-  // annotation. Stamped onto the three tool-call events individually.
-  const callId = uuid7();
-
   // Resolved AFTER the intent-param strip, so the hook's `arguments` are
   // exactly what the vendor's own handler receives — Baton's injected
   // params are never a caller's input and must not look like one.
@@ -531,40 +514,21 @@ async function openCall(
     vendor_id: ctx.vendorId,
     session_id: sessionId,
     consent_token: ctx.consentToken,
-    // Every `...common` site is an event with a caller. `surface_snapshot`
-    // is deliberately not among them: it describes the SERVER and is captured
-    // outside any call, so it has no caller, transport or client to name.
+    // Every `...common` site is an event of this call, so `call_id` rides in
+    // it. `surface_snapshot` is deliberately not among them: it describes the
+    // SERVER and is captured outside any call, so it has no caller, transport
+    // or client to name.
     principal,
     transport_observed: observeTransport(extra),
     session_id_origin: origin,
     client_observed: observeClient(extra, ctx),
     runtime_meta: scrubbedMeta,
+    call_id: uuid7(),
   };
-
-  // The session's FIRST injected intent also becomes a proactive
-  // annotation (carrying expected_result too, if present), sequenced
-  // BEFORE the tool_call_start it explains. `claim` dedups per session.
-  // Later param intents ride only the start event.
-  if (scrubbedIntent !== null && ctx.tracker.claim(sessionId)) {
-    await emit(ctx.sink, () =>
-      AnnotationEventSchema.parse({
-        ...common,
-        sequence_number: ctx.counter.next(sessionId),
-        captured_at: new Date().toISOString(),
-        payload: {
-          intent: scrubbedIntent,
-          expected_outcome: scrubbedExpected,
-          intent_source: INTENT_SOURCE_PARAM,
-          tool_name: toolName,
-        },
-      }),
-    );
-  }
 
   await emit(ctx.sink, () =>
     ToolCallStartEventSchema.parse({
       ...common,
-      call_id: callId,
       sequence_number: ctx.counter.next(sessionId),
       captured_at: new Date().toISOString(),
       payload: {
@@ -578,7 +542,7 @@ async function openCall(
       },
     }),
   );
-  return { common, callId, sessionId };
+  return { common, sessionId };
 }
 
 /** `nameRef` is read on every call, not captured: v2's `update({name})`
@@ -612,7 +576,7 @@ function batonWrap(nameRef: { current: string }, original: AnyHandler, ctx: Wrap
     // of the captured `params`, since those must equal the vendor-visible
     // arguments. The outer seam's request-side path passes a COPY instead,
     // for the reason stated there.
-    const { common, callId, sessionId } = await openCall(ctx, toolName, extra, params);
+    const { common, sessionId } = await openCall(ctx, toolName, extra, params);
 
     /** Emit this call's terminal event, or PARK it for the outer `tools/call`
      * seam when one is running (see `CallSlot`). `replacement` is passed by
@@ -694,7 +658,6 @@ function batonWrap(nameRef: { current: string }, original: AnyHandler, ctx: Wrap
       await parkFailure(() =>
         ToolCallErrorEventSchema.parse({
           ...common,
-          call_id: callId,
           sequence_number: ctx.counter.next(sessionId),
           captured_at: new Date().toISOString(),
           payload: {
@@ -736,7 +699,6 @@ function batonWrap(nameRef: { current: string }, original: AnyHandler, ctx: Wrap
       await parkFailure(() =>
         ToolCallErrorEventSchema.parse({
           ...common,
-          call_id: callId,
           sequence_number: ctx.counter.next(sessionId),
           captured_at: new Date().toISOString(),
           payload: {
@@ -771,7 +733,6 @@ function batonWrap(nameRef: { current: string }, original: AnyHandler, ctx: Wrap
       () =>
         ToolCallEndEventSchema.parse({
           ...common,
-          call_id: callId,
           sequence_number: ctx.counter.next(sessionId),
           captured_at: new Date().toISOString(),
           payload: {
@@ -789,7 +750,6 @@ function batonWrap(nameRef: { current: string }, original: AnyHandler, ctx: Wrap
       (outcome) =>
         ToolCallErrorEventSchema.parse({
           ...common,
-          call_id: callId,
           sequence_number: ctx.counter.next(sessionId),
           captured_at: new Date().toISOString(),
           payload: {
@@ -1633,7 +1593,7 @@ async function emitRequestSideFailure(
   // Baton's own params would land in `tool_call_start.params`, which SPEC
   // says equals the vendor-visible arguments.
   const params = { ...((request?.params?.arguments as Record<string, unknown>) ?? {}) };
-  const { common, callId, sessionId } = await openCall(
+  const { common, sessionId } = await openCall(
     ctx,
     toolName,
     args[1] as Extra,
@@ -1649,7 +1609,6 @@ async function emitRequestSideFailure(
   await emit(ctx.sink, () =>
     ToolCallErrorEventSchema.parse({
       ...common,
-      call_id: callId,
       sequence_number: ctx.counter.next(sessionId),
       captured_at: new Date().toISOString(),
       payload: {
@@ -2049,7 +2008,6 @@ function install(
     }
   };
 
-  const tracker = new ProactiveTracker();
   const ctx: WrapContext = {
     sink,
     counter,
@@ -2067,7 +2025,6 @@ function install(
     vendorToolJsonSchema,
     bustSchemaMemo,
     dropSubagentClause,
-    tracker,
     surfaceState,
     emitSurface,
   };
