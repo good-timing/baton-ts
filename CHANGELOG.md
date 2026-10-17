@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.5.6: a call's intent rides only the call
 
 Install this only against a collector that reads a call's intent from the
 call (SPEC §11.4). A collector that reads intent only from notes shows none
