@@ -1,0 +1,116 @@
+/** The library API's session block and sequence numbers (SPEC §5.6). */
+
+import { AsyncLocalStorage } from "node:async_hooks";
+import { normalizePrincipal, principalFor, pythonStrip, type PrincipalWire } from "../identity.js";
+import {
+  clientObservedFrom,
+  type ClientObserved,
+  type HeaderInput,
+} from "../integrations/mcp/clientObserved.js";
+import { uuid7 } from "../uuid7.js";
+
+const TRANSPORT_LIBRARY = "library";
+const TURN_ID_META_KEY = "baton/turn_id";
+
+/** What `client.session(...)` gives every call inside it. */
+export interface LibrarySession {
+  readonly sessionId: string;
+  readonly origin: "observed" | "minted";
+  readonly principal: PrincipalWire | null;
+  readonly clientObserved: ClientObserved | null;
+  readonly turnId: string | null;
+}
+
+export function sessionEnvelope(session: LibrarySession): Record<string, unknown> {
+  return {
+    session_id: session.sessionId,
+    session_id_origin: session.origin,
+    transport_observed: TRANSPORT_LIBRARY,
+    principal: session.principal,
+    client_observed: session.clientObserved,
+    runtime_meta: session.turnId !== null ? { [TURN_ID_META_KEY]: session.turnId } : null,
+  };
+}
+
+export interface SessionValues {
+  sessionId?: string;
+  principal?: unknown;
+  clientInfo?: { name?: string; version?: string };
+  headers?: HeaderInput;
+  turnId?: string;
+}
+
+function warn(message: string): void {
+  process.stderr.write(`baton: ${message}\n`);
+}
+
+function vendorId(name: string, value: unknown): string | null {
+  const cleaned = typeof value === "string" ? pythonStrip(value) : "";
+  if (cleaned !== "") return cleaned;
+  if (value !== undefined && value !== null) {
+    warn(`${name} is not a non-blank string — ignoring it.`);
+  }
+  return null;
+}
+
+function minted(): LibrarySession {
+  return { sessionId: uuid7(), origin: "minted", principal: null, clientObserved: null, turnId: null };
+}
+
+function wirePrincipal(value: unknown): PrincipalWire | null {
+  if (value === undefined || value === null) return null;
+  const principal = normalizePrincipal(value);
+  if (principal === null) {
+    warn("principal was given but has no usable principalId — sending none.");
+    return null;
+  }
+  return principalFor(principal, (form) =>
+    warn(`principal form ${JSON.stringify(form)} is not registered — sending "raw".`),
+  );
+}
+
+/** A `session()` block's values. A value that is not usable is logged and dropped. */
+export function newSession(
+  values: SessionValues,
+  scrubber: (value: unknown) => unknown,
+  disabled: boolean,
+): LibrarySession {
+  const id = vendorId("sessionId", values.sessionId);
+  const base: LibrarySession =
+    id !== null
+      ? { sessionId: id, origin: "observed", principal: null, clientObserved: null, turnId: null }
+      : minted();
+  // Off stops the work too: no scrubber runs on a value that is never sent.
+  if (disabled) return base;
+  return {
+    ...base,
+    principal: wirePrincipal(values.principal),
+    clientObserved: clientObservedFrom(values.clientInfo, values.headers, scrubber),
+    turnId: vendorId("turnId", values.turnId),
+  };
+}
+
+// The owning client is stored with the block so one client's block never
+// reaches another client's events.
+const current = new AsyncLocalStorage<{ owner: object; session: LibrarySession }>();
+
+export function runInSession<T>(owner: object, session: LibrarySession, fn: () => T): T {
+  return current.run({ owner, session }, fn);
+}
+
+/** `owner`'s open block, or a minted session for this call alone. */
+export function sessionForCall(owner: object): LibrarySession {
+  const entry = current.getStore();
+  return entry !== undefined && entry.owner === owner ? entry.session : minted();
+}
+
+let lastSequence = 0;
+
+/** Sequence numbers from the clock, in microseconds (SPEC §5.6 rule 3). One
+ * counter for the process: strictly increasing across all sessions is
+ * strictly increasing within each, and nothing grows per session. */
+export function nextSequence(): number {
+  const nowMicros = Math.floor((performance.timeOrigin + performance.now()) * 1000);
+  lastSequence = Math.max(lastSequence + 1, nowMicros);
+  return lastSequence;
+}

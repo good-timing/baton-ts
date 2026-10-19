@@ -16,7 +16,12 @@ export type ScrubbedField =
   | "_meta"
   | typeof USER_GOAL_PARAM_NAME
   | typeof EXPECTED_RESULT_PARAM_NAME
-  | typeof OVERALL_TASK_PARAM_NAME;
+  | typeof OVERALL_TASK_PARAM_NAME
+  | "params"
+  | "intent"
+  | "expected_outcome"
+  | "workflow"
+  | "context";
 
 const warned = new Set<ScrubbedField>();
 

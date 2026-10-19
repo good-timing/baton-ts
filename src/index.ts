@@ -19,6 +19,10 @@
  * one you do not have is never resolved. `withBaton` takes the structural
  * `SupportedMcpServer` that both classes satisfy.
  *
+ * `Client` is the library API (SPEC §5.6), for agents that reach the vendor
+ * through something other than MCP: `client.session()` and `client.trace()`
+ * take callbacks, and `client.wrap()` traces a function.
+ *
  * Pre-1.0 — public API not yet stable.
  */
 
@@ -161,3 +165,17 @@ export type {
 // The ready-made hooks — the OAuth case is common enough to ship, and a vendor
 // whose verifier keeps claims elsewhere writes their own (see `oauthHooks.ts`).
 export { principalFromOAuthEmail, principalFromOAuthSub } from "./integrations/mcp/index.js";
+
+// The library API (SPEC §5.6).
+export { Client, Trace } from "./library/client.js";
+export type {
+  AnnotateOptions,
+  ClientOptions,
+  ObservedError,
+  SessionOptions,
+  TraceOptions,
+} from "./library/client.js";
+export type { HeaderInput } from "./integrations/mcp/clientObserved.js";
+// The injected params' names and wording, for a vendor adding them to its own API.
+export { INTENT_PARAMS } from "./integrations/mcp/llmText.js";
+export type { IntentParam } from "./integrations/mcp/llmText.js";

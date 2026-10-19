@@ -140,6 +140,9 @@ export const OVERALL_TASK_PARAM_NAME = "overall_task";
  * intent came from an injected param. The Console reads this string. */
 export const INTENT_SOURCE_PARAM = "injected_param";
 
+/** `intent_source` when the vendor's code passed intent to `client.trace()`. */
+export const INTENT_SOURCE_LIBRARY = "library_arg";
+
 // The leading label tracks `intentParamMode`: under "required" the
 // `tools/list` seam in withBaton.ts adds `requiredParamNames` to the
 // advertised `required` list, so a description still opening "OPTIONAL."
@@ -215,3 +218,24 @@ export function requiredParamNames(intentParamMode: string): string[] {
     ? [USER_GOAL_PARAM_NAME, EXPECTED_RESULT_PARAM_NAME, OVERALL_TASK_PARAM_NAME]
     : [];
 }
+
+/** One injected param, for a vendor adding it to its own API (SPEC §5.6).
+ * `description` is the text an agent reads on an MCP server, without the
+ * leading "OPTIONAL." / "REQUIRED." label: whether the vendor's API requires
+ * it is the vendor's call. `traceOption` is the `client.trace()` option the
+ * agent's answer goes to. */
+export interface IntentParam {
+  readonly name: string;
+  readonly description: string;
+  readonly traceOption: "intent" | "expectedOutcome" | "workflow";
+}
+
+export const INTENT_PARAMS: readonly IntentParam[] = Object.freeze([
+  Object.freeze({ name: USER_GOAL_PARAM_NAME, description: USER_GOAL_PARAM_BODY, traceOption: "intent" }),
+  Object.freeze({
+    name: EXPECTED_RESULT_PARAM_NAME,
+    description: EXPECTED_RESULT_PARAM_BODY,
+    traceOption: "expectedOutcome",
+  }),
+  Object.freeze({ name: OVERALL_TASK_PARAM_NAME, description: OVERALL_TASK_PARAM_BODY, traceOption: "workflow" }),
+]);

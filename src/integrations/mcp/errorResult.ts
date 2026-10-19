@@ -23,6 +23,8 @@
  * the value this package sees is the vendor's own literal, camelCase.
  */
 
+import { capCodePoints } from "../../_text.js";
+
 /** `error_type` for a returned error, as opposed to a thrown exception whose
  * constructor name is used. Same literal as Python's `TOOL_ERROR_TYPE` and as
  * `baton-extmcp`'s — sensor parity is the point. */
@@ -452,4 +454,22 @@ export function requestSideErrorFields(
   errorBody: (value: string) => string,
 ): { error_body: string; result: null } {
   return { error_body: errorBody(text), result: null };
+}
+
+/** `error_type` for a thrown value: its class name, or `"Error"` for a non-Error. */
+export function errorTypeOf(err: unknown): string {
+  return err instanceof Error ? err.constructor.name : "Error";
+}
+
+/** The human-readable text of a thrown value, by the same rule. */
+export function messageOf(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+/** Scrub the whole text, then cut it: cutting first could split a secret so
+ * no pattern matches the half that ships. Call only inside an emit() build
+ * thunk, where a scrubber throw drops the event. */
+export function scrubbedErrorBody(scrubber: (value: unknown) => unknown, text: string): string {
+  // eslint-disable-next-line no-restricted-syntax -- callers are emit() build thunks
+  return capCodePoints(String(scrubber(text)), ERROR_BODY_MAX_CODE_POINTS);
 }

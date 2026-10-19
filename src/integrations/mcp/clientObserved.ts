@@ -19,7 +19,7 @@ const OBSERVED_HEADERS = ["user-agent", "x-anthropic-client"] as const;
 const CLIENT_INFO_MAX_LEN = 128;
 const HEADER_VALUE_MAX_LEN = 256;
 
-interface ClientObserved {
+export interface ClientObserved {
   info?: { name?: string; version?: string };
   headers?: Partial<Record<(typeof OBSERVED_HEADERS)[number], string>>;
 }
@@ -73,20 +73,28 @@ function declaredOnConnection(server: unknown): DeclaredClientInfo | undefined {
 
 function observedInfo(extra: Extra, options: ObserveClientOptions): ClientObserved["info"] {
   // Both fields come from one source, so the pair is one the client sent.
-  const sent = declaredOnRequest(extra) ?? declaredOnConnection(options.server);
+  return cleanInfo(declaredOnRequest(extra) ?? declaredOnConnection(options.server), options.scrubber);
+}
+
+function cleanInfo(
+  sent: DeclaredClientInfo | undefined,
+  scrubber: ObserveClientOptions["scrubber"],
+): ClientObserved["info"] {
   const info: NonNullable<ClientObserved["info"]> = {};
-  const name = clean(sent?.name, options.scrubber, CLIENT_INFO_MAX_LEN);
-  const version = clean(sent?.version, options.scrubber, CLIENT_INFO_MAX_LEN);
+  const name = clean(sent?.name, scrubber, CLIENT_INFO_MAX_LEN);
+  const version = clean(sent?.version, scrubber, CLIENT_INFO_MAX_LEN);
   if (name !== undefined) info.name = name;
   if (version !== undefined) info.version = version;
   return Object.keys(info).length > 0 ? info : undefined;
 }
 
-function observedHeaders(extra: Extra, options: ObserveClientOptions): ClientObserved["headers"] {
-  const sent = extraHeaders(extra);
+function cleanHeaders(
+  sent: Headers | null | undefined,
+  scrubber: ObserveClientOptions["scrubber"],
+): ClientObserved["headers"] {
   const headers: NonNullable<ClientObserved["headers"]> = {};
   for (const header of OBSERVED_HEADERS) {
-    const value = clean(sent?.get(header), options.scrubber, HEADER_VALUE_MAX_LEN);
+    const value = clean(sent?.get(header), scrubber, HEADER_VALUE_MAX_LEN);
     if (value !== undefined) headers[header] = value;
   }
   return Object.keys(headers).length > 0 ? headers : undefined;
@@ -113,10 +121,64 @@ function orNothing<T>(read: () => T | undefined): T | undefined {
   }
 }
 
-/** `null` when nothing was observed. */
-export function observeClient(extra: Extra, options: ObserveClientOptions): ClientObserved | null {
-  const info = orNothing(() => observedInfo(extra, options));
-  const headers = orNothing(() => observedHeaders(extra, options));
+function assemble(
+  info: ClientObserved["info"],
+  headers: ClientObserved["headers"],
+): ClientObserved | null {
   if (info === undefined && headers === undefined) return null;
   return { ...(info && { info }), ...(headers && { headers }) };
+}
+
+/** `null` when nothing was observed. */
+export function observeClient(extra: Extra, options: ObserveClientOptions): ClientObserved | null {
+  return assemble(
+    orNothing(() => observedInfo(extra, options)),
+    orNothing(() => cleanHeaders(extraHeaders(extra), options.scrubber)),
+  );
+}
+
+/** Headers as a vendor's server framework holds them: a fetch `Headers`, or a
+ * plain record such as Node's `req.headers`. */
+export type HeaderInput = Headers | Record<string, string | readonly string[] | undefined>;
+
+/** Only the registered names are copied in, so a header the platform refuses
+ * to hold cannot cost the ones we read. */
+function append(headers: Headers, name: string, value: string): void {
+  try {
+    headers.append(name, value);
+  } catch {
+    // A value Headers will not hold (a newline, a non-Latin-1 character) costs only itself.
+  }
+}
+
+function registeredHeaders(input: HeaderInput): Headers {
+  const out = new Headers();
+  if (typeof (input as Headers).get === "function") {
+    for (const name of OBSERVED_HEADERS) {
+      const value: unknown = (input as Headers).get(name);
+      if (typeof value === "string") append(out, name, value);
+    }
+    return out;
+  }
+  for (const [key, value] of Object.entries(input)) {
+    const name = key.toLowerCase();
+    if (!(OBSERVED_HEADERS as readonly string[]).includes(name)) continue;
+    for (const line of typeof value === "string" ? [value] : Array.isArray(value) ? value : []) {
+      if (typeof line === "string") append(out, name, line);
+    }
+  }
+  return out;
+}
+
+/** The library path's `client_observed` (SPEC §5.6 rule 4): what the vendor's
+ * code passed, under the same rules as what a client sends over MCP. */
+export function clientObservedFrom(
+  clientInfo: unknown,
+  headers: HeaderInput | undefined,
+  scrubber: ObserveClientOptions["scrubber"],
+): ClientObserved | null {
+  return assemble(
+    orNothing(() => cleanInfo(declared(clientInfo), scrubber)),
+    orNothing(() => (headers ? cleanHeaders(registeredHeaders(headers), scrubber) : undefined)),
+  );
 }

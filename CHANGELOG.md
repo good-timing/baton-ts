@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.5.7: the library API
+
+- **`Client`, for agents that reach you without MCP (SPEC §5.6).** It sends
+  the same events as `withBaton`, with `transport_observed: "library"`.
+  `client.session(options, fn)` gives every call inside `fn` one session,
+  principal, client and turn. `client.trace(options, fn)` records `fn` as one
+  tool call, sync or async; a throw is recorded and passed on unchanged.
+  `client.wrap(toolName, fn)` traces a function on every call. The names
+  follow the Python SDK's `Client`, in camelCase.
+- **Differences from Python's `Client`.** One client covers sync and async
+  code. A trace's result is the callback's return value unless
+  `trace.observed()` is called. A callback that returns a promise or other
+  thenable gets a new native Promise back. A closed client drops events
+  instead of throwing.
+- **`INTENT_PARAMS`** exports the three injected params' names and wording,
+  for a vendor adding them to its own API.
+
 ## 0.5.6: a call's intent rides only the call
 
 Install this only against a collector that reads a call's intent from the

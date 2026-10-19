@@ -127,7 +127,10 @@ import {
   ERROR_BODY_MAX_CODE_POINTS,
   endResultFields,
   errorText,
+  errorTypeOf,
   type FailureKind,
+  scrubbedErrorBody,
+  messageOf,
   OUTPUT_SCHEMA_MISMATCH,
   requestSideErrorFields,
   requestSideFailureKind,
@@ -405,22 +408,7 @@ class SurfaceState {
  * field-for-field.
  */
 function errorBody(ctx: WrapContext, text: string): string {
-  // eslint-disable-next-line no-restricted-syntax -- called only from emit() build thunks, so emit's guard already covers a throw here
-  return capCodePoints(String(ctx.scrubber(text)), ERROR_BODY_MAX_CODE_POINTS);
-}
-
-/** `error_type` for a THROWN value (SPEC §11.4.3's RAISE shape): the
- * exception's class name, `"Error"` for anything that is not one. Shared by
- * the inner wrapper's raise lane and the outer seam, which both have to spell
- * it — two spellings would let the same thrown `ProtocolError` arrive under
- * two labels depending on which seam reported it. */
-function errorTypeOf(err: unknown): string {
-  return err instanceof Error ? err.constructor.name : "Error";
-}
-
-/** The human-readable text of a thrown value, by the same rule. */
-function messageOf(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
+  return scrubbedErrorBody(ctx.scrubber, text);
 }
 
 /** The envelope members every event shares, resolved off one MCP request —

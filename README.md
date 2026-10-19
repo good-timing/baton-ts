@@ -85,6 +85,34 @@ What a stateless server costs, with either function:
   Signals that need several calls in one session, such as a retry loop, do not fire across requests.
 - **The client is named from its `User-Agent`.** A client states its name in the `initialize` handshake, and a per-request server never sees the handshake of the call it is serving. Each event still carries the request's `User-Agent` header in `client_observed`, and your dashboard names the client from that.
 
+## Without MCP: the library API
+
+Use `Client` when agents reach you through something other than an MCP server: a REST API, a skill, or a tool loop in your own agent. It sends the same events `withBaton` sends.
+
+Put it in the one place every tool call passes through, such as a middleware or a dispatcher. Then every tool is covered by one `trace()`:
+
+```ts
+import { Client } from "@goodtiming/baton-sdk";
+
+const baton = new Client({ dsn: process.env.BATON_DSN });
+
+app.use((req, res, next) =>
+  baton.session(
+    { sessionId: req.get("x-conversation-id"), principal: { principalId: req.user.id }, headers: req.headers },
+    () => baton.trace({ toolName: req.path, params: req.body }, () => next()),
+  ),
+);
+```
+
+- **`session(options, fn)`** gives every `trace()` and `annotate()` inside `fn` the same session, principal, client and turn, including after `await`. Its options are `sessionId`, `principal`, `clientInfo`, `headers` and `turnId`, all optional. Without a `sessionId` the block makes one up. Pass the same `turnId` to every block that serves one user request.
+- **`trace(options, fn)`** runs `fn` as one tool call and returns what it returns. If `fn` returns a promise, the call ends when the promise settles, and `trace()` returns a new native Promise of the same value. Its `then` is called once, so a lazy query builder is not run twice, but its own methods are not on what comes back. A throw or rejection is recorded and passed on unchanged. The options are `toolName`, `intent`, `expectedOutcome`, `workflow`, `params` and `consentToken`. The callback's return value is the recorded result unless `fn` calls `trace.observed(...)`.
+- **`wrap(toolName, fn)`** returns `fn` traced on every call, for code with no single place to put `trace()`. A single plain-object argument is recorded as `params`.
+- **`annotate(...)`** and `trace.annotate(...)` send a report your code relays from the agent.
+
+`INTENT_PARAMS` holds the names and wording of the three params `withBaton` adds to MCP tools. Use them to ask for the same values in your own API, then pass the answers to `trace()`.
+
+Capture never throws into your code. Only the constructor throws, on a bad config. Call `await baton.aclose()` at shutdown.
+
 ## PII scrubbing
 
 **On by default**, a rule-for-rule port of the Python SDK's ruleset: email, `Bearer` values, `sk-*` and `AKIA*` keys, JWTs, phone numbers, Luhn-checked card numbers, plus force-redaction on sensitive field names. Pass `identityScrub` to opt out, or supply your own `(value: unknown) => unknown`.
