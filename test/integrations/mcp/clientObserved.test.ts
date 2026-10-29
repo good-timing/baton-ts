@@ -282,6 +282,7 @@ describe.each(MAJORS.map((m) => [m.label, m] as const))("on %s", (_label, major)
       vendorDisplayName: "Acme",
       consentToken: "ct",
       sink,
+      reportMode: "on",
     });
     const client = await major.connect(server);
     await client.callTool({ name: "lookup", arguments: { name: "alice" } });
@@ -334,6 +335,7 @@ describe("on a server built per request, over real HTTP", () => {
       consentToken: "ct",
       sink,
       scrubber: (value) => (typeof value === "string" ? value.replace("secret", "[x]") : value),
+      reportMode: "on",
     });
     const http = createServer((req, res) => {
       void (async () => {

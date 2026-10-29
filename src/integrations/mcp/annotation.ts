@@ -2,8 +2,8 @@
  * Annotation tool registration — SPEC §5.1.1. Registers a vendor-namespaced
  * tool (named by `annotationName.ts`: explicit, else the server's own name
  * slugged, else `{vendorId}_annotate`) that accepts the annotation
- * signature (user_goal / what_happened / tool_name / expected_result /
- * overall_task / suggested_improvement / context) and emits an `annotation`
+ * signature (user_goal / what_happened / tool_name / suggested_improvement /
+ * context) and emits an `annotation`
  * event. Port of `baton` (Python)'s `integrations/official/annotation.py`
  * with `proactive_mode="off"`, the only mode this package has: `user_goal`
  * is required by the schema, and a call that is not a report is refused.
@@ -35,10 +35,8 @@ import type { SessionCounter } from "./sessionCounter.js";
  * rather than passing silently. */
 interface AnnotationArgs extends Record<string, unknown> {
   user_goal: string;
-  expected_result?: string | undefined;
   what_happened?: string | undefined;
   tool_name?: string | null | undefined;
-  overall_task?: string | undefined;
   suggested_improvement?: string | undefined;
   context?: Record<string, unknown> | undefined;
 }
@@ -83,12 +81,10 @@ export function registerAnnotationTool(
       description,
       inputSchema: {
         user_goal: z.string(),
-        expected_result: z.string().optional(),
         what_happened: z.string().optional(),
         // Nullable so a report whose agent sends an explicit null is taken,
         // not rejected by validation.
         tool_name: z.string().nullable().optional(),
-        overall_task: z.string().optional(),
         suggested_improvement: z.string().optional(),
         context: z.record(z.string(), z.unknown()).optional(),
       },
@@ -158,24 +154,13 @@ export function registerAnnotationTool(
           client_observed: observeClient(extra, { server, scrubber: options.scrubber }),
           runtime_meta: scrubbedMeta,
           payload: {
-            // Agent-facing names -> wire keys, as with `overall_task`
-            // below: `user_goal` is stored as `intent`, `expected_result` as
-            // `expected_outcome`.
+            // The agent-facing `user_goal` is stored as the wire key `intent`.
             // eslint-disable-next-line no-restricted-syntax -- inside the emit() build thunk: a throw is already contained, and null here would fabricate a shape
             intent: options.scrubber(args.user_goal),
-            expected_outcome: args.expected_result
-              // eslint-disable-next-line no-restricted-syntax -- inside the emit() build thunk: a throw is already contained, and null here would fabricate a shape
-              ? options.scrubber(args.expected_result)
-              : null,
             // eslint-disable-next-line no-restricted-syntax -- inside the emit() build thunk: a throw is already contained, and null here would fabricate a shape
             what_happened: options.scrubber(whatHappened),
             // eslint-disable-next-line no-restricted-syntax -- inside the emit() build thunk: a throw is already contained, and null here would fabricate a shape
             tool_name: reportedTool ? options.scrubber(reportedTool) : reportedTool,
-            // Agent-facing param `overall_task` -> wire key `workflow`, the same
-            // split the injected params use (`overall_task` -> `call_workflow`):
-            // renaming the param must not move the key the console groups on.
-            // eslint-disable-next-line no-restricted-syntax -- inside the emit() build thunk: a throw is already contained, and null here would fabricate a shape
-            workflow: args.overall_task ? options.scrubber(args.overall_task) : null,
             suggested_improvement: args.suggested_improvement
               // eslint-disable-next-line no-restricted-syntax -- inside the emit() build thunk: a throw is already contained, and null here would fabricate a shape
               ? options.scrubber(args.suggested_improvement)

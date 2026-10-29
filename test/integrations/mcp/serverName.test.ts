@@ -32,6 +32,7 @@ import {
 } from "../../../src/integrations/mcp/annotationName.js";
 import {
   buildServerInstructions,
+  INSTRUCTIONS_RECOVERY_SENTENCE,
   INSTRUCTIONS_SUBAGENT_CLAUSE,
   fitsInstructionsCap,
 } from "../../../src/integrations/mcp/llmText.js";
@@ -40,6 +41,16 @@ const KEY = "baton_pk_" + "a".repeat(43);
 const SEGMENT = "srv-c8eca135";
 const DSN = `https://${KEY}@ingest.example.com/ten_37714baa/${SEGMENT}`;
 const CAP = 1500;
+
+/** The part of the instructions the cap budgets: the fixed sentences have no
+ * names in them and sit outside it. */
+function budgeted(instructions: string): number {
+  expect(instructions).toContain(INSTRUCTIONS_RECOVERY_SENTENCE);
+  expect(instructions.endsWith(INSTRUCTIONS_SUBAGENT_CLAUSE)).toBe(true);
+  return (
+    instructions.length - INSTRUCTIONS_RECOVERY_SENTENCE.length - INSTRUCTIONS_SUBAGENT_CLAUSE.length
+  );
+}
 
 interface Seen {
   handleToolName: string;
@@ -51,7 +62,7 @@ interface Seen {
 /** Install, connect a real client, and read what the agent would read. */
 async function seenOnV1(serverName: string, config: BatonConfig): Promise<Seen> {
   const server = new McpServerV1({ name: serverName, version: "1.0.0" });
-  const handle = withBaton(server, config);
+  const handle = withBaton(server, { reportMode: "on", ...config });
   const [clientTransport, serverTransport] = TransportV1.createLinkedPair();
   const client = new ClientV1({ name: "test-client", version: "1.0.0" });
   await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
@@ -70,7 +81,7 @@ async function seenOnV1(serverName: string, config: BatonConfig): Promise<Seen> 
 
 async function seenOnV2(serverName: string, config: BatonConfig): Promise<Seen> {
   const server = new McpServerV2({ name: serverName, version: "1.0.0" });
-  const handle = withBaton(server, config);
+  const handle = withBaton(server, { reportMode: "on", ...config });
   const [clientTransport, serverTransport] = TransportV2.createLinkedPair();
   const client = new ClientV2({ name: "test-client", version: "1.0.0" });
   await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
@@ -90,7 +101,7 @@ async function seenOnV2(serverName: string, config: BatonConfig): Promise<Seen> 
 /** Install only, and read the text off the server. For names no client would
  * accept in a handshake. */
 function installedOnV1(server: McpServerV1, config: BatonConfig): Seen {
-  const handle = withBaton(server, config);
+  const handle = withBaton(server, { reportMode: "on", ...config });
   /* eslint-disable @typescript-eslint/no-explicit-any */
   const internals = server as any;
   const seen = {
@@ -173,7 +184,7 @@ describe.each(MAJORS)("on %s", (_label, seen) => {
 
     expect(s.handleToolName).toBe("toybox-pantry-inventory-helper_annotate");
     expect(s.instructions).toMatch(/^This server is wrapped in the Toybox Pantry Inventory Helper usage/);
-    expect(s.instructions.length).toBeLessThanOrEqual(CAP);
+    expect(budgeted(s.instructions)).toBeLessThanOrEqual(CAP);
     expect(warnings).toEqual([]);
   });
 });
@@ -203,11 +214,11 @@ describe("with no DSN", () => {
     expect(s.instructions).toMatch(/^This server is wrapped in the Acme usage/);
   });
 
-  it("does not take the display name from the server: it stays required", () => {
+  it("does not take the display name from the server: reports still need one", () => {
     const server = new McpServerV1({ name: "toybox-pantry", version: "1.0.0" });
-    expect(() => withBaton(server, { vendorId: "acme", consentToken: "ct" })).toThrow(
-      /vendorDisplayName is required/,
-    );
+    expect(() =>
+      withBaton(server, { vendorId: "acme", consentToken: "ct", reportMode: "on" }),
+    ).toThrow(/needs a vendorDisplayName with reportMode: "on"/);
   });
 });
 
@@ -274,7 +285,7 @@ describe("the instructions cap", () => {
     });
     expect(s.instructions).toMatch(new RegExp(`^This server is wrapped in the ${SEGMENT} usage`));
     expect(s.handleToolName).toBe(`${"x".repeat(30)}_annotate`);
-    expect(s.instructions.length).toBeLessThanOrEqual(CAP);
+    expect(budgeted(s.instructions)).toBeLessThanOrEqual(CAP);
     expect(warnings.join("\n")).toMatch(/does not fit the server-instructions budget as the display name/);
   });
 
@@ -302,7 +313,7 @@ describe("the instructions cap", () => {
     });
     expect(s.handleToolName).toBe(readable(tie));
     expect(s.instructions).toMatch(new RegExp(`^This server is wrapped in the ${SEGMENT} usage`));
-    expect(s.instructions.length).toBeLessThanOrEqual(CAP);
+    expect(budgeted(s.instructions)).toBeLessThanOrEqual(CAP);
 
     // One shorter, both fit, and both stay readable.
     const below = installedOnV1(
@@ -330,12 +341,7 @@ describe("the instructions cap", () => {
       }, `length ${n}`).not.toThrow();
       const besideTheSegment = annotationToolNameFromServer(name, SEGMENT) ?? `${SEGMENT}_annotate`;
       expect(s!.handleToolName, `length ${n}`).toBe(besideTheSegment);
-      // The subagent sentence is added after the cap check and is not in its budget.
-      expect(s!.instructions.endsWith(INSTRUCTIONS_SUBAGENT_CLAUSE), `length ${n}`).toBe(true);
-      expect(
-        s!.instructions.length - INSTRUCTIONS_SUBAGENT_CLAUSE.length,
-        `length ${n}`,
-      ).toBeLessThanOrEqual(CAP);
+      expect(budgeted(s!.instructions), `length ${n}`).toBeLessThanOrEqual(CAP);
       const display = /^This server is wrapped in the (.*?) usage and friction SDK\./.exec(
         s!.instructions,
       )?.[1];

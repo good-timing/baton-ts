@@ -231,7 +231,7 @@ describe("withBaton", () => {
     expect(JSON.stringify(end.payload)).not.toContain("secret");
   });
 
-  it("captures call_workflow and call_expected from injected params, as siblings of params", async () => {
+  it("records a stale client's call_workflow and call_expected as siblings of params", async () => {
     // `call_workflow` is the task-label grouping key the Console's rung 3b
     // segments sessions on (exact string continuity). Without it a TS-sourced
     // session can't be split into tasks at all — which is why this landed
@@ -268,7 +268,7 @@ describe("withBaton", () => {
     });
   });
 
-  it("advertises overall_task on the wrapped tool's schema and never leaks it to the handler", async () => {
+  it("advertises only user_goal, and never leaks a stale client's overall_task to the handler", async () => {
     const server = new McpServer({ name: "vendor", version: "1.0.0" });
     let seenArgs: Record<string, unknown> | undefined;
     server.registerTool(
@@ -290,8 +290,6 @@ describe("withBaton", () => {
     const listed = await client.listTools();
     const probe = listed.tools.find((t) => t.name === "probe")!;
     expect(Object.keys(probe.inputSchema.properties as object).sort()).toEqual([
-      "expected_result",
-      "overall_task",
       "text",
       "user_goal",
     ]);
@@ -332,30 +330,30 @@ describe("withBaton", () => {
     ]);
   });
 
-  it("scrubs the annotation tool's task-label field", async () => {
+  it("takes a stale client's report that still sends the retired fields", async () => {
     const server = new McpServer({ name: "vendor", version: "1.0.0" });
     withBaton(server, {
       vendorId: "acme",
       vendorDisplayName: "Acme",
       consentToken: "ct",
       sink,
+      reportMode: "on",
     });
 
     const client = await connectClient(server);
-    await client.callTool({
+    const result = await client.callTool({
       name: "vendor_annotate",
       arguments: {
         user_goal: "do a thing",
         what_happened: "it returned nothing",
-        overall_task: "invoice for bob@example.com",
+        expected_result: "one thing",
+        overall_task: "2: invoices",
       },
     });
 
+    expect(result.isError).toBeFalsy();
     const annotation = sink.events.find((e) => e.event_type === "annotation")!;
-    // Agent sends `overall_task`; the wire carries `workflow`.
-    expect(annotation.payload).toMatchObject({
-      workflow: "invoice for [REDACTED:email]",
-    });
+    expect(annotation.payload).toMatchObject({ expected_outcome: null, workflow: null });
   });
 
   it("scrubs with the default ruleset when no scrubber is configured", async () => {
@@ -490,6 +488,7 @@ describe("withBaton", () => {
         vendorDisplayName: "",
         consentToken: "ct",
         sink,
+        reportMode: "on",
       }),
     ).toThrow(/vendorDisplayName/);
   });
@@ -509,6 +508,7 @@ describe("withBaton — instructions + annotation tool", () => {
       vendorDisplayName: "Acme",
       consentToken: "ct",
       sink,
+      reportMode: "on",
     });
 
     expect(handle.annotationToolName).toBe("vendor_annotate");
@@ -530,6 +530,7 @@ describe("withBaton — instructions + annotation tool", () => {
       vendorDisplayName: "Acme",
       consentToken: "ct",
       sink,
+      reportMode: "on",
     });
 
     const client = await connectClient(server);
@@ -551,6 +552,7 @@ describe("withBaton — instructions + annotation tool", () => {
       vendorDisplayName: "Acme",
       consentToken: "ct",
       sink,
+      reportMode: "on",
     });
 
     const client = await connectClient(server);
@@ -578,6 +580,7 @@ describe("withBaton — instructions + annotation tool", () => {
       vendorDisplayName: "Acme",
       consentToken: "ct",
       sink,
+      reportMode: "on",
       annotationToolName: "record_feedback",
     });
 
@@ -596,6 +599,7 @@ describe("withBaton — instructions + annotation tool", () => {
         vendorDisplayName: "Acme",
         consentToken: "ct",
         sink,
+        reportMode: "on",
         annotationToolName: "not.valid",
       }),
     ).toThrow(/cross-runtime/);
@@ -609,7 +613,7 @@ describe("withBaton — intent-param injection", () => {
     sink = new CapturingSink();
   });
 
-  it("injects the intent params by default, advertising all three as required", async () => {
+  it("injects user_goal by default, advertising it as required", async () => {
     const server = new McpServer({ name: "vendor", version: "1.0.0" });
     registerTools(server);
     withBaton(server, {
@@ -624,14 +628,7 @@ describe("withBaton — intent-param injection", () => {
     const echo = tools.find((t) => t.name === "echo")!;
 
     expect(echo.inputSchema.properties).toHaveProperty("user_goal");
-    expect(echo.inputSchema.properties).toHaveProperty("expected_result");
-    expect(echo.inputSchema.properties).toHaveProperty("overall_task");
-    expect(echo.inputSchema.required).toEqual([
-      "text",
-      "user_goal",
-      "expected_result",
-      "overall_task",
-    ]);
+    expect(echo.inputSchema.required).toEqual(["text", "user_goal"]);
   });
 
   it("does not add a schema to a tool registered with none (zero-arg tools are left alone)", async () => {
@@ -798,7 +795,7 @@ describe("withBaton — intent-param injection", () => {
     expect(echo.inputSchema.required).toContain("text");
   });
 
-  it("intentParamMode 'required' advertises the three names as required, and nothing else changes", async () => {
+  it("intentParamMode 'required' advertises user_goal as required, and nothing else changes", async () => {
     const advertised = async (mode: "optional" | "required") => {
       const server = new McpServer({ name: "vendor", version: "1.0.0" });
       server.registerTool(
@@ -821,7 +818,7 @@ describe("withBaton — intent-param injection", () => {
     const asOptional = await advertised("optional");
     const asRequired = await advertised("required");
     expect(asOptional.required).toBeUndefined();
-    expect(asRequired.required).toEqual(["user_goal", "expected_result", "overall_task"]);
+    expect(asRequired.required).toEqual(["user_goal"]);
 
     // Apart from `required`, the only difference is the label on those
     // params' descriptions, which names the mode.
@@ -829,18 +826,12 @@ describe("withBaton — intent-param injection", () => {
     const properties = (s: Advertised) => s.properties as Record<string, { description?: string }>;
     expect(properties(asRequired).user_goal!.description).toMatch(/^REQUIRED\. /);
     expect(properties(asOptional).user_goal!.description).toMatch(/^OPTIONAL\. /);
-    expect(properties(asRequired).expected_result!.description).toMatch(/^REQUIRED\. /);
-    expect(properties(asOptional).expected_result!.description).toMatch(/^OPTIONAL\. /);
-    expect(properties(asRequired).overall_task!.description).toMatch(/^REQUIRED\. /);
-    expect(properties(asOptional).overall_task!.description).toMatch(/^OPTIONAL\. /);
     const unlabelled = (s: Advertised) => ({
       ...s,
       required: undefined,
       properties: {
         ...properties(s),
         user_goal: { ...properties(s).user_goal, description: undefined },
-        expected_result: { ...properties(s).expected_result, description: undefined },
-        overall_task: { ...properties(s).overall_task, description: undefined },
       },
     });
     expect(unlabelled(asRequired)).toEqual(unlabelled(asOptional));
@@ -855,13 +846,13 @@ describe("withBaton — intent-param injection", () => {
       consentToken: "ct",
       sink,
       intentParamMode: "off",
+      reportMode: "on",
     });
 
     const client = await connectClient(server);
     const { tools } = await client.listTools();
     const echo = tools.find((t) => t.name === "echo")!;
     expect(echo.inputSchema.properties).not.toHaveProperty("user_goal");
-    expect(echo.inputSchema.properties).not.toHaveProperty("expected_result");
   });
 
   it("throws at withBaton() time on an invalid intentParamMode", () => {
@@ -947,10 +938,11 @@ describe("withBaton — surface_snapshot", () => {
     expect(echoTool.inputSchema.properties).toHaveProperty("text");
 
     expect(snapshot.payload.seam_augmentations).toEqual({
-      injected_tools: ["vendor_annotate"],
+      // Reports are off by default, so Baton adds no tool.
+      injected_tools: [],
       intent_param: {
-        names: ["expected_result", "overall_task", "user_goal"],
-        required_names: ["expected_result", "overall_task", "user_goal"],
+        names: ["user_goal"],
+        required_names: ["user_goal"],
         // This install sets no mode, so this is the default.
         mode: "required",
       },
@@ -981,7 +973,7 @@ describe("withBaton — surface_snapshot", () => {
   it("re-injects goal params after a schema-only .update() that doesn't replace the callback", async () => {
     // A .update() call can change paramsSchema without touching callback —
     // mcp.js still swaps registeredTool.inputSchema wholesale in that case,
-    // wiping any previously-injected user_goal/expected_result. Since the
+    // wiping any previously-injected user_goal. Since the
     // handler itself is untouched (still our wrapped closure), capture+
     // inject must re-run on schema change alone, independent of whether
     // the handler needs re-wrapping.
@@ -1009,7 +1001,6 @@ describe("withBaton — surface_snapshot", () => {
     const updated = tools.find((t) => t.name === "echo")!;
     expect(updated.inputSchema.properties).toHaveProperty("extra");
     expect(updated.inputSchema.properties).toHaveProperty("user_goal");
-    expect(updated.inputSchema.properties).toHaveProperty("expected_result");
   });
 
   it("re-captures to the SAME hash (no duplicate emit) when a re-captured tool's schema is unchanged", async () => {
@@ -1058,6 +1049,7 @@ describe("withBaton — surface_snapshot", () => {
       consentToken: "ct",
       sink,
       intentParamMode: "off",
+      reportMode: "on",
     });
 
     const client = await connectClient(server);
@@ -1183,6 +1175,7 @@ describe("withBaton — tenant_id is the ACCOUNT, not a second copy of vendor_id
       vendorDisplayName: "Echo",
       consentToken: "ct",
       sink,
+      reportMode: "on",
       ...config,
     });
     registerTools(server);
@@ -1193,7 +1186,7 @@ describe("withBaton — tenant_id is the ACCOUNT, not a second copy of vendor_id
     await client.callTool({ name: "echo", arguments: { text: "hi" } });
     await client.callTool({
       name: "vendor_annotate",
-      arguments: { user_goal: "g", what_happened: "it returned nothing", overall_task: "t" },
+      arguments: { user_goal: "g", what_happened: "it returned nothing" },
     });
     return sink.events;
   }
@@ -1258,6 +1251,7 @@ describe("withBaton — tenant_id is the ACCOUNT, not a second copy of vendor_id
       vendorDisplayName: "Echo",
       consentToken: "ct",
       sink,
+      reportMode: "on",
     });
     registerTools(server);
     const client = await connectClient(server);
@@ -1267,7 +1261,7 @@ describe("withBaton — tenant_id is the ACCOUNT, not a second copy of vendor_id
     process.env.BATON_TENANT_ID = "ten_b";
     await client.callTool({
       name: "vendor_annotate",
-      arguments: { user_goal: "g", what_happened: "it returned nothing", overall_task: "t" },
+      arguments: { user_goal: "g", what_happened: "it returned nothing" },
     });
 
     expect(sink.events.map((e) => e.event_type)).toEqual([
@@ -1365,6 +1359,7 @@ describe("withBaton — coordinates in runtime_meta", () => {
       vendorDisplayName: "Acme",
       consentToken: "ct",
       sink,
+      reportMode: "on",
     });
     return connectClient(server);
   }
@@ -1447,6 +1442,7 @@ describe("withBaton principal", () => {
       consentToken: "ct",
       tenantId: TENANT,
       sink,
+      reportMode: "on",
       ...config,
     });
     registerTools(server);

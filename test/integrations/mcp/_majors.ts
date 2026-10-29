@@ -58,8 +58,9 @@ export function terminal<T extends Event["event_type"]>(
 export interface Major {
   label: string;
   /** `eagerTools` declares the tools capability at construction, which on v2
-   * makes the SDK install its `tools/list` handler before any tool exists. */
-  make(options?: { eagerTools?: boolean }): any;
+   * makes the SDK install its `tools/list` handler before any tool exists.
+   * `instructions` are the vendor's own server instructions. */
+  make(options?: { eagerTools?: boolean; instructions?: string }): any;
   /** `outputSchema` takes the same per-major shape rule as `inputSchema`,
    * which is the whole reason it belongs here rather than in a caller: a test
    * that re-derived the rule would have to branch on something, and the only
@@ -110,6 +111,14 @@ export function install(
   return withBaton(server as never, { ...CFG, sink, ...extra });
 }
 
+function serverOptions(options?: { eagerTools?: boolean; instructions?: string }) {
+  if (!options?.eagerTools && options?.instructions === undefined) return undefined;
+  return {
+    ...(options.eagerTools && { capabilities: { tools: {} } }),
+    ...(options.instructions !== undefined && { instructions: options.instructions }),
+  };
+}
+
 /** Make every message `transport` sends carry `authInfo`. */
 function withAuthInfo(transport: any, authInfo: unknown): void {
   if (authInfo === undefined) return;
@@ -123,7 +132,7 @@ const V1: Major = {
   make: (options) =>
     new McpServerV1(
       { name: "vendor", version: "1.0.0" },
-      options?.eagerTools ? { capabilities: { tools: {} } } : undefined,
+      serverOptions(options),
     ),
   tool: (server, name, shape, handler, outputShape) => {
     server.registerTool(
@@ -153,7 +162,7 @@ const V2: Major = {
   make: (options) =>
     new McpServerV2(
       { name: "vendor", version: "1.0.0" },
-      options?.eagerTools ? { capabilities: { tools: {} } } : undefined,
+      serverOptions(options),
     ),
   tool: (server, name, shape, handler, outputShape) => {
     server.registerTool(

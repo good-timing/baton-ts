@@ -9,18 +9,15 @@
  * rendering, compared string-for-string.
  *
  * **Python's DEFAULT text, `proactive_mode="off"`.** This arm has no
- * `proactiveMode`, so it renders what Python renders when that is unset: the
- * reactive-only head and annotation lead, and no BEFORE clause asking for an
- * annotation ahead of every call. The injected `user_goal`/`expected_result`/
- * `overall_task` params carry intent on every call instead, without the extra
- * turn. ⚠ With `intentParamMode: "off"` nothing asks for intent at all.
- * Python refuses that combination at install; this arm has no second mode to
- * refuse it against.
+ * `proactiveMode`, so under `reportMode: "on"` it renders what Python renders
+ * when that is unset: the reactive-only head and annotation lead, and no
+ * BEFORE clause asking for an annotation ahead of every call.
  */
 
 const SERVER_INSTRUCTIONS_TEMPLATE = (
   vendorDisplayName: string,
   annotationToolName: string,
+  recovery: string,
 ) => `This server is wrapped in the ${vendorDisplayName} usage and friction SDK. \
 Use \`${annotationToolName}\` to report when a ${vendorDisplayName} tool \
 call goes wrong, or when a tool you needed does not exist, so \
@@ -31,7 +28,7 @@ AFTER any ${vendorDisplayName} tool errors, times out, returns an \
 unhelpful or contradictory result, or the user shows signs of giving \
 up, you MUST call \`${annotationToolName}\` with what_happened \
 (REQUIRED, your own words, NOT a category), tool_name (REQUIRED) and \
-suggested_improvement (REQUIRED whenever you can articulate one).
+suggested_improvement (REQUIRED whenever you can articulate one).${recovery}
 
 IF a ${vendorDisplayName} tool response lacks a structured field for \
 what the user asked about, OR you satisfied the user's intent via a \
@@ -42,6 +39,12 @@ what_happened and tool_name (none if no tool) AND still answer the \
 user with your best inference. Filing the annotation does NOT replace \
 answering.`;
 
+// Without it an agent can file the report and stop the user's task.
+export const INSTRUCTIONS_RECOVERY_SENTENCE =
+  " Then keep going: work out why the call failed, fix the input, and try " +
+  "again. Do not repeat the same failing call. Reporting is not a " +
+  "substitute for recovering.";
+
 const ANNOTATION_TOOL_DESCRIPTION_TEMPLATE = (
   vendorDisplayName: string,
 ) => `Report a ${vendorDisplayName} tool call that went wrong — call this \
@@ -50,19 +53,13 @@ result, or when no tool covers what the user asked for. Do NOT call it \
 before a tool call or to narrate normal successful work.
 
 Fields:
-  - user_goal: one sentence on what the user is trying to accomplish.
+  - user_goal: ${USER_GOAL_PARAM_BODY}
   - what_happened: REQUIRED on a report. \
 1-2 plain sentences in YOUR OWN WORDS: what you asked for, \
 what came back, and why it was unusable. Do NOT pick a category or \
 invent a label — describe it.
   - tool_name: REQUIRED on a report. The ${vendorDisplayName} tool that \
 went wrong. Write none if no tool exists for the request.
-  - expected_result: what a successful result should look like, so a \
-silent/thin failure can be told apart from success.
-  - overall_task: short stable label for the broader task this call \
-serves, e.g., 'morning meeting prep', 'pre-outreach research'. REPEAT the \
-exact same string on every call serving the same task; change it only \
-when the user starts a different task.
   - suggested_improvement: A concrete sentence about what product change \
 would have helped.
   - context: supplementary info not covered above. Common keys: plan, \
@@ -71,8 +68,8 @@ downstream_blocked, confidence_in_intent. When no tool covers the \
 request also missing_capability_field and requested_capability.`;
 
 // Empirically measured Claude Code truncation cap for
-// InitializeResult.instructions. The cap below it leaves room for
-// `INSTRUCTIONS_SUBAGENT_CLAUSE`.
+// InitializeResult.instructions. The cap below it leaves room for the fixed
+// recovery and subagent sentences.
 const CLAUDE_CODE_TRUNCATION_CAP = 2087;
 const INSTRUCTIONS_LENGTH_CAP = 1500;
 
@@ -81,8 +78,8 @@ interface InstructionNames {
   annotationToolName: string;
 }
 
-function renderServerInstructions(options: InstructionNames): string {
-  return SERVER_INSTRUCTIONS_TEMPLATE(options.vendorDisplayName, options.annotationToolName);
+function renderServerInstructions(options: InstructionNames, recovery = ""): string {
+  return SERVER_INSTRUCTIONS_TEMPLATE(options.vendorDisplayName, options.annotationToolName, recovery);
 }
 
 /** Would these two names render under the cap? Asked by RENDERING, not by
@@ -95,21 +92,21 @@ export function fitsInstructionsCap(options: InstructionNames): boolean {
 }
 
 /** `intentParamMode: "off"` drops the subagent sentence: no tool then carries
- * an `overall_task` param for a subagent to fill. */
+ * a `user_goal` param for a subagent to fill. */
 export function buildServerInstructions(
   options: InstructionNames & { intentParamMode?: string },
 ): string {
-  const rendered = renderServerInstructions(options);
-  if (rendered.length > INSTRUCTIONS_LENGTH_CAP) {
+  const budgeted = renderServerInstructions(options).length;
+  if (budgeted > INSTRUCTIONS_LENGTH_CAP) {
     throw new Error(
-      `Rendered server instructions are ${rendered.length} chars, which exceeds ` +
+      `Rendered server instructions are ${budgeted} chars, which exceeds ` +
         `the ${INSTRUCTIONS_LENGTH_CAP}-char safety cap (Claude Code truncates at ` +
         `~${CLAUDE_CODE_TRUNCATION_CAP}). Shorten vendorDisplayName or annotationToolName.`,
     );
   }
-  // Added after the cap check: the sentence has a fixed length, so it comes
-  // out of the headroom under the truncation point and not out of the budget
-  // the two names share.
+  // The fixed sentences have no names in them, so they come out of the
+  // headroom under the truncation cap, not out of the budget the names share.
+  const rendered = renderServerInstructions(options, INSTRUCTIONS_RECOVERY_SENTENCE);
   return options.intentParamMode === "off" ? rendered : rendered + INSTRUCTIONS_SUBAGENT_CLAUSE;
 }
 
@@ -119,22 +116,17 @@ export function buildAnnotationToolDescription(options: { vendorDisplayName: str
 
 // =============================================================================
 // Intent-param injection text — mirrors `baton` (Python)'s
-// `integrations/_llm_text.py` USER_GOAL_PARAM_NAME/EXPECTED_RESULT_PARAM_NAME
-// section byte-for-byte (see that module's docstring for rationale: this is
-// the capture path that survives runtimes which drop `instructions`,
-// notably Claude Desktop).
+// `integrations/_llm_text.py` byte-for-byte. This is the capture path that
+// survives runtimes which drop `instructions`, notably Claude Desktop.
 // =============================================================================
 
 export const USER_GOAL_PARAM_NAME = "user_goal";
+
+// Not injected. A client with an old tool list may still send them, and
+// `overall_task` carries the turn number the Console falls back to.
 export const EXPECTED_RESULT_PARAM_NAME = "expected_result";
-/** The task-label grouping key (wire field `call_workflow`; console rung 3b).
- * Deliberately NOT named `workflow`: injected params live inside vendor tool
- * schemas, where `workflow` is a plausible real vendor param (Workfront
- * approvals, CI pipelines, Notion automations) — a collision would make the
- * strip swallow the vendor's own argument, and the name would invite the LLM
- * to fill in the vendor object it is touching instead of the meta task
- * label. */
 export const OVERALL_TASK_PARAM_NAME = "overall_task";
+export const RETIRED_PARAM_NAMES = [EXPECTED_RESULT_PARAM_NAME, OVERALL_TASK_PARAM_NAME] as const;
 
 /** Provenance value stamped on `tool_call_start.payload.intent_source` when
  * intent came from an injected param. The Console reads this string. */
@@ -143,50 +135,35 @@ export const INTENT_SOURCE_PARAM = "injected_param";
 /** `intent_source` when the vendor's code passed intent to `client.trace()`. */
 export const INTENT_SOURCE_LIBRARY = "library_arg";
 
-// The leading label tracks `intentParamMode`: under "required" the
-// `tools/list` seam in withBaton.ts adds `requiredParamNames` to the
-// advertised `required` list, so a description still opening "OPTIONAL."
-// would contradict the schema it ships inside. Only the label moves; the body
-// is the measured text, as in Python's `_llm_text.py`.
-const USER_GOAL_PARAM_BODY =
-  "One sentence: what the user is actually trying to accomplish " +
-  "with this call (their goal, not a restatement of the arguments).";
-const USER_GOAL_PARAM_DESCRIPTION = "OPTIONAL. " + USER_GOAL_PARAM_BODY;
-const USER_GOAL_PARAM_DESCRIPTION_REQUIRED = "REQUIRED. " + USER_GOAL_PARAM_BODY;
-
-const EXPECTED_RESULT_PARAM_BODY =
-  "One sentence: what a successful result should look like, so a " +
-  "silent/thin failure can be told apart from success.";
-const EXPECTED_RESULT_PARAM_DESCRIPTION = "OPTIONAL. " + EXPECTED_RESULT_PARAM_BODY;
-const EXPECTED_RESULT_PARAM_DESCRIPTION_REQUIRED = "REQUIRED. " + EXPECTED_RESULT_PARAM_BODY;
-
-// Two parts with two jobs. The leading number says which user message the
-// call answers, and the Console cuts a turn where it changes (SPEC §11.5.1
-// rule 2). The label after the colon says which task, and it works ONLY if the
-// model repeats it verbatim while the task is unchanged: user_goal and
-// expected_result reword freely, so they cannot key grouping.
+// The leading number says which user message the call answers, and the
+// Console cuts a turn where it changes (SPEC §11.5.1 rule 2). The Console
+// splits the rest on "; success is".
 //
 // Do not reword: the text is the Python SDK's, byte for byte
-// (`llmText.test.ts`, "parity with the Python SDK's rendered text").
-const OVERALL_TASK_PARAM_BODY =
-  "The number of the user's current message in this conversation " +
-  "(1 for the first), a colon, then a short stable label for the broader " +
-  "task this call serves (e.g. '3: prepare campaign approval'). Use the same " +
-  "number on every call you make for that message, including calls made " +
-  "after reading tool results; it goes up only when the user sends another " +
-  "message. REPEAT the exact same label text after the colon on every call " +
-  "serving the same task, across messages; change the label only when the " +
-  "user starts a different task.";
-const OVERALL_TASK_PARAM_DESCRIPTION = "OPTIONAL. " + OVERALL_TASK_PARAM_BODY;
-const OVERALL_TASK_PARAM_DESCRIPTION_REQUIRED = "REQUIRED. " + OVERALL_TASK_PARAM_BODY;
+// (`llmText.test.ts`, "parity with the Python SDK's rendered text"). Only the
+// leading label tracks `intentParamMode`, so it agrees with the `required`
+// list the `tools/list` seam advertises.
+const USER_GOAL_PARAM_BODY =
+  "Write it as '<n>: <what this call is for>; success is <what its result " +
+  "should show>'. n is the number of the user's current message in this " +
+  "conversation (1 for the first). Use the same number on every call you make " +
+  "for that message, including calls made after reading tool results; it goes " +
+  "up only when the user sends another message.";
+const USER_GOAL_PARAM_DESCRIPTION = "OPTIONAL. " + USER_GOAL_PARAM_BODY;
+const USER_GOAL_PARAM_DESCRIPTION_REQUIRED = "REQUIRED. " + USER_GOAL_PARAM_BODY;
 
 // A main agent that delegates may never load this server's tool schemas, so the
 // param description above never reaches it and its subagents get no number.
 export const INSTRUCTIONS_SUBAGENT_CLAUSE =
   "\n\nWhen you hand work to a subagent that may call this server's tools, tell it " +
   "the number of the user's current message in this conversation, and that it " +
-  "must start overall_task with that number on every call to this server's " +
+  "must start user_goal with that number on every call to this server's " +
   "tools. This applies only to this server's tools.";
+
+/** The server instructions a vendor serving MCP itself puts in its
+ * `initialize` result beside `user_goal` (SPEC §5.6), and all of Baton's
+ * instructions under `reportMode: "off"`. */
+export const INTENT_INSTRUCTIONS = INSTRUCTIONS_SUBAGENT_CLAUSE.trim();
 
 /** `user_goal`'s description, labelled "REQUIRED." under `intentParamMode:
  * "required"` and "OPTIONAL." otherwise. */
@@ -196,27 +173,23 @@ export function buildUserGoalParamDescription(options: { intentParamMode?: strin
     : USER_GOAL_PARAM_DESCRIPTION;
 }
 
-export function buildOverallTaskParamDescription(
-  options: { intentParamMode?: string } = {},
-): string {
-  return options.intentParamMode === "required"
-    ? OVERALL_TASK_PARAM_DESCRIPTION_REQUIRED
-    : OVERALL_TASK_PARAM_DESCRIPTION;
-}
-
-export function buildExpectedResultParamDescription(
-  options: { intentParamMode?: string } = {},
-): string {
-  return options.intentParamMode === "required"
-    ? EXPECTED_RESULT_PARAM_DESCRIPTION_REQUIRED
-    : EXPECTED_RESULT_PARAM_DESCRIPTION;
-}
-
 /** Which injected params `intentParamMode` advertises as required. */
 export function requiredParamNames(intentParamMode: string): string[] {
-  return intentParamMode === "required"
-    ? [USER_GOAL_PARAM_NAME, EXPECTED_RESULT_PARAM_NAME, OVERALL_TASK_PARAM_NAME]
-    : [];
+  return intentParamMode === "required" ? [USER_GOAL_PARAM_NAME] : [];
+}
+
+/** Whether a tool's vendor-true JSON `inputSchema` declares `name` itself. */
+export function declaresParam(schema: unknown, name: string): boolean {
+  const props = (schema as { properties?: unknown } | null | undefined)?.properties;
+  return typeof props === "object" && props !== null && name in props;
+}
+
+/** Whether Baton's text is in the served instructions. Without the annotation
+ * tool it is only the subagent sentence, which a tool declaring its own
+ * `user_goal` removes. */
+export function instructionsSuffixServed(annotationToolName: string, served: unknown): boolean {
+  if (annotationToolName) return true;
+  return typeof served === "string" && served.includes(INTENT_INSTRUCTIONS);
 }
 
 /** One injected param, for a vendor adding it to its own API (SPEC §5.6).
@@ -227,15 +200,55 @@ export function requiredParamNames(intentParamMode: string): string[] {
 export interface IntentParam {
   readonly name: string;
   readonly description: string;
-  readonly traceOption: "intent" | "expectedOutcome" | "workflow";
+  readonly traceOption: "intent";
 }
 
 export const INTENT_PARAMS: readonly IntentParam[] = Object.freeze([
   Object.freeze({ name: USER_GOAL_PARAM_NAME, description: USER_GOAL_PARAM_BODY, traceOption: "intent" }),
-  Object.freeze({
-    name: EXPECTED_RESULT_PARAM_NAME,
-    description: EXPECTED_RESULT_PARAM_BODY,
-    traceOption: "expectedOutcome",
-  }),
-  Object.freeze({ name: OVERALL_TASK_PARAM_NAME, description: OVERALL_TASK_PARAM_BODY, traceOption: "workflow" }),
 ]);
+
+const VENDOR_INSTRUCTIONS = Symbol("batonVendorInstructions");
+// Where our paragraph begins: the reports head, or the whole text under
+// `reportMode: "off"`.
+const OURS_STARTS = ["This server is wrapped in the ", INTENT_INSTRUCTIONS];
+
+interface InstructionsHolder {
+  _instructions?: string | undefined;
+  [VENDOR_INSTRUCTIONS]?: string | undefined;
+}
+
+function endsInOurs(current: unknown, vendor: unknown): boolean {
+  if (typeof current !== "string") return false;
+  const prefix = typeof vendor === "string" && vendor.trim() ? `${vendor}\n\n` : "";
+  return OURS_STARTS.some((start) => current.startsWith(prefix + start));
+}
+
+/** SPEC §5.1.2: the vendor's own instructions first, ours below them.
+ *
+ * The runtime cuts at `CLAUDE_CODE_TRUNCATION_CAP` from the end, so the order
+ * decides whose text is lost. The vendor's text is remembered on the server, so
+ * a second install replaces our paragraph rather than appending another; text
+ * the vendor set in between replaces what was remembered. */
+export function withVendorInstructions(
+  server: object,
+  ours: string,
+  warn: (message: string) => void = (message) => process.stderr.write(message),
+): string {
+  const holder = server as InstructionsHolder;
+  const current = holder._instructions;
+  let vendor = VENDOR_INSTRUCTIONS in holder ? holder[VENDOR_INSTRUCTIONS] : current;
+  if (!endsInOurs(current, vendor)) {
+    vendor = current;
+    holder[VENDOR_INSTRUCTIONS] = vendor;
+  }
+  if (typeof vendor !== "string" || !vendor.trim()) return ours;
+  const combined = `${vendor}\n\n${ours}`;
+  if (combined.length > CLAUDE_CODE_TRUNCATION_CAP) {
+    warn(
+      `baton: the server instructions are ${combined.length} chars (yours ${vendor.length}, ` +
+        `Baton's ${ours.length}); Claude Code cuts them at ~${CLAUDE_CODE_TRUNCATION_CAP}, ` +
+        "so the end of Baton's text is lost there\n",
+    );
+  }
+  return combined;
+}

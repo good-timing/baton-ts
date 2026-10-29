@@ -36,7 +36,7 @@ describe.each(MAJORS)("reports on $label", (major) => {
     major.tool(server, "lookup", { name: z.string(), tool_name: z.string().optional() }, () => ({
       content: [{ type: "text" as const, text: "found" }],
     }));
-    const handle = install(server, sink, extra);
+    const handle = install(server, sink, { reportMode: "on", ...extra });
     const client = await major.connect(server);
     const annotate = async (args: Record<string, unknown>): Promise<any> =>
       JSON.parse(
@@ -159,6 +159,22 @@ describe.each(MAJORS)("reports on $label", (major) => {
     );
     expect(annotations(sink)).toHaveLength(1);
     expect(annotations(sink)[0]!.payload.tool_name).toBeNull();
+  });
+
+  it("takes a stale client's report that still sends the retired fields", async () => {
+    const { sink, client, name } = await connected();
+    const result = await client.callTool({
+      name,
+      arguments: {
+        user_goal: "look something up",
+        what_happened: "it failed",
+        expected_result: "one match",
+        overall_task: "2: lookup",
+      },
+    });
+    expect(result.isError).toBeFalsy();
+    expect(annotations(sink)).toHaveLength(1);
+    expect(annotations(sink)[0]!.payload).toMatchObject({ expected_outcome: null, workflow: null });
   });
 
   it("an injected intent after a report sends no second annotation", async () => {

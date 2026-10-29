@@ -1,9 +1,9 @@
 /**
  * Intent-param injection for the official SDK's **1.x** `McpServer`.
  *
- * Splicing `user_goal`/`expected_result`/`overall_task` into a vendor's
- * EXISTING Zod object schema has to build the injected fields with a schema
- * instance from the SAME zod major as the tool's other fields — a vendor on
+ * Splicing `user_goal` into a vendor's EXISTING Zod object schema has to
+ * build the injected field with a schema instance from the SAME zod major as
+ * the tool's other fields — a vendor on
  * 1.x may be on zod v3 or v4, and `objectFromShape` throws on a mixed-version
  * shape. The v3/v4 bridge that makes that work is `./zodCompat.js`, a
  * vendored port of the helpers 1.x uses internally; see that module for why
@@ -22,14 +22,7 @@ import {
 } from "./zodCompat.js";
 import { z as zV4 } from "zod";
 import { z as zV3 } from "zod/v3";
-import {
-  EXPECTED_RESULT_PARAM_NAME,
-  OVERALL_TASK_PARAM_NAME,
-  USER_GOAL_PARAM_NAME,
-  buildExpectedResultParamDescription,
-  buildOverallTaskParamDescription,
-  buildUserGoalParamDescription,
-} from "./llmText.js";
+import { RETIRED_PARAM_NAMES, USER_GOAL_PARAM_NAME, buildUserGoalParamDescription } from "./llmText.js";
 
 export type IntentParamMode = "optional" | "required" | "off";
 
@@ -49,8 +42,7 @@ export type IntentParamDispositions = Record<string, "injected" | "native">;
 const EMPTY_OBJECT_JSON_SCHEMA = { type: "object", properties: {} };
 
 /**
- * Splice `user_goal`/`expected_result`/`overall_task` into `inputSchema`'s
- * object shape.
+ * Splice `user_goal` into `inputSchema`'s object shape.
  * Returns the original schema unchanged (with empty dispositions) when
  * there's no object schema to extend into — a tool with no `inputSchema` at
  * all is left alone rather than given one, because adding a schema where
@@ -106,22 +98,23 @@ function buildIntentFields(
 } {
   const dispositions: IntentParamDispositions = {};
   const toInject: Record<string, unknown> = {};
+  // A retired name the vendor declares is the vendor's, and is forwarded.
+  for (const name of RETIRED_PARAM_NAMES) {
+    if (name in existingShape) dispositions[name] = "native";
+  }
 
-  // Every field is optional in the zod schema, in every mode: a required one
-  // would make the vendor's server refuse a call that omits it. Zod cannot
-  // advertise required without enforcing it, so `required` is advertised on
-  // the `tools/list` response instead, by `advertiseIntentParamsRequired`.
-  for (const [name, buildDescription] of [
-    [USER_GOAL_PARAM_NAME, buildUserGoalParamDescription],
-    [EXPECTED_RESULT_PARAM_NAME, buildExpectedResultParamDescription],
-    [OVERALL_TASK_PARAM_NAME, buildOverallTaskParamDescription],
-  ] as const) {
-    if (name in existingShape) {
-      dispositions[name] = "native";
-    } else {
-      dispositions[name] = "injected";
-      toInject[name] = zodImpl.string().optional().describe(buildDescription({ intentParamMode }));
-    }
+  // Optional in the zod schema, in every mode: a required field would make the
+  // vendor's server refuse a call that omits it. Zod cannot advertise required
+  // without enforcing it, so `required` is advertised on the `tools/list`
+  // response instead, by `advertiseIntentParamsRequired`.
+  if (USER_GOAL_PARAM_NAME in existingShape) {
+    dispositions[USER_GOAL_PARAM_NAME] = "native";
+  } else {
+    dispositions[USER_GOAL_PARAM_NAME] = "injected";
+    toInject[USER_GOAL_PARAM_NAME] = zodImpl
+      .string()
+      .optional()
+      .describe(buildUserGoalParamDescription({ intentParamMode }));
   }
 
   return { dispositions, toInject };
@@ -146,7 +139,7 @@ function buildIntentFields(
  * injected params on `tools/list`.
  *
  * One consequence worth knowing: the vendor's refinements now run over the
- * arguments *including* `user_goal`/`expected_result`/`overall_task`, since
+ * arguments *including* `user_goal`, since
  * v2 validates before dispatch and the strip happens in our wrapper after.
  * A refinement over key counts or unknown keys would therefore observe
  * Baton's params. Rare, and the alternative is dropping the refinement

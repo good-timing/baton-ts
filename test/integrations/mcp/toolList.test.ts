@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { MAJORS, CapturingSink, install } from "./_majors.js";
 
-const INTENT_PARAMS = ["user_goal", "expected_result", "overall_task"];
+const INTENT_PARAMS = ["user_goal"];
 
 describe.each(MAJORS)("tool list events — $label", (major) => {
   const withLookup = (): unknown => {
@@ -35,10 +35,10 @@ describe.each(MAJORS)("tool list events — $label", (major) => {
     expect(end!.session_id).toBe(start!.session_id);
   });
 
-  it("is sent by a server that had no tool when it was wrapped", async () => {
+  it("is sent by a server whose only tool is the annotate tool", async () => {
     const sink = new CapturingSink();
     const server = major.make();
-    install(server, sink);
+    install(server, sink, { reportMode: "on" });
     const client = await major.connect(server);
 
     await client.listTools();
@@ -171,7 +171,7 @@ describe.each(MAJORS)("tool list events — $label", (major) => {
   it.each(["optional", "off"] as const)("is sent under intentParamMode %s", async (mode) => {
     const sink = new CapturingSink();
     const server = withLookup();
-    install(server, sink, { intentParamMode: mode });
+    install(server, sink, { intentParamMode: mode, ...(mode === "off" && { reportMode: "on" as const }) });
     const client = await major.connect(server);
 
     await client.listTools();

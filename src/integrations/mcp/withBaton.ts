@@ -28,10 +28,9 @@
  * MCP's error flag on a 200. Reading only the first is what this package did,
  * and what §6.1's own wording told it to. Injects server `instructions`
  * (SPEC §5.1.2), registers
- * the `<vendor>_annotate` tool (SPEC §5.1.1), injects `user_goal`/
- * `expected_result`/`overall_task` intent params on every wrapped tool's
- * schema (SPEC §11.4.1 `call_intent`/`call_expected`/`call_workflow`/
- * `intent_source`), and captures a `surface_snapshot`
+ * the `<vendor>_annotate` tool under `reportMode: "on"` (SPEC §5.1.1), injects
+ * a `user_goal` intent param on every wrapped tool's schema (SPEC §11.4.1
+ * `call_intent`/`intent_source`), and captures a `surface_snapshot`
  * of the vendor-true surface. Every payload leaving here runs through the
  * configured scrubber, which defaults to the shipped ruleset (`src/scrub.ts`)
  * — see README "What is not here yet" for what's still not here (the low-level
@@ -147,13 +146,17 @@ import {
   resolveAnnotationToolName,
   usableServerName,
 } from "./annotationName.js";
-import { buildServerInstructions, INSTRUCTIONS_SUBAGENT_CLAUSE } from "./llmText.js";
 import {
-  EXPECTED_RESULT_PARAM_NAME,
+  buildServerInstructions,
+  declaresParam,
+  INSTRUCTIONS_SUBAGENT_CLAUSE,
+  INTENT_INSTRUCTIONS,
   INTENT_SOURCE_PARAM,
-  OVERALL_TASK_PARAM_NAME,
-  USER_GOAL_PARAM_NAME,
+  instructionsSuffixServed,
+  RETIRED_PARAM_NAMES,
   requiredParamNames,
+  USER_GOAL_PARAM_NAME,
+  withVendorInstructions,
 } from "./llmText.js";
 import {
   extraMeta,
@@ -207,10 +210,11 @@ interface WrapContext {
   vendorToolJsonSchema: (name: string, inputSchema: unknown) => Record<string, unknown>;
   /** Drop v2's per-tool JSON-Schema memo after we mutate `inputSchema`. */
   bustSchemaMemo: (name: string) => void;
-  /** Tool `name` declares its own `overall_task`: take the subagent sentence
+  /** Tool `name` declares its own `user_goal`: take the subagent sentence
    * out of the instructions, or it sends the turn number into the vendor's
    * argument. */
   dropSubagentClause: (name: string) => void;
+  servedInstructions: () => unknown;
   /** The vendor's per-request identity resolver, or `undefined`. Resolved
    * ONCE at install and shared by the tool-call and annotation paths — two
    * resolutions could disagree, and an annotation naming a different actor
@@ -315,7 +319,13 @@ interface CallSlot {
    * far enough to decide on one (its own prelude threw — nothing to flush,
    * and NOT a request-side failure). */
   flushTerminal: ((outcome: OuterOutcome) => Promise<void>) | null;
+  /** A stale client's retired names, taken off the request by the seam before
+   * the tool's schema validates it: a strict schema would refuse the call. */
+  retired: RetiredValues;
 }
+
+type MutableRetiredValues = Partial<Record<(typeof RETIRED_PARAM_NAMES)[number], string | null>>;
+type RetiredValues = Readonly<MutableRetiredValues>;
 
 /** Module-scoped rather than per-install, which is safe for one reason worth
  * naming: a slot is only ever read inside the dynamic extent of the dispatch
@@ -458,6 +468,9 @@ async function openCall(
   toolName: string,
   extra: Extra,
   params: Record<string, unknown>,
+  /** What the seam took off the request. Passed in, not read from
+   * `callSlots`: the request-side path runs outside its own slot. */
+  retired: RetiredValues,
   /** Is there a registry entry for this tool? `false` only from the
    * `tools/call` seam's `unknown_tool` path, and it suppresses one warning
    * whose diagnosis would be wrong there — see `extractGoalParam`. */
@@ -469,25 +482,18 @@ async function openCall(
 
   // Strip the injected goal params IN PLACE, before snapshotting params —
   // `params` is the SAME object forwarded to the vendor handler, so the
-  // strip keeps user_goal/expected_result off the tool AND out of the
-  // captured `params` (which must equal the vendor-visible arguments).
+  // strip keeps user_goal off the tool AND out of the captured `params`
+  // (which must equal the vendor-visible arguments).
   const dispositions = ctx.paramRegistry.get(toolName);
   const rawIntent = extractGoalParam(params, USER_GOAL_PARAM_NAME, toolName, dispositions, registered);
-  const rawExpected = extractGoalParam(
-    params,
-    EXPECTED_RESULT_PARAM_NAME,
-    toolName,
-    dispositions,
-    registered,
-  );
-  const rawWorkflow = extractGoalParam(params, OVERALL_TASK_PARAM_NAME, toolName, dispositions, registered);
   // Guarded because `params` is already stripped in place above.
   const scrubbedIntent = scrubOrNull(ctx.scrubber, rawIntent, USER_GOAL_PARAM_NAME);
-  const scrubbedExpected = scrubOrNull(ctx.scrubber, rawExpected, EXPECTED_RESULT_PARAM_NAME);
-  // Scrubbed like the other two. Deterministic redaction preserves the
-  // exact-string continuity rung 3b groups on: the same label scrubs to
-  // the same output on every call.
-  const scrubbedWorkflow = scrubOrNull(ctx.scrubber, rawWorkflow, OVERALL_TASK_PARAM_NAME);
+  // `params` still holds them only on a server the seam could not reach.
+  const [scrubbedExpected = null, scrubbedWorkflow = null] = RETIRED_PARAM_NAMES.map((name) =>
+    dispositions === undefined || dispositions[name] === "native"
+      ? null
+      : scrubOrNull(ctx.scrubber, retired[name] ?? popText(params, name), name),
+  );
 
   // Resolved AFTER the intent-param strip, so the hook's `arguments` are
   // exactly what the vendor's own handler receives — Baton's injected
@@ -560,11 +566,14 @@ function batonWrap(nameRef: { current: string }, original: AnyHandler, ctx: Wrap
     >;
     // ⚠ `params` is the SAME object forwarded to the vendor's handler, and
     // `openCall` strips Baton's injected intent params out of it IN PLACE —
-    // which is what keeps `user_goal`/`expected_result` off the tool AND out
+    // which is what keeps `user_goal` off the tool AND out
     // of the captured `params`, since those must equal the vendor-visible
     // arguments. The outer seam's request-side path passes a COPY instead,
     // for the reason stated there.
-    const { common, sessionId } = await openCall(ctx, toolName, extra, params);
+    // Handed over once: a tool this handler calls in-process shares the slot.
+    const retired = slot?.retired ?? {};
+    if (slot) slot.retired = {};
+    const { common, sessionId } = await openCall(ctx, toolName, extra, params, retired);
 
     /** Emit this call's terminal event, or PARK it for the outer `tools/call`
      * seam when one is running (see `CallSlot`). `replacement` is passed by
@@ -796,7 +805,7 @@ function batonWrap(nameRef: { current: string }, original: AnyHandler, ctx: Wrap
  * caller's own value untouched — never stripped, never reported as intent.
  * Unlisted (a call arrived before this tool was ever wired, or
  * `intentParamMode` was "off" when it was) strips defensively with a
- * warning: safe only because these two names are reserved. */
+ * warning: safe only because this name is reserved. */
 function extractGoalParam(
   args: Record<string, unknown>,
   paramName: string,
@@ -818,9 +827,35 @@ function extractGoalParam(
       `baton: stripping ${paramName} from unlisted tool ${JSON.stringify(toolName)} (cold registry)\n`,
     );
   }
+  return popText(args, paramName);
+}
+
+function popText(args: Record<string, unknown>, paramName: string): string | null {
+  if (!(paramName in args)) return null;
   const raw = args[paramName];
   delete args[paramName];
   return typeof raw === "string" && raw.trim() ? raw : null;
+}
+
+/** Take a stale client's retired names off a `tools/call` request, before
+ * validation, which a strict schema would fail. Only from a tool Baton injected
+ * into: no other tool ever advertised them, so a value there is the vendor's. */
+function stripRetiredParams(
+  params: { name?: unknown; arguments?: unknown } | undefined,
+  ctx: WrapContext,
+): RetiredValues {
+  const toolName = params?.name;
+  const args = params?.arguments;
+  if (typeof toolName !== "string") return {};
+  if (toolName === ctx.annotationToolName) return {};
+  if (typeof args !== "object" || args === null || Array.isArray(args)) return {};
+  const dispositions = ctx.paramRegistry.get(toolName);
+  const retired: MutableRetiredValues = {};
+  for (const name of RETIRED_PARAM_NAMES) {
+    if (dispositions === undefined || dispositions[name] === "native" || !(name in args)) continue;
+    retired[name] = popText(args as Record<string, unknown>, name);
+  }
+  return retired;
 }
 
 /** A server whose surface differs on every request would otherwise grow the
@@ -855,10 +890,11 @@ async function maybeEmitSurfaceSnapshot(ctx: WrapContext): Promise<void> {
   // send it: `createBaton.test.ts`, "when the first requests arrive together".
   emitted.add(digest);
   const seam = buildSeamAugmentations({
-    injectedToolNames: [ctx.annotationToolName],
-    intentParamNames: [USER_GOAL_PARAM_NAME, EXPECTED_RESULT_PARAM_NAME, OVERALL_TASK_PARAM_NAME],
+    injectedToolNames: ctx.annotationToolName ? [ctx.annotationToolName] : [],
+    intentParamNames: [USER_GOAL_PARAM_NAME],
     intentParamMode: ctx.intentParamMode,
     requiredParamNames: requiredParamNames(ctx.intentParamMode),
+    instructionsSuffix: instructionsSuffixServed(ctx.annotationToolName, ctx.servedInstructions()),
   });
   try {
     await ctx.emitSurface(ctx.fallbackSessionId, digest, { ...snapshot, seam_augmentations: seam });
@@ -869,6 +905,14 @@ async function maybeEmitSurfaceSnapshot(ctx: WrapContext): Promise<void> {
   }
 }
 
+function declaredIntentParams(vendorSchema: unknown): IntentParamDispositions {
+  const declared: IntentParamDispositions = {};
+  for (const name of [USER_GOAL_PARAM_NAME, ...RETIRED_PARAM_NAMES]) {
+    if (declaresParam(vendorSchema, name)) declared[name] = "native";
+  }
+  return declared;
+}
+
 /** Capture the entry's CURRENT `inputSchema` as vendor-true and splice in
  * the goal params. Only safe to call when `inputSchema` is known-fresh
  * (vendor-true, not already carrying a prior injection) — i.e. at first
@@ -876,15 +920,19 @@ async function maybeEmitSurfaceSnapshot(ctx: WrapContext): Promise<void> {
  * `paramsSchema` (mcp.js replaces `inputSchema` wholesale in that case, so
  * whatever was captured/injected before is gone regardless of what this
  * function does). Calling it on an entry whose schema is STILL Baton's own
- * previously-injected version would misread `user_goal`/`expected_result`
- * as the vendor's own fields (`"native"` disposition) and silently stop
+ * previously-injected version would misread `user_goal` as the vendor's own
+ * field (`"native"` disposition) and silently stop
  * stripping/capturing them — callers must gate on that, not call this
  * unconditionally on every `.update()`. */
 function captureAndInject(name: string, entry: unknown, ctx: WrapContext): void {
   if (!entry || typeof entry !== "object") return;
   const mutable = entry as { inputSchema?: unknown; description?: string; executor?: unknown };
-  ctx.surfaceState.noteTool(name, ctx.vendorToolJsonSchema(name, mutable.inputSchema), mutable.description);
+  const vendorSchema = ctx.vendorToolJsonSchema(name, mutable.inputSchema);
+  ctx.surfaceState.noteTool(name, vendorSchema, mutable.description);
   if (ctx.intentParamMode === "off") return;
+  // From the JSON schema: a v2 schema that is not zod gets no injection, but
+  // its `user_goal` still counts.
+  if (declaresParam(vendorSchema, USER_GOAL_PARAM_NAME)) ctx.dropSubagentClause(name);
   const isV2 = typeof mutable.executor === "function";
   try {
     const { schema, dispositions } = isV2
@@ -900,9 +948,11 @@ function captureAndInject(name: string, entry: unknown, ctx: WrapContext): void 
       mutable.inputSchema = schema;
       ctx.bustSchemaMemo(name);
       ctx.paramRegistry.set(name, dispositions);
-      if (dispositions[OVERALL_TASK_PARAM_NAME] === "native") ctx.dropSubagentClause(name);
     } else {
-      ctx.paramRegistry.delete(name);
+      // A schema that could not be extended still has its own names to keep.
+      const declared = declaredIntentParams(vendorSchema);
+      if (Object.keys(declared).length > 0) ctx.paramRegistry.set(name, declared);
+      else ctx.paramRegistry.delete(name);
     }
   } catch {
     // Fail open — a schema this module can't handle just skips injection
@@ -1448,7 +1498,12 @@ function installToolsCallSeam(
     TOOLS_CALL_SEAM,
     (handler) =>
       async (...args) => {
-        const slot: CallSlot = { innerFired: false, flushTerminal: null };
+        const request = args[0] as { params?: { name?: unknown; arguments?: unknown } } | undefined;
+        const slot: CallSlot = {
+          innerFired: false,
+          flushTerminal: null,
+          retired: stripRetiredParams(request?.params, ctx),
+        };
         // Reassigned by both the try and the catch before `finally` reads it;
         // the initializer is for definite assignment, not a live default.
         let outcome: OuterOutcome = CLEAN_OUTCOME;
@@ -1515,7 +1570,7 @@ async function settleCall(
     // Nothing failed and the inner never fired: a tool this package does not
     // capture (the annotate tool, a task-based tool) was called and worked.
     if (!outcome.failed) return;
-    await emitRequestSideFailure(outcome, args, toolEntry, ctx);
+    await emitRequestSideFailure(outcome, args, slot.retired, toolEntry, ctx);
   } catch (err) {
     process.stderr.write(`baton: settling a tool call failed; events dropped: ${String(err)}\n`);
   }
@@ -1552,6 +1607,7 @@ async function settleCall(
 async function emitRequestSideFailure(
   outcome: OuterOutcome,
   args: AnyArgs,
+  retired: RetiredValues,
   toolEntry: (name: string) => ToolEntry | undefined,
   ctx: WrapContext,
 ): Promise<void> {
@@ -1572,22 +1628,15 @@ async function emitRequestSideFailure(
 
   // ⚠ A COPY, unlike the inner wrapper's in-place strip. `openCall` removes
   // Baton's injected intent params from whatever it is given, and here the
-  // object is the vendor's live `request.params.arguments` — already consumed
-  // by a validator that rejected it, so mutating it changes no outcome, but a
-  // sensor that edits the request it is observing is a habit to refuse rather
-  // than reason about once. The strip itself is required: these params ARE
+  // object is the vendor's live `request.params.arguments`, already consumed
+  // by a validator that rejected it. The seam edits the request only where it
+  // must, before validation (`stripRetiredParams`). The strip itself is required: these params ARE
   // still in the arguments on this path (validation runs above the executor,
   // and `captureAndInject` spliced the names into the schema), so without it
   // Baton's own params would land in `tool_call_start.params`, which SPEC
   // says equals the vendor-visible arguments.
   const params = { ...((request?.params?.arguments as Record<string, unknown>) ?? {}) };
-  const { common, sessionId } = await openCall(
-    ctx,
-    toolName,
-    args[1] as Extra,
-    params,
-    entry != null,
-  );
+  const { common, sessionId } = await openCall(ctx, toolName, args[1] as Extra, params, retired, entry != null);
 
   // `undefined` where the SDK rejected the call for a reason this producer
   // cannot attribute — SPEC §11.4.3 permits omitting the member and
@@ -1803,7 +1852,9 @@ export function withBaton(server: SupportedMcpServer, supplied: BatonConfig = {}
       annotationToolName: "",
     });
   }
-  return install(server, supplied, resolveBatonConfig(supplied), new Set());
+  const resolved = resolveBatonConfig(supplied);
+  warnUnusedReportSettings(resolved);
+  return install(server, supplied, resolved, new Set(), new Set());
 }
 
 /** One Baton for a process that builds a new `McpServer` for every request.
@@ -1828,7 +1879,8 @@ export function createBaton(supplied: BatonConfig = {}): Baton {
   // a request cannot fail on it or be switched off by it:
   // `createBaton.test.ts`, "reads the environment once".
   const resolved = resolveBatonConfig(supplied);
-  deriveAnnotationToolName(resolved.vendorId, supplied.annotationToolName);
+  warnUnusedReportSettings(resolved);
+  if (resolved.reportMode === "on") deriveAnnotationToolName(resolved.vendorId, supplied.annotationToolName);
   const sink = resolved.sink ?? new StdoutSink();
   const config = {
     ...resolved,
@@ -1836,9 +1888,10 @@ export function createBaton(supplied: BatonConfig = {}): Baton {
     tenantId: resolveTenantId(resolved.tenantId, resolved.vendorId),
   };
   const emittedSurfaceHashes = new Set<string>();
+  const warned = new Set<string>();
   return {
     wrap: (server) => {
-      install(server, supplied, config, emittedSurfaceHashes);
+      install(server, supplied, config, emittedSurfaceHashes, warned);
     },
     flush: () => sink.flush(),
     aclose: () => sink.aclose(),
@@ -1850,6 +1903,8 @@ function install(
   supplied: BatonConfig,
   resolved: ResolvedBatonConfig,
   emittedSurfaceHashes: Set<string>,
+  /** Kinds of warning already written, so `createBaton` writes each once and not per request. */
+  warned: Set<string>,
 ): BatonHandle {
   // The internals both majors keep off their public `.d.ts`, on one named
   // shape rather than an `any` per reach-in, so a future SDK rename is a
@@ -1874,13 +1929,17 @@ function install(
     className: internals.constructor.name,
   }));
 
-  const config = withServerDisplayName(resolved, supplied, serverName);
+  const config =
+    resolved.reportMode === "on" ? withServerDisplayName(resolved, supplied, serverName) : resolved;
   const sink = config.sink ?? new StdoutSink();
+  const reports = reportsFor(config);
   // Resolved ONCE and threaded to every consumer below: the wrapper's skip of
   // the annotate tool, the instructions, the registration and the handle. With
   // the server's name as an input, two resolutions could register one name
   // while the wrapper skips another and the instructions cite a third.
-  const annotationToolName = resolveAnnotationToolName(serverName, config);
+  const annotationToolName = reports
+    ? resolveAnnotationToolName(serverName, { ...config, vendorDisplayName: reports.vendorDisplayName })
+    : "";
   const intentParamMode: IntentParamMode = config.intentParamMode ?? "required";
   const counter = new SessionCounter();
   const fallbackSessionId = `sdk-${uuid7()}`;
@@ -1945,13 +2004,25 @@ function install(
     if (memo && typeof memo === "object") delete memo[name];
   };
 
+  const warnOnce = (key: string, message: string): void => {
+    if (warned.has(key)) return;
+    warned.add(key);
+    process.stderr.write(message);
+  };
+
   const dropSubagentClause = (name: string): void => {
     const current = internals.server._instructions;
-    if (typeof current !== "string" || !current.includes(INSTRUCTIONS_SUBAGENT_CLAUSE)) return;
-    // A replace, not a suffix strip: the vendor may have appended text after ours.
-    internals.server._instructions = current.replace(INSTRUCTIONS_SUBAGENT_CLAUSE, "");
-    process.stderr.write(
-      `baton: tool ${JSON.stringify(name)} declares its own overall_task, so the subagent ` +
+    if (current === INTENT_INSTRUCTIONS) {
+      internals.server._instructions = "";
+    } else if (typeof current === "string" && current.includes(INSTRUCTIONS_SUBAGENT_CLAUSE)) {
+      // A replace, not a suffix strip: the vendor may have appended text after ours.
+      internals.server._instructions = current.replace(INSTRUCTIONS_SUBAGENT_CLAUSE, "");
+    } else {
+      return;
+    }
+    warnOnce(
+      "native-user-goal",
+      `baton: tool ${JSON.stringify(name)} declares its own user_goal, so the subagent ` +
         "sentence was removed from the server instructions; a session that already started keeps it\n",
     );
   };
@@ -2013,6 +2084,7 @@ function install(
     vendorToolJsonSchema,
     bustSchemaMemo,
     dropSubagentClause,
+    servedInstructions: () => internals.server._instructions,
     surfaceState,
     emitSurface,
   };
@@ -2021,23 +2093,24 @@ function install(
   // §5.1.2). No public setter exists post-construction; see module
   // docstring for why this reach-in has no "preferred path" to fall back
   // from, unlike Python's adapter.
-  const instructions = buildServerInstructions({
-    vendorDisplayName: config.vendorDisplayName,
-    annotationToolName,
-    intentParamMode,
-  });
-  internals.server._instructions = instructions;
+  const ours = reports
+    ? buildServerInstructions({
+        vendorDisplayName: reports.vendorDisplayName,
+        annotationToolName,
+        intentParamMode,
+      })
+    : INTENT_INSTRUCTIONS;
+  internals.server._instructions = withVendorInstructions(internals.server, ours, (message) =>
+    warnOnce("instructions-length", message),
+  );
 
-  // Before the annotate tool registers: on a server with no tools yet, that
+  // Before any tool registers: on a server with no tools yet, the first
   // registration is what makes the SDK install its `tools/list` handler, and
   // the seam has to be in place to wrap it as it lands.
   installToolsListSeam(internals.server, ctx);
 
   // The SECOND tool-call seam (SPEC §11.4.3's `failure_kind`) — unconditional,
-  // and installed here for the same reason the `tools/list` seam is: the
-  // annotate tool's registration below is what makes a toolless server install
-  // its tool handlers at all, so the seam has to be in place to wrap one as it
-  // lands.
+  // and installed here for the same reason the `tools/list` seam is.
   //
   // ⚠ The registry is read PER CALL, not captured, so a tool removed after
   // install classifies as `unknown_tool` rather than against a stale snapshot
@@ -2064,12 +2137,12 @@ function install(
   // does not matter: `installRequestSeam` wraps a handler registered later.
   installLifecycleSeams(internals.server, ctx);
 
-  const resolvedAnnotationToolName = registerAnnotationTool(server, {
+  const resolvedAnnotationToolName = !reports ? "" : registerAnnotationTool(server, {
     sink,
     counter: ctx.counter,
     tenantId: ctx.tenantId,
     vendorId: ctx.vendorId,
-    vendorDisplayName: config.vendorDisplayName,
+    vendorDisplayName: reports.vendorDisplayName,
     consentToken: ctx.consentToken,
     resolvePrincipal: ctx.resolvePrincipal,
     fallbackSessionId: ctx.fallbackSessionId,
@@ -2109,4 +2182,21 @@ function install(
     sessionId: fallbackSessionId,
     annotationToolName: resolvedAnnotationToolName,
   });
+}
+
+/** The display name the reports need, or `undefined` under `reportMode: "off"`. */
+function reportsFor(config: ResolvedBatonConfig): { vendorDisplayName: string } | undefined {
+  if (config.reportMode !== "on") return undefined;
+  // `validateBatonConfig` refuses reportMode "on" without one.
+  return { vendorDisplayName: config.vendorDisplayName ?? "" };
+}
+
+/** Once per `withBaton` or `createBaton`, not per request. */
+function warnUnusedReportSettings(config: ResolvedBatonConfig): void {
+  if (config.reportMode !== "on" && config.annotationToolName !== undefined) {
+    process.stderr.write(
+      `baton: annotationToolName=${JSON.stringify(config.annotationToolName)} has no effect ` +
+        'with reportMode: "off", because no annotation tool is registered\n',
+    );
+  }
 }

@@ -37,8 +37,8 @@ const CONFIG = { vendorId: "acme", vendorDisplayName: "Acme", consentToken: "ct"
 /** v2's `McpServer` is a different class from 1.x's — this compiles only
  * because `withBaton` takes the structural `SupportedMcpServer` both
  * satisfy. If it ever needs a cast, the signature regressed. */
-function install(server: McpServer, sink: Sink) {
-  return withBaton(server, { ...CONFIG, sink });
+function install(server: McpServer, sink: Sink, reportMode: "on" | "off" = "off") {
+  return withBaton(server, { ...CONFIG, sink, reportMode });
 }
 
 let vendorSawArgs: Record<string, unknown> | null = null;
@@ -163,8 +163,6 @@ describe("withBaton on the official SDK v2", () => {
     expect(props(listed.tools.find((t) => t.name === "echo"))).toEqual([
       "text",
       "user_goal",
-      "expected_result",
-      "overall_task",
     ]);
 
     await client.callTool({
@@ -191,8 +189,6 @@ describe("withBaton on the official SDK v2", () => {
     expect(Object.keys(memo?.properties ?? {})).toEqual([
       "text",
       "user_goal",
-      "expected_result",
-      "overall_task",
     ]);
   });
 
@@ -261,7 +257,7 @@ describe("withBaton on the official SDK v2", () => {
     // to read v2's context shape itself.
     const server = new McpServer({ name: "vendor", version: "1.0.0" });
     registerTools(server);
-    install(server, sink);
+    install(server, sink, "on");
 
     const client = await connectClient(server);
     const result = await client.callTool({
@@ -323,8 +319,6 @@ describe("withBaton on the official SDK v2", () => {
       "a",
       "b",
       "user_goal",
-      "expected_result",
-      "overall_task",
     ]);
     expect(listed.tools.find((t) => t.name === "strict")?.inputSchema.additionalProperties).toBe(
       false,
@@ -450,5 +444,67 @@ describe("withBaton on the official SDK v2", () => {
     // one beside it survived. If v2 ever stops lifting, this flips and the
     // envelope read above becomes dead code rather than silently redundant.
     expect(start.runtime_meta).toEqual({ "claudecode/toolUseId": "tu_1" });
+  });
+});
+
+describe("a v2 tool whose schema is not zod", () => {
+  it("keeps its own user_goal and removes the subagent sentence, as the snapshot says", async () => {
+    const shape = { type: "object", properties: { user_goal: { type: "string" } } };
+    const standard = {
+      "~standard": {
+        version: 1,
+        vendor: "hand-rolled",
+        validate: (value: unknown) => ({ value }),
+        jsonSchema: { input: () => shape, output: () => shape },
+      },
+    };
+    const sink = new CapturingSink();
+    const server = new McpServer({ name: "vendor", version: "1.0.0" });
+    const register = server.registerTool.bind(server) as (...args: unknown[]) => unknown;
+    const saw: unknown[] = [];
+    register("approve", { inputSchema: standard }, async (args: unknown) => {
+      saw.push(args);
+      return { content: [{ type: "text" as const, text: "ok" }] };
+    });
+    install(server, sink);
+
+    const client = await connectClient(server);
+    expect(client.getInstructions() ?? "").toBe("");
+    await client.callTool({ name: "approve", arguments: { user_goal: "the vendor's" } });
+    expect(saw).toEqual([{ user_goal: "the vendor's" }]);
+    const start = sink.events.find((e) => e.event_type === "tool_call_start")!;
+    expect((start.payload as { call_intent: unknown }).call_intent).toBeNull();
+    const snapshot = sink.events.find((e) => e.event_type === "surface_snapshot")!;
+    expect(
+      (snapshot.payload as { seam_augmentations: Record<string, unknown> }).seam_augmentations
+        .instructions_suffix,
+    ).toBe(false);
+  });
+
+  it("forwards a retired name it may declare where Baton cannot see it", async () => {
+    const shape = {
+      anyOf: [{ type: "object", properties: { overall_task: { type: "string" }, k: { type: "string" } } }],
+    };
+    const standard = {
+      "~standard": {
+        version: 1,
+        vendor: "hand-rolled",
+        validate: (value: unknown) => ({ value }),
+        jsonSchema: { input: () => shape, output: () => shape },
+      },
+    };
+    const sink = new CapturingSink();
+    const server = new McpServer({ name: "vendor", version: "1.0.0" });
+    const register = server.registerTool.bind(server) as (...args: unknown[]) => unknown;
+    const saw: unknown[] = [];
+    register("t", { inputSchema: standard }, async (args: unknown) => {
+      saw.push(args);
+      return { content: [{ type: "text" as const, text: "ok" }] };
+    });
+    install(server, sink);
+
+    const client = await connectClient(server);
+    await client.callTool({ name: "t", arguments: { k: "v", overall_task: "the vendor's own" } });
+    expect(saw).toEqual([{ k: "v", overall_task: "the vendor's own" }]);
   });
 });

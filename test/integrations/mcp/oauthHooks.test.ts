@@ -238,6 +238,7 @@ describe.each(MAJORS)("end to end on $label", (major) => {
     const handle = install(server, sink, {
       resolvePrincipal: principalFromOAuthEmail,
       tenantId: TENANT,
+      reportMode: "on",
     });
     const client = await major.connect(server, { authInfo: authInfo(CLAIMS) });
     await client.callTool({ name: "lookup", arguments: { name: "x" } });

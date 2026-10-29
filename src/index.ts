@@ -177,5 +177,5 @@ export type {
 } from "./library/client.js";
 export type { HeaderInput } from "./integrations/mcp/clientObserved.js";
 // The injected params' names and wording, for a vendor adding them to its own API.
-export { INTENT_PARAMS } from "./integrations/mcp/llmText.js";
+export { INTENT_INSTRUCTIONS, INTENT_PARAMS } from "./integrations/mcp/llmText.js";
 export type { IntentParam } from "./integrations/mcp/llmText.js";

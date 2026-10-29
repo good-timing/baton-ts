@@ -45,7 +45,7 @@ async function driveEveryRequest(
   major.prompt(server, "summarize", { topic: z.string() }, () => ({
     messages: [{ role: "user", content: { type: "text", text: "do it" } }],
   }));
-  const handle = install(server, sink);
+  const handle = install(server, sink, { reportMode: "on" });
   const client = await major.connect(server, sessionId === undefined ? {} : { sessionId });
 
   await client.listTools();

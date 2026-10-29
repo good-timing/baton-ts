@@ -4,12 +4,8 @@ import { fileURLToPath } from "node:url";
 import Ajv2020 from "ajv/dist/2020.js";
 import addFormats from "ajv-formats";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { Client, INTENT_PARAMS, identityScrub, type Event, type Sink } from "../../src/index.js";
-import {
-  buildExpectedResultParamDescription,
-  buildOverallTaskParamDescription,
-  buildUserGoalParamDescription,
-} from "../../src/integrations/mcp/llmText.js";
+import { Client, INTENT_INSTRUCTIONS, INTENT_PARAMS, identityScrub, type Event, type Sink } from "../../src/index.js";
+import { buildUserGoalParamDescription } from "../../src/integrations/mcp/llmText.js";
 
 class MemorySink implements Sink {
   readonly events: Event[] = [];
@@ -498,18 +494,17 @@ describe("Client config", () => {
   });
 });
 
+describe("INTENT_INSTRUCTIONS", () => {
+  it("is exported for a vendor serving MCP itself", () => {
+    expect(INTENT_INSTRUCTIONS).toMatch(/^When you hand work to a subagent/);
+  });
+});
+
 describe("INTENT_PARAMS", () => {
-  it("names the three injected params with the MCP wording, unlabelled", () => {
-    expect(INTENT_PARAMS.map((p) => [p.name, p.traceOption])).toEqual([
-      ["user_goal", "intent"],
-      ["expected_result", "expectedOutcome"],
-      ["overall_task", "workflow"],
-    ]);
-    const labelled = [
+  it("names the one injected param with the MCP wording, unlabelled", () => {
+    expect(INTENT_PARAMS.map((p) => [p.name, p.traceOption])).toEqual([["user_goal", "intent"]]);
+    expect(`REQUIRED. ${INTENT_PARAMS[0]!.description}`).toBe(
       buildUserGoalParamDescription({ intentParamMode: "required" }),
-      buildExpectedResultParamDescription({ intentParamMode: "required" }),
-      buildOverallTaskParamDescription({ intentParamMode: "required" }),
-    ];
-    INTENT_PARAMS.forEach((p, i) => expect(`REQUIRED. ${p.description}`).toBe(labelled[i]));
+    );
   });
 });

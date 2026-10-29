@@ -308,6 +308,7 @@ async function runSpecScenario(): Promise<{
     // them up and this line with them — which is the documented workflow, the
     // vectors moving and this test failing until the scenario follows.
     intentParamMode: "required",
+    reportMode: "on",
     sink,
   });
 
@@ -521,7 +522,7 @@ describe("cross-SDK emitter conformance (Phase 3)", () => {
     ).toBeNull();
   });
 
-  it("X-2: `required` advertises the three names after the vendor's own, as Python does", async () => {
+  it("X-2: `required` advertises user_goal after the vendor's own, as Python does", async () => {
     const advertised = async (mode: "optional" | "required") => {
       const server = new McpServer({ name: "parity", version: "1.0.0" });
       server.registerTool(
@@ -549,9 +550,8 @@ describe("cross-SDK emitter conformance (Phase 3)", () => {
     const asRequired = await advertised("required");
     // The vendor's own requirement survives both; ours is appended after it.
     expect(asOptional.required).toEqual(["name"]);
-    expect(asRequired.required).toEqual(["name", "user_goal", "expected_result", "overall_task"]);
+    expect(asRequired.required).toEqual(["name", "user_goal"]);
     expect(asRequired.properties).toHaveProperty("user_goal");
-    expect(asRequired.properties).toHaveProperty("expected_result");
   });
 
   it("names no client itself, and sends what this harness's client declared", () => {

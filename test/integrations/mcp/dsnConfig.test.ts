@@ -197,9 +197,9 @@ describe("what the DSN does not take over", () => {
     // replaced by the server slug when there was one. One input, two answers,
     // decided by whether a dsn happens to be present. This string reaches the
     // calling agent, so the quiet substitution was the worse half.
-    expect(() => resolveBatonConfig({ dsn: DSN, consentToken: "ct", vendorDisplayName: "" })).toThrow(
-      /vendorDisplayName is required/,
-    );
+    expect(() =>
+      resolveBatonConfig({ dsn: DSN, consentToken: "ct", vendorDisplayName: "", reportMode: "on" }),
+    ).toThrow(/needs a vendorDisplayName with reportMode: "on"/);
   });
 
   it("leaves an explicit display name alone", () => {

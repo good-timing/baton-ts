@@ -135,7 +135,7 @@ describe.each(MAJORS)("createBaton on $label", (major) => {
   it("reads the environment once, when it is created", async () => {
     stubFetch();
     process.env.BATON_DSN = DSN;
-    const baton = createBaton({ consentToken: "ct" });
+    const baton = createBaton({ consentToken: "ct", reportMode: "on" });
     delete process.env.BATON_DSN;
     process.env.BATON_DISABLED = "1";
 
@@ -197,14 +197,49 @@ describe("createBaton", () => {
     expect(warning).toHaveBeenCalledTimes(1);
   });
 
+  it("warns about an annotationToolName without reports once, not once per request", async () => {
+    const write = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const baton = createBaton({ ...CFG, sink: new CapturingSink(), annotationToolName: "acme_report" });
+    for (let i = 0; i < 3; i++) await serveOneRequest(major, (server) => baton.wrap(server));
+
+    const warned = write.mock.calls.filter(([chunk]) => String(chunk).includes("acme_report"));
+    expect(warned).toHaveLength(1);
+  });
+
+  it("warns about long instructions and a native user_goal once, not once per request", async () => {
+    const write = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const baton = createBaton({ ...CFG, sink: new CapturingSink() });
+    for (let i = 0; i < 3; i++) {
+      const server = major.make({ instructions: "x".repeat(2100) });
+      major.tool(server, "approve", { user_goal: z.string().optional() }, () => ({
+        content: [{ type: "text" as const, text: "ok" }],
+      }));
+      baton.wrap(server as never);
+    }
+
+    const chunks = write.mock.calls.map(([chunk]) => String(chunk));
+    expect(chunks.filter((c) => c.includes("Claude Code cuts them"))).toHaveLength(1);
+    expect(chunks.filter((c) => c.includes("declares its own user_goal"))).toHaveLength(1);
+  });
+
   it("names the vendor after each server when a DSN gives no display name", async () => {
     stubFetch();
-    const baton = createBaton({ dsn: DSN, consentToken: "ct" });
+    const baton = createBaton({ dsn: DSN, consentToken: "ct", reportMode: "on" });
     const server = new McpServer({ name: "Toybox Pantry", version: "1.0.0" });
     baton.wrap(server);
 
     const internals = server as unknown as { server: { _instructions: string } };
     expect(internals.server._instructions).toContain("Toybox Pantry");
+    await baton.aclose();
+  });
+
+  it("does not size a display name for an annotation tool that reports off never registers", async () => {
+    stubFetch();
+    const warning = vi.spyOn(process, "emitWarning").mockImplementation(() => {});
+    const baton = createBaton({ dsn: DSN, consentToken: "ct" });
+    baton.wrap(new McpServer({ name: "N".repeat(2000), version: "1.0.0" }));
+
+    expect(warning.mock.calls.map(([message]) => String(message)).join("")).not.toContain("does not fit");
     await baton.aclose();
   });
 
@@ -219,8 +254,11 @@ describe("createBaton", () => {
   });
 
   it.each([
-    ["no display name", { vendorId: "acme", consentToken: "ct" }],
-    ["an annotation tool name clients reject", { ...CFG, annotationToolName: "acme.annotate" }],
+    ["no display name", { vendorId: "acme", consentToken: "ct", reportMode: "on" as const }],
+    [
+      "an annotation tool name clients reject",
+      { ...CFG, annotationToolName: "acme.annotate", reportMode: "on" as const },
+    ],
   ])("refuses %s when it is created, not on the first request", (_, config) => {
     expect(() => createBaton(config)).toThrow();
   });

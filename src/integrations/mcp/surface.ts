@@ -82,6 +82,8 @@ export function buildSeamAugmentations(options: {
   intentParamNames: string[];
   intentParamMode: "optional" | "required" | "off";
   requiredParamNames: string[];
+  /** Whether Baton's text reached the served instructions. */
+  instructionsSuffix: boolean;
 }): Record<string, unknown> {
   return {
     injected_tools: [...options.injectedToolNames].sort(),
@@ -93,6 +95,6 @@ export function buildSeamAugmentations(options: {
             mode: options.intentParamMode,
           }
         : null,
-    instructions_suffix: true,
+    instructions_suffix: options.instructionsSuffix,
   };
 }

@@ -25,7 +25,6 @@ const server = new McpServer({ name: "your-vendor-mcp", version: "1.0.0" });
 const handle = withBaton(server, {
   dsn: "https://baton_pk_...@baton.goodtiming.ai/ten_.../your-vendor",
 });
-// handle.annotationToolName === "your-vendor-mcp_annotate", from the server's own name
 
 // register tools before or after withBaton; both are captured
 server.registerTool("lookup", { inputSchema: { name: z.string() } }, async ({ name }) => {
@@ -34,6 +33,8 @@ server.registerTool("lookup", { inputSchema: { name: z.string() } }, async ({ na
 ```
 
 Copy the DSN from **/account**. It packs four values: the collector to send to, your workspace, this server, and the key that binds them. The SDK unpacks them and builds the sink itself.
+
+**Installing changes what your server advertises.** Each tool handler is wrapped, one sentence is added below your server's own `instructions`, and a `user_goal` parameter is added to every tool's schema and stripped again before your handler sees it. With `reportMode: "on"`, a `<vendor>_annotate` tool is also registered (named from your server's own name, so `your-vendor-mcp_annotate` here), and the added text tells the agent when to report a problem with it. [What gets injected](https://goodtiming.ai/docs.html#injected-tools).
 
 **If you distribute your server, put the DSN in your source.** A stdio server runs on your user's machine, spawned by their MCP client. The official client SDKs pass it a fixed six-variable allowlist (`HOME`, `LOGNAME`, `PATH`, `SHELL`, `TERM`, `USER`), plus whatever that user wrote in their own client config. Nothing from your `.env` is in either list, so a server configured that way captures nothing while appearing to work.
 
@@ -109,7 +110,7 @@ app.use((req, res, next) =>
 - **`wrap(toolName, fn)`** returns `fn` traced on every call, for code with no single place to put `trace()`. A single plain-object argument is recorded as `params`.
 - **`annotate(...)`** and `trace.annotate(...)` send a report your code relays from the agent.
 
-`INTENT_PARAMS` holds the names and wording of the three params `withBaton` adds to MCP tools. Use them to ask for the same values in your own API, then pass the answers to `trace()`.
+`INTENT_PARAMS` holds the name and wording of the one param `withBaton` adds to MCP tools. Use them to ask for the same values in your own API, then pass the answers to `trace()`.
 
 Capture never throws into your code. Only the constructor throws, on a bad config. Call `await baton.aclose()` at shutdown.
 
@@ -244,7 +245,7 @@ None of it blocks the quickstart above.
 
 - Only `StdoutSink` and `HttpSink`. `FileSink` and `MultiSink` are deferred; the Python package has all four.
 - Only the high-level `McpServer`. The low-level `Server` is not wrapped.
-- **Task-based tools are not wrapped, and are not left alone either.** A 1.x tool registered with an object at `.handler` rather than a function produces no `tool_call_*` events at all, and nothing reports that. It still gets the intent parameters added to its advertised schema, because injection runs before the wrap is skipped and the strip only happens inside the wrapper. So `user_goal`, `expected_result` and `overall_task` can arrive in your own handler's arguments. Tools on the same server registered the ordinary way are unaffected. ⚠ **The request-level seam above does not rescue this one**: it reports only on tools this package wrapped, so a task-based tool emits nothing even for a rejected argument, where an unknown tool now emits a `tool_call_error`.
+- **Task-based tools are not wrapped, and are not left alone either.** A 1.x tool registered with an object at `.handler` rather than a function produces no `tool_call_*` events at all, and nothing reports that. It still gets the intent parameters added to its advertised schema, because injection runs before the wrap is skipped and the strip only happens inside the wrapper. So `user_goal` can arrive in your own handler's arguments. Tools on the same server registered the ordinary way are unaffected. ⚠ **The request-level seam above does not rescue this one**: it reports only on tools this package wrapped, so a task-based tool emits nothing even for a rejected argument, where an unknown tool now emits a `tool_call_error`.
 - Intent parameters need a Zod schema. On the 2.x SDK a tool registered with a non-Zod standard schema is still wrapped and still emits `tool_call_*`; it just advertises no intent parameters.
 - v2's `createMcpHandler` is untested. A server built per request by your own code is supported: see [A server per request](#a-server-per-request).
 

@@ -25,10 +25,11 @@ import type { PrincipalWire } from "./identity.js";
 /** Emitted before the vendor handler runs. `params` is PII-scrubbed at
  * emit-time per SPEC §7.
  *
- * `call_intent` / `call_expected` / `call_workflow` are the values the SDK
- * stripped from the injected `user_goal` / `expected_result` /
- * `overall_task` params (see `llmText.ts`); they ride as SIBLINGS of
- * `params` — `params` stays exactly the vendor-visible arguments.
+ * `call_intent` is the value the SDK stripped from the injected `user_goal`
+ * param, and `call_expected` / `call_workflow` the retired `expected_result` /
+ * `overall_task` a stale client may still send (see `llmText.ts`); they ride
+ * as SIBLINGS of `params` — `params` stays exactly the vendor-visible
+ * arguments.
  * `call_intent`/`call_expected` are call-scoped diagnostics;
  * `call_workflow` is the task-label grouping key (console rung 3b, exact
  * string continuity). `intent_source` records provenance

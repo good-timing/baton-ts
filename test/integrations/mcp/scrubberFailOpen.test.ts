@@ -83,10 +83,10 @@ it("a non-function scrubber is refused at INSTALL, not swallowed per call", () =
 });
 
 describe.each(MAJORS)("a throwing vendor scrubber never breaks the call [$label]", (major) => {
-  async function build(scrubber: (value: unknown) => unknown) {
+  async function build(scrubber: (value: unknown) => unknown, reportMode?: "on") {
     const sink = new CapturingSink();
     const server = major.make();
-    const handle = withBaton(server, { ...CFG, sink, scrubber });
+    const handle = withBaton(server, { ...CFG, sink, scrubber, ...(reportMode && { reportMode }) });
     major.tool(server, "lookup", { name: z.string() }, () => ({
       content: [{ type: "text", text: ANSWER }],
     }));
@@ -113,7 +113,7 @@ describe.each(MAJORS)("a throwing vendor scrubber never breaks the call [$label]
     scrubber: (value: unknown) => unknown,
     report: Record<string, string> = {},
   ): Promise<{ res: Result; sink: CapturingSink }> {
-    const { client, sink, annotateTool } = await build(scrubber);
+    const { client, sink, annotateTool } = await build(scrubber, "on");
     const res = (await client.callTool({
       name: annotateTool,
       arguments: {

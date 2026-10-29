@@ -1,5 +1,42 @@
 # Changelog
 
+## Unreleased: one numbered `user_goal`; reports are opt-in
+
+The Python SDK's 0.8.22 and 0.8.23. The baton-spec pin moves to bf26c5a.
+
+- **`withBaton` adds one param, `user_goal`, written as `'<n>: <what this call
+  is for>; success is <what its result should show>'`.** `n` numbers the
+  user's message, so the Console can tell the turns apart (SPEC §11.5.1 rule
+  2). `expected_result` and `overall_task` are no longer added, and the
+  annotation tool no longer takes them. A client holding a tool list from
+  before may still send them: they are removed before your tool's schema
+  checks the call, so a strict schema does not refuse it, and they are
+  recorded as `call_expected` and `call_workflow`. A tool that declares one of
+  them itself keeps it. The subagent sentence names `user_goal`.
+  `INTENT_PARAMS` has one entry, and `INTENT_INSTRUCTIONS` is exported for a
+  vendor serving MCP itself.
+- **The annotation tool is off by default.** The new `reportMode` turns it on.
+  `"off"` (the default) registers no tool, and Baton's server instructions are
+  `INTENT_INSTRUCTIONS` alone, the sentence that passes the message number to
+  subagents. `"on"` registers the tool and serves its instructions, now
+  byte-identical to the Python SDK's, including the sentence that tells the
+  agent to keep going after a report. To keep receiving agent reports, set
+  `reportMode: "on"`.
+- **`vendorDisplayName` is needed only with `reportMode: "on"`.**
+  `annotationToolName` has no effect without it, and warns.
+  `intentParamMode: "off"` now needs `reportMode: "on"`, or install throws:
+  with neither, nothing captures what the user is trying to do.
+- **`withBaton` keeps your server instructions.** It used to write over them.
+  Its own text now goes below yours, after a blank line, and it warns when the
+  two together pass the ~2,087 characters Claude Code keeps, once per
+  `createBaton` rather than per request. A second install replaces Baton's
+  paragraph instead of adding another.
+- **A tool that declares its own `user_goal` removes the subagent sentence**,
+  so the agent does not put the turn number in your argument. The surface
+  snapshot's `seam_augmentations.instructions_suffix` is `false` when that
+  leaves none of Baton's text, including after that tool is removed. A v2 tool
+  whose schema is not zod keeps its own `user_goal` too.
+
 ## 0.5.7: the library API
 
 - **`Client`, for agents that reach you without MCP (SPEC §5.6).** It sends

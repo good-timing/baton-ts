@@ -25,6 +25,7 @@ export { VENDOR_ID_PATTERN } from "../../dsn.js";
 // Per-tool intent-param injection modes (mirrors baton-proxy's
 // BATON_INTENT_PARAM and Python's VendorConfig.intent_param_mode).
 const INTENT_PARAM_MODES = new Set(["optional", "required", "off"]);
+const REPORT_MODES = new Set(["on", "off"]);
 // What the vendor may ask us to do with tool RESULT data (SPEC §11.4).
 // `"full"` never reaches the wire — absence is what means captured.
 //
@@ -86,7 +87,8 @@ export interface BatonConfig {
    * for the same reason: a capitalisation you never chose would be a
    * fabricated name. Falls back to the DSN's server segment when the server's
    * name is one a library made up, is blank or unreadable, or would push the
-   * server instructions over their cap. With no `dsn`, this is required. */
+   * server instructions over their cap. With no `dsn`, this is required
+   * under `reportMode: "on"`, and unused otherwise. */
   vendorDisplayName?: string;
   /** End-user consent token attached to every emitted event per SPEC §2.3 —
    * the Console MUST reject events missing it.
@@ -120,16 +122,23 @@ export interface BatonConfig {
    * `acme-knowledge-base_annotate`. It falls back to `{vendorId}_annotate`
    * when the name is one a library made up, slugs to nothing, is unreadable,
    * or would not fit the server instructions. Set this to keep a name you have
-   * written into documentation, a prompt or a script. */
+   * written into documentation, a prompt or a script. Has no effect unless
+   * `reportMode: "on"`, and warns if set without it. */
   annotationToolName?: string;
+  /** Whether the agent is given a tool to report a call that went wrong.
+   * `"off"` (the default) registers no annotation tool, and Baton's server
+   * instructions are `INTENT_INSTRUCTIONS` alone, below your own. Each call's
+   * goal still arrives through `user_goal`. `"on"` registers the tool and
+   * serves its instructions. */
+  reportMode?: "on" | "off";
   /** Per-tool intent-param injection (mirrors baton-extmcp's vendor-neutral
-   * naming). `"required"` (default) injects `user_goal`/`expected_result`/
-   * `overall_task` string params on every wrapped tool's advertised schema
-   * and ADVERTISES all three as required in
-   * `tools/list`, without enforcing them: a call that omits them still reaches
+   * naming). `"required"` (default) injects a `user_goal` string param on
+   * every wrapped tool's advertised schema and ADVERTISES it as required in
+   * `tools/list`, without enforcing it: a call that omits it still reaches
    * your handler, and its event simply carries no intent. `"optional"` injects
-   * the same params and advertises none of them as required. `"off"` disables injection. The params are
-   * stripped before the vendor handler runs, so the tool never sees them.
+   * the same param and does not advertise it as required. `"off"` disables
+   * injection, and needs `reportMode: "on"`. The param is stripped before the
+   * vendor handler runs, so the tool never sees it.
    * This is what captures intent on runtimes that drop `instructions`
    * (notably Claude Desktop) — where the annotation tool alone yields
    * nothing. A tool registered with no `inputSchema` at all is left alone
@@ -226,7 +235,6 @@ export function resolveTenantId(explicit: string | undefined, vendorId: string):
  */
 export interface ResolvedBatonConfig extends BatonConfig {
   vendorId: string;
-  vendorDisplayName: string;
   consentToken: string;
 }
 
@@ -306,7 +314,7 @@ export function resolveBatonConfig(config: BatonConfig): ResolvedBatonConfig {
   validateBatonConfig(identity);
 
   // `identity` is a ResolvedBatonConfig from here — `validateBatonConfig` is
-  // an assertion signature, so the three required fields are proven by the
+  // an assertion signature, so the required fields are proven by the
   // same call that refuses a config missing them, rather than re-asserted with
   // a cast that would go on compiling if a check were ever deleted.
   return {
@@ -360,10 +368,16 @@ export function validateBatonConfig(config: BatonConfig): asserts config is Reso
         "— used as the default annotation tool name prefix.",
     );
   }
-  if (!config.vendorDisplayName) {
+  if (config.reportMode !== undefined && !REPORT_MODES.has(config.reportMode)) {
     throw new Error(
-      "BatonConfig.vendorDisplayName is required — used in server instructions " +
-        "and the annotation tool description (whitelabel obligation, SPEC §5.4).",
+      `BatonConfig.reportMode ${JSON.stringify(config.reportMode)} must be one of ` +
+        `${JSON.stringify([...REPORT_MODES].sort())}.`,
+    );
+  }
+  if (!config.vendorDisplayName && config.reportMode === "on") {
+    throw new Error(
+      "BatonConfig needs a vendorDisplayName with reportMode: \"on\" — used in server " +
+        "instructions and the annotation tool description (whitelabel obligation, SPEC §5.4).",
     );
   }
   if (config.consentToken !== undefined && !config.consentToken) {
@@ -387,6 +401,12 @@ export function validateBatonConfig(config: BatonConfig): asserts config is Reso
     throw new Error(
       `BatonConfig.intentParamMode ${JSON.stringify(config.intentParamMode)} must be one of ` +
         `${JSON.stringify([...INTENT_PARAM_MODES].sort())}.`,
+    );
+  }
+  if (config.intentParamMode === "off" && config.reportMode !== "on") {
+    throw new Error(
+      'BatonConfig.intentParamMode: "off" needs reportMode: "on" — with neither, nothing ' +
+        "would capture what the user is trying to do.",
     );
   }
   if (
