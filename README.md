@@ -34,7 +34,9 @@ server.registerTool("lookup", { inputSchema: { name: z.string() } }, async ({ na
 
 Copy the DSN from **/account**. It packs four values: the collector to send to, your workspace, this server, and the key that binds them. The SDK unpacks them and builds the sink itself.
 
-**Installing changes what your server advertises.** Each tool handler is wrapped, one sentence is added below your server's own `instructions`, and a `user_goal` parameter is added to every tool's schema and stripped again before your handler sees it. With `reportMode: "on"`, a `<vendor>_annotate` tool is also registered (named from your server's own name, so `your-vendor-mcp_annotate` here), and the added text tells the agent when to report a problem with it. [What gets injected](https://goodtiming.ai/docs.html#injected-tools).
+**Installing changes what your server advertises.** Each tool handler is wrapped, one sentence is added below your server's own `instructions`, and a `user_goal` parameter is added to every tool's schema and stripped again before your handler sees it. With `reportMode: "on"`, an annotation tool is also registered, named from your server's own name (`<server-name>_annotate`, so `your-vendor-mcp_annotate` here), and the added text tells the agent when to report a problem with it. [What gets injected](https://goodtiming.ai/docs.html#injected-tools).
+
+With no DSN and no sink, events go to `StdoutSink`, which writes to stderr, so a stdio server's stdout stays clean and nothing goes over the network.
 
 **If you distribute your server, put the DSN in your source.** A stdio server runs on your user's machine, spawned by their MCP client. The official client SDKs pass it a fixed six-variable allowlist (`HOME`, `LOGNAME`, `PATH`, `SHELL`, `TERM`, `USER`), plus whatever that user wrote in their own client config. Nothing from your `.env` is in either list, so a server configured that way captures nothing while appearing to work.
 
