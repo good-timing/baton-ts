@@ -157,6 +157,15 @@ describe("withVendorInstructions", () => {
     expect(withVendorInstructions(server, ours)).toBe(`New.\n\n${ours}`);
   });
 
+  it("takes text opening like the retired reports head as the vendor's", () => {
+    const server: { _instructions?: string } = {};
+    server._instructions = withVendorInstructions(server, ours);
+    server._instructions = "This server is wrapped in the Acme gateway.";
+    expect(withVendorInstructions(server, ours)).toBe(
+      `This server is wrapped in the Acme gateway.\n\n${ours}`,
+    );
+  });
+
   describe("a vendor paragraph that opens like our report pointer", () => {
     const pointer = buildServerInstructions({
       vendorDisplayName: "Acme",

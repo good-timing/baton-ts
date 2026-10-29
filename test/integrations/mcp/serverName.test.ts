@@ -286,11 +286,9 @@ describe("the instructions cap", () => {
   });
 
   it("gives the readable name to the TOOL when only one of the two fits", () => {
-    // Python 0.8.5's tie-break, for both SDKs. The tie is found by rendering
-    // rather than written down as a length: the shortest name that fits
-    // beside `srv-c8eca135_annotate` but not beside its own readable tool
-    // name. Python's test finds a shorter tie because it pins the proactive-on
-    // text, which spends more of the budget.
+    // The Python SDK's tie-break. The tie is found by rendering rather than
+    // written down as a length: the shortest name that fits beside
+    // `srv-c8eca135_annotate` but not beside its own readable tool name.
     const readable = (n: number) => `${"q".repeat(Math.min(n, 30))}_annotate`;
     let tie = 0;
     for (let n = 31; n <= 1500 && tie === 0; n++) {
@@ -322,14 +320,14 @@ describe("the instructions cap", () => {
     );
   });
 
-  it("never changes the tool name and never throws, over every length from 1 to 120", () => {
-    // Python 0.8.5's sweep, the same two properties. The tool name is the one
-    // the tool-name rule gives beside the DSN segment (Python 0.8.4's name,
-    // and the reason for the tie-break): the display name is the only thing
-    // that moves. And the pair always renders, so a cosmetic default never
-    // stops a boot.
+  it("never changes the tool name and never throws, over every length up to the cap", () => {
+    // The Python SDK's sweep, the same two properties. The tool name is the one
+    // the tool-name rule gives beside the DSN segment: the display name is the
+    // only thing that moves. And the pair always renders, so a cosmetic default
+    // never stops a boot.
     let moved = 0;
-    for (let n = 1; n <= 120; n++) {
+    let kept = 0;
+    for (let n = 1; n <= CAP; n++) {
       const name = "p".repeat(n);
       let s: Seen | undefined;
       expect(() => {
@@ -344,9 +342,13 @@ describe("the instructions cap", () => {
       if (display !== SEGMENT) {
         expect(display, `length ${n}`).toBe(name);
         moved += 1;
+      } else {
+        kept += 1;
       }
     }
-    // Anchored: without it the sweep passes if the display name never moves.
+    // Anchored: without them the sweep passes if the display name always, or
+    // never, moves.
     expect(moved).toBeGreaterThanOrEqual(30);
+    expect(kept).toBeGreaterThan(0);
   });
 });

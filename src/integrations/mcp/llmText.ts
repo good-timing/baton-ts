@@ -2,10 +2,10 @@
  * Shared LLM-facing text: server instructions + annotation tool
  * description. Byte-for-byte port of `baton` (Python)'s
  * `integrations/_llm_text.py` template strings; see that module's
- * docstring for the rationale. Kept
- * in sync by hand, as there is no cross-language codegen for prose, and
- * checked: `test/integrations/mcp/llmTextVectors.json` is Python's own
- * rendering, compared string-for-string.
+ * docstring for the rationale. Kept in sync by hand, as there is no
+ * cross-language codegen for prose, and checked:
+ * `test/integrations/mcp/llmTextVectors.json` is Python's own rendering,
+ * compared string-for-string.
  *
  * **Python's DEFAULT text, `proactive_mode="off"`.** This arm has no
  * `proactiveMode`, so under `reportMode: "on"` it renders what Python renders
@@ -48,9 +48,8 @@ alternatives_considered, likely_cause, user_impact, error_class, \
 downstream_blocked, confidence_in_intent. When no tool covers the \
 request also missing_capability_field and requested_capability.`;
 
-// Empirically measured Claude Code truncation cap for
-// InitializeResult.instructions. The cap below it leaves room for the fixed
-// subagent sentence.
+// Where Claude Code truncates InitializeResult.instructions. The cap below it
+// leaves room for the fixed subagent sentence.
 const CLAUDE_CODE_TRUNCATION_CAP = 2087;
 const INSTRUCTIONS_LENGTH_CAP = 1500;
 
@@ -65,7 +64,7 @@ function renderServerInstructions(options: InstructionNames): string {
 
 /** Would these two names render under the cap? Asked by RENDERING, not by
  * arithmetic, so the answer cannot drift from the template: the interpolation
- * count and the cap both live here, and both have moved before. Used by
+ * count and the cap both live here. Used by
  * `annotationName.ts` to keep a name derived from the server only where it
  * fits. */
 export function fitsInstructionsCap(options: InstructionNames): boolean {
@@ -112,8 +111,7 @@ export const INTENT_SOURCE_PARAM = "injected_param";
 export const INTENT_SOURCE_LIBRARY = "library_arg";
 
 // The leading number says which user message the call answers, and the
-// Console cuts a turn where it changes (SPEC §11.5.1 rule 2). The Console
-// splits the rest on "; success is".
+// Console cuts a turn where it changes (SPEC §11.5.1 rule 2).
 //
 // Do not reword: the text is the Python SDK's, byte for byte
 // (`llmText.test.ts`, "parity with the Python SDK's rendered text"). Only the
@@ -184,14 +182,12 @@ export const INTENT_PARAMS: readonly IntentParam[] = Object.freeze([
 
 const VENDOR_INSTRUCTIONS = Symbol("batonVendorInstructions");
 const escapeRegExp = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-// Where our paragraph begins: the reports text, an older release's reports head,
-// or the whole text under `reportMode: "off"`. The pointer is matched whole: its
-// opening, "Use `", is how a vendor's own paragraph may start.
+// Where our paragraph begins under `reportMode` "on" and "off". The pointer is
+// matched whole: its opening, "Use `", is how a vendor's own paragraph may start.
 const OURS_STARTS = [
   new RegExp(
     "^" + REPORT_POINTER_TEMPLATE("\u0000", "\u0000").split("\u0000").map(escapeRegExp).join(".+?"),
   ),
-  new RegExp("^" + escapeRegExp("This server is wrapped in the ")),
   new RegExp("^" + escapeRegExp(INTENT_INSTRUCTIONS)),
 ];
 
