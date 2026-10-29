@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased: one numbered `user_goal`; reports are opt-in
+## 0.5.8: one numbered `user_goal`; reports are opt-in
 
 The Python SDK's 0.8.22 and 0.8.23. The baton-spec pin moves to bf26c5a.
 
