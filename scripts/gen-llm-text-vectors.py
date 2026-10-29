@@ -15,7 +15,6 @@ for vendor, tool in [("Acme", "acme_annotate"), ("toybox-pantry", "toybox-pantry
         "vendor_display_name": vendor,
         "annotation_tool_name": tool,
         "instructions": t.build_server_instructions(vendor_display_name=vendor, annotation_tool_name=tool),
-        "instructions_intent_params_off": t.build_server_instructions(vendor_display_name=vendor, annotation_tool_name=tool, intent_param_mode="off"),
         "description": t.build_annotation_tool_description(vendor_display_name=vendor),
     })
 out = {

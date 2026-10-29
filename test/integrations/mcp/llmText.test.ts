@@ -90,9 +90,6 @@ describe("parity with the Python SDK's rendered text", () => {
       annotationToolName: c.annotation_tool_name,
     };
     expect(buildServerInstructions(names)).toBe(c.instructions);
-    expect(buildServerInstructions({ ...names, intentParamMode: "off" })).toBe(
-      c.instructions_intent_params_off,
-    );
     expect(buildAnnotationToolDescription({ vendorDisplayName: c.vendor_display_name })).toBe(
       c.description,
     );

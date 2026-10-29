@@ -837,24 +837,6 @@ describe("withBaton — intent-param injection", () => {
     expect(unlabelled(asRequired)).toEqual(unlabelled(asOptional));
   });
 
-  it("intentParamMode 'off' disables injection entirely", async () => {
-    const server = new McpServer({ name: "vendor", version: "1.0.0" });
-    registerTools(server);
-    withBaton(server, {
-      vendorId: "acme",
-      vendorDisplayName: "Acme",
-      consentToken: "ct",
-      sink,
-      intentParamMode: "off",
-      reportMode: "on",
-    });
-
-    const client = await connectClient(server);
-    const { tools } = await client.listTools();
-    const echo = tools.find((t) => t.name === "echo")!;
-    expect(echo.inputSchema.properties).not.toHaveProperty("user_goal");
-  });
-
   it("throws at withBaton() time on an invalid intentParamMode", () => {
     const server = new McpServer({ name: "vendor", version: "1.0.0" });
     expect(() =>
@@ -1038,31 +1020,6 @@ describe("withBaton — surface_snapshot", () => {
       (e) => e.event_type === "surface_snapshot",
     );
     expect(snapshots).toHaveLength(1);
-  });
-
-  it("records intent_param: null in seam_augmentations when intentParamMode is 'off'", async () => {
-    const server = new McpServer({ name: "vendor", version: "1.0.0" });
-    registerTools(server);
-    withBaton(server, {
-      vendorId: "acme",
-      vendorDisplayName: "Acme",
-      consentToken: "ct",
-      sink,
-      intentParamMode: "off",
-      reportMode: "on",
-    });
-
-    const client = await connectClient(server);
-    await client.callTool({ name: "echo", arguments: { text: "hi" } });
-
-    const snapshot = sink.events.find(
-      (e) => e.event_type === "surface_snapshot",
-    )!;
-    if (snapshot.event_type !== "surface_snapshot")
-      throw new Error("unreachable");
-    expect(snapshot.payload.seam_augmentations).toMatchObject({
-      intent_param: null,
-    });
   });
 
   it("prunes a removed tool from the next surface snapshot", async () => {

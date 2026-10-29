@@ -91,11 +91,7 @@ export function fitsInstructionsCap(options: InstructionNames): boolean {
   return renderServerInstructions(options).length <= INSTRUCTIONS_LENGTH_CAP;
 }
 
-/** `intentParamMode: "off"` drops the subagent sentence: no tool then carries
- * a `user_goal` param for a subagent to fill. */
-export function buildServerInstructions(
-  options: InstructionNames & { intentParamMode?: string },
-): string {
+export function buildServerInstructions(options: InstructionNames): string {
   const budgeted = renderServerInstructions(options).length;
   if (budgeted > INSTRUCTIONS_LENGTH_CAP) {
     throw new Error(
@@ -107,7 +103,7 @@ export function buildServerInstructions(
   // The fixed sentences have no names in them, so they come out of the
   // headroom under the truncation cap, not out of the budget the names share.
   const rendered = renderServerInstructions(options, INSTRUCTIONS_RECOVERY_SENTENCE);
-  return options.intentParamMode === "off" ? rendered : rendered + INSTRUCTIONS_SUBAGENT_CLAUSE;
+  return rendered + INSTRUCTIONS_SUBAGENT_CLAUSE;
 }
 
 export function buildAnnotationToolDescription(options: { vendorDisplayName: string }): string {

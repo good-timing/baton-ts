@@ -133,7 +133,7 @@ describe.each(MAJORS)("reports on $label", (major) => {
     });
   });
 
-  it.each(["required", "optional", "off"] as const)(
+  it.each(["required", "optional"] as const)(
     "lists tool_name as required and what_happened as not, under intentParamMode '%s'",
     async (intentParamMode) => {
       const { client, name } = await connected({ intentParamMode });

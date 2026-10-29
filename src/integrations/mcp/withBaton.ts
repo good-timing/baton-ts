@@ -803,9 +803,8 @@ function batonWrap(nameRef: { current: string }, original: AnyHandler, ctx: Wrap
 /** Pop an injected goal param from `args` in place; return its value.
  * `"native"` (the tool already declares this name itself) forwards the
  * caller's own value untouched — never stripped, never reported as intent.
- * Unlisted (a call arrived before this tool was ever wired, or
- * `intentParamMode` was "off" when it was) strips defensively with a
- * warning: safe only because this name is reserved. */
+ * Unlisted (a call arrived before this tool was ever wired) strips
+ * defensively with a warning: safe only because this name is reserved. */
 function extractGoalParam(
   args: Record<string, unknown>,
   paramName: string,
@@ -929,7 +928,6 @@ function captureAndInject(name: string, entry: unknown, ctx: WrapContext): void 
   const mutable = entry as { inputSchema?: unknown; description?: string; executor?: unknown };
   const vendorSchema = ctx.vendorToolJsonSchema(name, mutable.inputSchema);
   ctx.surfaceState.noteTool(name, vendorSchema, mutable.description);
-  if (ctx.intentParamMode === "off") return;
   // From the JSON schema: a v2 schema that is not zod gets no injection, but
   // its `user_goal` still counts.
   if (declaresParam(vendorSchema, USER_GOAL_PARAM_NAME)) ctx.dropSubagentClause(name);
@@ -2094,11 +2092,7 @@ function install(
   // docstring for why this reach-in has no "preferred path" to fall back
   // from, unlike Python's adapter.
   const ours = reports
-    ? buildServerInstructions({
-        vendorDisplayName: reports.vendorDisplayName,
-        annotationToolName,
-        intentParamMode,
-      })
+    ? buildServerInstructions({ vendorDisplayName: reports.vendorDisplayName, annotationToolName })
     : INTENT_INSTRUCTIONS;
   internals.server._instructions = withVendorInstructions(internals.server, ours, (message) =>
     warnOnce("instructions-length", message),

@@ -80,21 +80,18 @@ export function assembleSurface(
 export function buildSeamAugmentations(options: {
   injectedToolNames: string[];
   intentParamNames: string[];
-  intentParamMode: "optional" | "required" | "off";
+  intentParamMode: "optional" | "required";
   requiredParamNames: string[];
   /** Whether Baton's text reached the served instructions. */
   instructionsSuffix: boolean;
 }): Record<string, unknown> {
   return {
     injected_tools: [...options.injectedToolNames].sort(),
-    intent_param:
-      options.intentParamMode !== "off"
-        ? {
-            names: [...options.intentParamNames].sort(),
-            required_names: [...options.requiredParamNames].sort(),
-            mode: options.intentParamMode,
-          }
-        : null,
+    intent_param: {
+      names: [...options.intentParamNames].sort(),
+      required_names: [...options.requiredParamNames].sort(),
+      mode: options.intentParamMode,
+    },
     instructions_suffix: options.instructionsSuffix,
   };
 }

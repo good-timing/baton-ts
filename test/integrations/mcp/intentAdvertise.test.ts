@@ -325,16 +325,11 @@ describe.each(MAJORS.map((m) => [m.label, m] as const))("on %s", (_label, major)
     expect(schemas.own_goal.required).toEqual(["q"]);
   });
 
-  it("tells a delegating agent to pass the turn number, unless no tool takes it", async () => {
-    const withParams = major.make();
-    registerLookup(major, withParams);
-    install(withParams);
-    expect((await major.connect(withParams)).getInstructions()).toBe(INTENT_INSTRUCTIONS);
-
-    const off = major.make();
-    registerLookup(major, off);
-    install(off, { intentParamMode: "off", reportMode: "on" });
-    expect((await major.connect(off)).getInstructions()).not.toContain("subagent");
+  it("tells a delegating agent to pass the turn number", async () => {
+    const server = major.make();
+    registerLookup(major, server);
+    install(server);
+    expect((await major.connect(server)).getInstructions()).toBe(INTENT_INSTRUCTIONS);
   });
 
   it.each([

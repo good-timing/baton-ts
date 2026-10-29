@@ -168,10 +168,10 @@ describe.each(MAJORS)("tool list events — $label", (major) => {
     expect(lookup!.inputSchema.required).toEqual(["name", ...INTENT_PARAMS]);
   });
 
-  it.each(["optional", "off"] as const)("is sent under intentParamMode %s", async (mode) => {
+  it("is sent under intentParamMode optional", async () => {
     const sink = new CapturingSink();
     const server = withLookup();
-    install(server, sink, { intentParamMode: mode, ...(mode === "off" && { reportMode: "on" as const }) });
+    install(server, sink, { intentParamMode: "optional" });
     const client = await major.connect(server);
 
     await client.listTools();

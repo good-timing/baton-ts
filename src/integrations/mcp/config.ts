@@ -24,7 +24,7 @@ export { VENDOR_ID_PATTERN } from "../../dsn.js";
 
 // Per-tool intent-param injection modes (mirrors baton-proxy's
 // BATON_INTENT_PARAM and Python's VendorConfig.intent_param_mode).
-const INTENT_PARAM_MODES = new Set(["optional", "required", "off"]);
+const INTENT_PARAM_MODES = new Set(["optional", "required"]);
 const REPORT_MODES = new Set(["on", "off"]);
 // What the vendor may ask us to do with tool RESULT data (SPEC §11.4).
 // `"full"` never reaches the wire — absence is what means captured.
@@ -136,14 +136,15 @@ export interface BatonConfig {
    * every wrapped tool's advertised schema and ADVERTISES it as required in
    * `tools/list`, without enforcing it: a call that omits it still reaches
    * your handler, and its event simply carries no intent. `"optional"` injects
-   * the same param and does not advertise it as required. `"off"` disables
-   * injection, and needs `reportMode: "on"`. The param is stripped before the
-   * vendor handler runs, so the tool never sees it.
+   * the same param and does not advertise it as required. There is no
+   * `"off"`: this SDK has no proactive reports, so nothing else would capture
+   * what the user is trying to do. The param is stripped before the vendor
+   * handler runs, so the tool never sees it.
    * This is what captures intent on runtimes that drop `instructions`
    * (notably Claude Desktop) — where the annotation tool alone yields
    * nothing. A tool registered with no `inputSchema` at all is left alone
    * regardless of this setting (see `schemaCompat.injectGoalParams`). */
-  intentParamMode?: "optional" | "required" | "off";
+  intentParamMode?: "optional" | "required";
   /** Whether tool RESPONSE data is captured at all (SPEC §11.4).
    *
    * `"full"` (the default) captures as it always has. `"off"` means nothing
@@ -397,16 +398,16 @@ export function validateBatonConfig(config: BatonConfig): asserts config is Reso
         "valid consent_token MUST be rejected by the consumer.",
     );
   }
+  if ((config.intentParamMode as string | undefined) === "off") {
+    throw new Error(
+      'BatonConfig.intentParamMode: "off" would leave nothing capturing what the user is ' +
+        'trying to do. Use "required" (the default) or "optional".',
+    );
+  }
   if (config.intentParamMode !== undefined && !INTENT_PARAM_MODES.has(config.intentParamMode)) {
     throw new Error(
       `BatonConfig.intentParamMode ${JSON.stringify(config.intentParamMode)} must be one of ` +
         `${JSON.stringify([...INTENT_PARAM_MODES].sort())}.`,
-    );
-  }
-  if (config.intentParamMode === "off" && config.reportMode !== "on") {
-    throw new Error(
-      'BatonConfig.intentParamMode: "off" needs reportMode: "on" — with neither, nothing ' +
-        "would capture what the user is trying to do.",
     );
   }
   if (

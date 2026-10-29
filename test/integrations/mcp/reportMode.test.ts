@@ -179,19 +179,14 @@ describe("validation", () => {
     );
   });
 
-  it("refuses intentParamMode 'off' unless reports are on", () => {
-    expect(() => validateBatonConfig({ ...base, intentParamMode: "off" })).toThrow(
-      /nothing\s+would capture/,
-    );
-    expect(() =>
-      validateBatonConfig({
-        ...base,
-        vendorDisplayName: "V",
-        intentParamMode: "off",
-        reportMode: "on",
-      }),
-    ).not.toThrow();
-  });
+  it.each([{}, { vendorDisplayName: "V", reportMode: "on" as const }])(
+    "refuses intentParamMode 'off', with or without reports (%o)",
+    (extra) => {
+      expect(() =>
+        validateBatonConfig({ ...base, ...extra, intentParamMode: "off" as never }),
+      ).toThrow(/would leave nothing capturing/);
+    },
+  );
 
   it("refuses a reportMode it does not know", () => {
     expect(() => validateBatonConfig({ ...base, reportMode: "yes" as never })).toThrow(

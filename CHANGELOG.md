@@ -24,8 +24,10 @@ The Python SDK's 0.8.22 and 0.8.23. The baton-spec pin moves to bf26c5a.
   `reportMode: "on"`.
 - **`vendorDisplayName` is needed only with `reportMode: "on"`.**
   `annotationToolName` has no effect without it, and warns.
-  `intentParamMode: "off"` now needs `reportMode: "on"`, or install throws:
-  with neither, nothing captures what the user is trying to do.
+- **Breaking: `intentParamMode: "off"` is refused.** With it, nothing would
+  capture what the user is trying to do. The Python SDK accepts it only beside
+  proactive reports, which this SDK does not have. Use `"required"` (the
+  default) or `"optional"`.
 - **`withBaton` keeps your server instructions.** It used to write over them.
   Its own text now goes below yours, after a blank line, and it warns when the
   two together pass the ~2,087 characters Claude Code keeps, once per
