@@ -18,9 +18,10 @@ The Python SDK's 0.8.22 and 0.8.23. The baton-spec pin moves to bf26c5a.
 - **The annotation tool is off by default.** The new `reportMode` turns it on.
   `"off"` (the default) registers no tool, and Baton's server instructions are
   `INTENT_INSTRUCTIONS` alone, the sentence that passes the message number to
-  subagents. `"on"` registers the tool and serves its instructions, now
-  byte-identical to the Python SDK's, including the sentence that tells the
-  agent to keep going after a report. To keep receiving agent reports, set
+  subagents. `"on"` registers the tool and serves the Python SDK's text,
+  byte for byte: the instructions are one sentence pointing at the tool, and
+  the tool's description holds when to report, how to keep going after a
+  report, and the fields. To keep receiving agent reports, set
   `reportMode: "on"`.
 - **`vendorDisplayName` is needed only with `reportMode: "on"`.**
   `annotationToolName` has no effect without it, and warns.

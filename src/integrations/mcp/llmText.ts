@@ -2,65 +2,46 @@
  * Shared LLM-facing text: server instructions + annotation tool
  * description. Byte-for-byte port of `baton` (Python)'s
  * `integrations/_llm_text.py` template strings; see that module's
- * docstring for the full rationale (split of responsibility under Claude
- * Code's instructions-truncation cap, the mechanical-trigger design). Kept
+ * docstring for the rationale. Kept
  * in sync by hand, as there is no cross-language codegen for prose, and
  * checked: `test/integrations/mcp/llmTextVectors.json` is Python's own
  * rendering, compared string-for-string.
  *
  * **Python's DEFAULT text, `proactive_mode="off"`.** This arm has no
  * `proactiveMode`, so under `reportMode: "on"` it renders what Python renders
- * when that is unset: the reactive-only head and annotation lead, and no
- * BEFORE clause asking for an annotation ahead of every call.
+ * when that is unset: the instructions are one sentence pointing at the
+ * annotation tool, and the tool's description holds the triggers, the
+ * recovery rule and the fields, so each rule is written once.
  */
 
-const SERVER_INSTRUCTIONS_TEMPLATE = (
-  vendorDisplayName: string,
-  annotationToolName: string,
-  recovery: string,
-) => `This server is wrapped in the ${vendorDisplayName} usage and friction SDK. \
-Use \`${annotationToolName}\` to report when a ${vendorDisplayName} tool \
-call goes wrong, or when a tool you needed does not exist, so \
-${vendorDisplayName} can improve their product. See that tool's \
-description for field-level detail.
+// Holds no report rule: each is written once, in the report tool's description.
+const REPORT_POINTER_TEMPLATE = (vendorDisplayName: string, annotationToolName: string) =>
+  `Use \`${annotationToolName}\` to report a ${vendorDisplayName} tool call ` +
+  "that went wrong, or a request no tool covers; its description says when and how.";
 
-AFTER any ${vendorDisplayName} tool errors, times out, returns an \
-unhelpful or contradictory result, or the user shows signs of giving \
-up, you MUST call \`${annotationToolName}\` with what_happened \
-(REQUIRED, your own words, NOT a category), tool_name (REQUIRED) and \
-suggested_improvement (REQUIRED whenever you can articulate one).${recovery}
-
-IF a ${vendorDisplayName} tool response lacks a structured field for \
-what the user asked about, OR you satisfied the user's intent via a \
-workaround because no tool matched what they asked for, OR the user \
-asked for something this server can't do — you MUST call \
-\`${annotationToolName}\` once per user request, not per call, with \
-what_happened and tool_name (none if no tool) AND still answer the \
-user with your best inference. Filing the annotation does NOT replace \
-answering.`;
-
-// Without it an agent can file the report and stop the user's task.
-export const INSTRUCTIONS_RECOVERY_SENTENCE =
-  " Then keep going: work out why the call failed, fix the input, and try " +
-  "again. Do not repeat the same failing call. Reporting is not a " +
-  "substitute for recovering.";
+// The Console splits user_goal on "; success is" (SPEC §11.5.1 rule 2).
+const USER_GOAL_FORMAT = "'<n>: <what this call is for>; success is <what its result should show>'";
 
 const ANNOTATION_TOOL_DESCRIPTION_TEMPLATE = (
   vendorDisplayName: string,
-) => `Report a ${vendorDisplayName} tool call that went wrong — call this \
-AFTER a call returns an unhelpful, empty, failed or contradictory \
-result, or when no tool covers what the user asked for. Do NOT call it \
-before a tool call or to narrate normal successful work.
+) => `Report a ${vendorDisplayName} tool call that went wrong, so \
+${vendorDisplayName} can fix it. Call this right after a call errors, times \
+out, or returns an empty, unhelpful or contradictory result. Also call it \
+once per user request when no tool or field covers what they asked for, or \
+you had to work around one. Do not call it before a tool call or for normal \
+successful work.
+
+A report does not replace the work: after it, work out why the call failed, \
+fix the input and try again (do not repeat the same failing call), and still \
+answer the user.
 
 Fields:
-  - user_goal: ${USER_GOAL_PARAM_BODY}
-  - what_happened: REQUIRED on a report. \
-1-2 plain sentences in YOUR OWN WORDS: what you asked for, \
-what came back, and why it was unusable. Do NOT pick a category or \
-invent a label — describe it.
-  - tool_name: REQUIRED on a report. The ${vendorDisplayName} tool that \
-went wrong. Write none if no tool exists for the request.
-  - suggested_improvement: A concrete sentence about what product change \
+  - user_goal: the same ${USER_GOAL_FORMAT} as on this server's other tools.
+  - what_happened: REQUIRED. 1-2 plain sentences in your own words: what you \
+asked for, what came back, and why it was unusable. Not a category.
+  - tool_name: REQUIRED. The ${vendorDisplayName} tool that went wrong, or \
+none if no tool exists for the request.
+  - suggested_improvement: one concrete sentence on the product change that \
 would have helped.
   - context: supplementary info not covered above. Common keys: plan, \
 alternatives_considered, likely_cause, user_impact, error_class, \
@@ -69,7 +50,7 @@ request also missing_capability_field and requested_capability.`;
 
 // Empirically measured Claude Code truncation cap for
 // InitializeResult.instructions. The cap below it leaves room for the fixed
-// recovery and subagent sentences.
+// subagent sentence.
 const CLAUDE_CODE_TRUNCATION_CAP = 2087;
 const INSTRUCTIONS_LENGTH_CAP = 1500;
 
@@ -78,8 +59,8 @@ interface InstructionNames {
   annotationToolName: string;
 }
 
-function renderServerInstructions(options: InstructionNames, recovery = ""): string {
-  return SERVER_INSTRUCTIONS_TEMPLATE(options.vendorDisplayName, options.annotationToolName, recovery);
+function renderServerInstructions(options: InstructionNames): string {
+  return REPORT_POINTER_TEMPLATE(options.vendorDisplayName, options.annotationToolName);
 }
 
 /** Would these two names render under the cap? Asked by RENDERING, not by
@@ -92,17 +73,16 @@ export function fitsInstructionsCap(options: InstructionNames): boolean {
 }
 
 export function buildServerInstructions(options: InstructionNames): string {
-  const budgeted = renderServerInstructions(options).length;
-  if (budgeted > INSTRUCTIONS_LENGTH_CAP) {
+  const rendered = renderServerInstructions(options);
+  if (rendered.length > INSTRUCTIONS_LENGTH_CAP) {
     throw new Error(
-      `Rendered server instructions are ${budgeted} chars, which exceeds ` +
+      `Rendered server instructions are ${rendered.length} chars, which exceeds ` +
         `the ${INSTRUCTIONS_LENGTH_CAP}-char safety cap (Claude Code truncates at ` +
         `~${CLAUDE_CODE_TRUNCATION_CAP}). Shorten vendorDisplayName or annotationToolName.`,
     );
   }
-  // The fixed sentences have no names in them, so they come out of the
-  // headroom under the truncation cap, not out of the budget the names share.
-  const rendered = renderServerInstructions(options, INSTRUCTIONS_RECOVERY_SENTENCE);
+  // The subagent sentence has no names in it, so it comes out of the headroom
+  // under the truncation cap, not out of the budget the names share.
   return rendered + INSTRUCTIONS_SUBAGENT_CLAUSE;
 }
 
@@ -140,8 +120,7 @@ export const INTENT_SOURCE_LIBRARY = "library_arg";
 // leading label tracks `intentParamMode`, so it agrees with the `required`
 // list the `tools/list` seam advertises.
 const USER_GOAL_PARAM_BODY =
-  "Write it as '<n>: <what this call is for>; success is <what its result " +
-  "should show>'. n is the number of the user's current message in this " +
+  `Write it as ${USER_GOAL_FORMAT}. n is the number of the user's current message in this ` +
   "conversation (1 for the first). Use the same number on every call you make " +
   "for that message, including calls made after reading tool results; it goes " +
   "up only when the user sends another message.";
@@ -204,9 +183,17 @@ export const INTENT_PARAMS: readonly IntentParam[] = Object.freeze([
 ]);
 
 const VENDOR_INSTRUCTIONS = Symbol("batonVendorInstructions");
-// Where our paragraph begins: the reports head, or the whole text under
-// `reportMode: "off"`.
-const OURS_STARTS = ["This server is wrapped in the ", INTENT_INSTRUCTIONS];
+const escapeRegExp = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+// Where our paragraph begins: the reports text, an older release's reports head,
+// or the whole text under `reportMode: "off"`. The pointer is matched whole: its
+// opening, "Use `", is how a vendor's own paragraph may start.
+const OURS_STARTS = [
+  new RegExp(
+    "^" + REPORT_POINTER_TEMPLATE("\u0000", "\u0000").split("\u0000").map(escapeRegExp).join(".+?"),
+  ),
+  new RegExp("^" + escapeRegExp("This server is wrapped in the ")),
+  new RegExp("^" + escapeRegExp(INTENT_INSTRUCTIONS)),
+];
 
 interface InstructionsHolder {
   _instructions?: string | undefined;
@@ -216,7 +203,9 @@ interface InstructionsHolder {
 function endsInOurs(current: unknown, vendor: unknown): boolean {
   if (typeof current !== "string") return false;
   const prefix = typeof vendor === "string" && vendor.trim() ? `${vendor}\n\n` : "";
-  return OURS_STARTS.some((start) => current.startsWith(prefix + start));
+  if (!current.startsWith(prefix)) return false;
+  const rest = current.slice(prefix.length);
+  return OURS_STARTS.some((start) => start.test(rest));
 }
 
 /** SPEC §5.1.2: the vendor's own instructions first, ours below them.

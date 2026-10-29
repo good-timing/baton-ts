@@ -32,7 +32,6 @@ import {
 } from "../../../src/integrations/mcp/annotationName.js";
 import {
   buildServerInstructions,
-  INSTRUCTIONS_RECOVERY_SENTENCE,
   INSTRUCTIONS_SUBAGENT_CLAUSE,
   fitsInstructionsCap,
 } from "../../../src/integrations/mcp/llmText.js";
@@ -42,14 +41,11 @@ const SEGMENT = "srv-c8eca135";
 const DSN = `https://${KEY}@ingest.example.com/ten_37714baa/${SEGMENT}`;
 const CAP = 1500;
 
-/** The part of the instructions the cap budgets: the fixed sentences have no
- * names in them and sit outside it. */
+/** The part of the instructions the cap budgets: the subagent sentence has no
+ * names in it and sits outside it. */
 function budgeted(instructions: string): number {
-  expect(instructions).toContain(INSTRUCTIONS_RECOVERY_SENTENCE);
   expect(instructions.endsWith(INSTRUCTIONS_SUBAGENT_CLAUSE)).toBe(true);
-  return (
-    instructions.length - INSTRUCTIONS_RECOVERY_SENTENCE.length - INSTRUCTIONS_SUBAGENT_CLAUSE.length
-  );
+  return instructions.length - INSTRUCTIONS_SUBAGENT_CLAUSE.length;
 }
 
 interface Seen {
@@ -139,7 +135,7 @@ describe.each(MAJORS)("on %s", (_label, seen) => {
     expect(s.handleToolName).toBe("toybox-pantry_annotate");
     expect(s.toolNames).toContain("toybox-pantry_annotate");
     expect(s.instructions).toMatch(
-      /^This server is wrapped in the toybox-pantry usage and friction SDK\. Use `toybox-pantry_annotate` /,
+      /^Use `toybox-pantry_annotate` to report a toybox-pantry tool call /,
     );
     expect(s.description).toMatch(/^Report a toybox-pantry tool call that went wrong/);
     for (const text of [s.instructions, s.description, ...s.toolNames]) {
@@ -155,7 +151,7 @@ describe.each(MAJORS)("on %s", (_label, seen) => {
 
     expect(s.handleToolName).toBe(`${SEGMENT}_annotate`);
     expect(s.instructions).toMatch(
-      new RegExp(`^This server is wrapped in the ${SEGMENT} usage and friction SDK\\.`),
+      new RegExp(`^Use \`${SEGMENT}_annotate\` to report a ${SEGMENT} tool call`),
     );
     expect(s.description).toMatch(new RegExp(`^Report a ${SEGMENT} tool call`));
     expect(s.instructions).not.toContain("fastmcp");
@@ -170,7 +166,7 @@ describe.each(MAJORS)("on %s", (_label, seen) => {
 
     expect(s.handleToolName).toBe("pantry_feedback");
     expect(s.toolNames).not.toContain("toybox-pantry_annotate");
-    expect(s.instructions).toMatch(/^This server is wrapped in the Toybox Pantry usage/);
+    expect(s.instructions).toMatch(/^Use `[^`]*` to report a Toybox Pantry tool call/);
     expect(s.instructions).toContain("`pantry_feedback`");
     expect(s.description).toMatch(/^Report a Toybox Pantry tool call/);
   });
@@ -183,7 +179,7 @@ describe.each(MAJORS)("on %s", (_label, seen) => {
     const s = await seen(name, { dsn: DSN });
 
     expect(s.handleToolName).toBe("toybox-pantry-inventory-helper_annotate");
-    expect(s.instructions).toMatch(/^This server is wrapped in the Toybox Pantry Inventory Helper usage/);
+    expect(s.instructions).toMatch(/^Use `[^`]*` to report a Toybox Pantry Inventory Helper tool call/);
     expect(budgeted(s.instructions)).toBeLessThanOrEqual(CAP);
     expect(warnings).toEqual([]);
   });
@@ -193,13 +189,13 @@ describe("each explicit field wins on its own", () => {
   it("an explicit display name leaves the tool name derived", async () => {
     const s = await seenOnV1("toybox-pantry", { dsn: DSN, vendorDisplayName: "Toybox Pantry" });
     expect(s.handleToolName).toBe("toybox-pantry_annotate");
-    expect(s.instructions).toMatch(/^This server is wrapped in the Toybox Pantry usage/);
+    expect(s.instructions).toMatch(/^Use `[^`]*` to report a Toybox Pantry tool call/);
   });
 
   it("an explicit tool name leaves the display name derived", async () => {
     const s = await seenOnV1("toybox-pantry", { dsn: DSN, annotationToolName: "pantry_feedback" });
     expect(s.handleToolName).toBe("pantry_feedback");
-    expect(s.instructions).toMatch(/^This server is wrapped in the toybox-pantry usage/);
+    expect(s.instructions).toMatch(/^Use `[^`]*` to report a toybox-pantry tool call/);
   });
 });
 
@@ -211,7 +207,7 @@ describe("with no DSN", () => {
       consentToken: "ct",
     });
     expect(s.handleToolName).toBe("toybox-pantry_annotate");
-    expect(s.instructions).toMatch(/^This server is wrapped in the Acme usage/);
+    expect(s.instructions).toMatch(/^Use `[^`]*` to report a Acme tool call/);
   });
 
   it("does not take the display name from the server: reports still need one", () => {
@@ -227,13 +223,13 @@ describe("the guards", () => {
     const server = new McpServerV1({ name: 42 as unknown as string, version: "1.0.0" });
     const s = installedOnV1(server, { dsn: DSN });
     expect(s.handleToolName).toBe(`${SEGMENT}_annotate`);
-    expect(s.instructions).toMatch(new RegExp(`^This server is wrapped in the ${SEGMENT} usage`));
+    expect(s.instructions).toMatch(new RegExp(`^Use \`[^\`]*\` to report a ${SEGMENT} tool call`));
   });
 
   it("falls back for a blank name, which validation would otherwise refuse", () => {
     const s = installedOnV1(new McpServerV1({ name: "   ", version: "1.0.0" }), { dsn: DSN });
     expect(s.handleToolName).toBe(`${SEGMENT}_annotate`);
-    expect(s.instructions).toMatch(new RegExp(`^This server is wrapped in the ${SEGMENT} usage`));
+    expect(s.instructions).toMatch(new RegExp(`^Use \`[^\`]*\` to report a ${SEGMENT} tool call`));
   });
 
   it("refuses `<ClassName>-<4 hex>`, matched on the server's own class", () => {
@@ -256,7 +252,7 @@ describe("the guards", () => {
       dsn: DSN,
     });
     expect(s.handleToolName).toBe("toybox-cafe_annotate");
-    expect(s.instructions).toMatch(/^This server is wrapped in the toybox-cafe usage/);
+    expect(s.instructions).toMatch(/^Use `[^`]*` to report a toybox-cafe tool call/);
   });
 
   it("falls back, and says so, when reading the name throws", () => {
@@ -275,15 +271,15 @@ describe("the guards", () => {
 describe("the instructions cap", () => {
   it("still throws on text over the cap: the budget is real", () => {
     expect(() =>
-      buildServerInstructions({ vendorDisplayName: "x".repeat(200), annotationToolName: "t" }),
+      buildServerInstructions({ vendorDisplayName: "x".repeat(1500), annotationToolName: "t" }),
     ).toThrow(/exceeds the 1500-char safety cap/);
   });
 
   it("drops a display name too long to fit and keeps the derived tool name", () => {
-    const s = installedOnV1(new McpServerV1({ name: "x".repeat(200), version: "1.0.0" }), {
+    const s = installedOnV1(new McpServerV1({ name: "x".repeat(1500), version: "1.0.0" }), {
       dsn: DSN,
     });
-    expect(s.instructions).toMatch(new RegExp(`^This server is wrapped in the ${SEGMENT} usage`));
+    expect(s.instructions).toMatch(new RegExp(`^Use \`[^\`]*\` to report a ${SEGMENT} tool call`));
     expect(s.handleToolName).toBe(`${"x".repeat(30)}_annotate`);
     expect(budgeted(s.instructions)).toBeLessThanOrEqual(CAP);
     expect(warnings.join("\n")).toMatch(/does not fit the server-instructions budget as the display name/);
@@ -297,7 +293,7 @@ describe("the instructions cap", () => {
     // text, which spends more of the budget.
     const readable = (n: number) => `${"q".repeat(Math.min(n, 30))}_annotate`;
     let tie = 0;
-    for (let n = 31; n <= 120 && tie === 0; n++) {
+    for (let n = 31; n <= 1500 && tie === 0; n++) {
       const name = "q".repeat(n);
       const both = fitsInstructionsCap({ vendorDisplayName: name, annotationToolName: readable(n) });
       const displayOnly = fitsInstructionsCap({
@@ -312,7 +308,7 @@ describe("the instructions cap", () => {
       dsn: DSN,
     });
     expect(s.handleToolName).toBe(readable(tie));
-    expect(s.instructions).toMatch(new RegExp(`^This server is wrapped in the ${SEGMENT} usage`));
+    expect(s.instructions).toMatch(new RegExp(`^Use \`[^\`]*\` to report a ${SEGMENT} tool call`));
     expect(budgeted(s.instructions)).toBeLessThanOrEqual(CAP);
 
     // One shorter, both fit, and both stay readable.
@@ -322,7 +318,7 @@ describe("the instructions cap", () => {
     );
     expect(below.handleToolName).toBe(readable(tie - 1));
     expect(below.instructions).toMatch(
-      new RegExp(`^This server is wrapped in the ${"q".repeat(tie - 1)} usage`),
+      new RegExp(`^Use \`[^\`]*\` to report a ${"q".repeat(tie - 1)} tool call`),
     );
   });
 
@@ -342,7 +338,7 @@ describe("the instructions cap", () => {
       const besideTheSegment = annotationToolNameFromServer(name, SEGMENT) ?? `${SEGMENT}_annotate`;
       expect(s!.handleToolName, `length ${n}`).toBe(besideTheSegment);
       expect(budgeted(s!.instructions), `length ${n}`).toBeLessThanOrEqual(CAP);
-      const display = /^This server is wrapped in the (.*?) usage and friction SDK\./.exec(
+      const display = /^Use `[^`]*` to report a (.*?) tool call that went wrong/.exec(
         s!.instructions,
       )?.[1];
       if (display !== SEGMENT) {

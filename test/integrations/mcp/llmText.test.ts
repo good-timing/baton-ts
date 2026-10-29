@@ -68,9 +68,15 @@ describe("the report wording", () => {
   const description = buildAnnotationToolDescription({ vendorDisplayName: "Acme" });
 
   it("asks for one report per user request and the word none for no tool", () => {
-    expect(instructions).toContain("once per user request, not per call");
-    expect(instructions).toContain("tool_name (none if no tool)");
-    expect(description).toContain("Write none if no tool exists for the request");
+    expect(description).toContain("once per user request");
+    expect(description).toContain("or none if no tool exists for the request");
+  });
+
+  it("keeps every report rule out of the instructions", () => {
+    // Each is written once, in the tool's description.
+    for (const rule of ["AFTER", "MUST", "keep going", "once per user request", "wrapped in"]) {
+      expect(instructions).not.toContain(rule);
+    }
   });
 
   it.each(['""', "empty string", "signal_type"])("never says %s", (retired) => {
@@ -149,6 +155,34 @@ describe("withVendorInstructions", () => {
     server._instructions = withVendorInstructions(server, ours);
     server._instructions = "New.";
     expect(withVendorInstructions(server, ours)).toBe(`New.\n\n${ours}`);
+  });
+
+  describe("a vendor paragraph that opens like our report pointer", () => {
+    const pointer = buildServerInstructions({
+      vendorDisplayName: "Acme",
+      annotationToolName: "acme_annotate",
+    });
+    const vendor = "Use `search` before `run`.";
+
+    it("is kept when set after an install with no vendor text", () => {
+      const server: { _instructions?: string } = {};
+      server._instructions = withVendorInstructions(server, pointer);
+      server._instructions = vendor;
+      expect(withVendorInstructions(server, pointer)).toBe(`${vendor}\n\n${pointer}`);
+    });
+
+    it("is kept when added below the vendor's text", () => {
+      const server: { _instructions?: string } = { _instructions: "Base." };
+      server._instructions = withVendorInstructions(server, pointer);
+      server._instructions = `Base.\n\n${vendor}`;
+      expect(withVendorInstructions(server, pointer)).toBe(`Base.\n\n${vendor}\n\n${pointer}`);
+    });
+
+    it("leaves our own pointer replaced", () => {
+      const server: { _instructions?: string } = { _instructions: "Base." };
+      server._instructions = withVendorInstructions(server, pointer);
+      expect(withVendorInstructions(server, pointer)).toBe(`Base.\n\n${pointer}`);
+    });
   });
 
   it("warns when the two together pass what Claude Code keeps", () => {
