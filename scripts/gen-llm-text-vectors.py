@@ -18,7 +18,7 @@ for vendor, tool in [("Acme", "acme_annotate"), ("toybox-pantry", "toybox-pantry
         "description": t.build_annotation_tool_description(vendor_display_name=vendor),
     })
 out = {
-    "generated_by": f"baton {head}: baton.integrations._llm_text build_server_instructions, build_annotation_tool_description and build_user_goal_param_description, default proactive_mode (report_mode='on')",
+    "generated_by": f"baton {head}: baton.integrations._llm_text build_server_instructions, build_annotation_tool_description and build_user_goal_param_description (report_mode='on')",
     "cases": cases,
     "param_descriptions": {m: {"user_goal": t.build_user_goal_param_description(intent_param_mode=m)} for m in ("required", "optional")},
     "required_param_names": list(t.required_param_names(intent_param_mode="required")),

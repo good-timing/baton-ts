@@ -86,7 +86,7 @@ describe("the report wording", () => {
 });
 
 // Python's own rendering, generated from the release named in the file's
-// `generated_by`, whose default (`proactive_mode="off"`) text this arm carries.
+// `generated_by`.
 // Regenerate it from Python rather than editing it by hand: the point is that
 // the comparison is against what the other SDK actually emits.
 describe("parity with the Python SDK's rendered text", () => {

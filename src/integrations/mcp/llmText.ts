@@ -7,9 +7,8 @@
  * `test/integrations/mcp/llmTextVectors.json` is Python's own rendering,
  * compared string-for-string.
  *
- * **Python's DEFAULT text, `proactive_mode="off"`.** This arm has no
- * `proactiveMode`, so under `reportMode: "on"` it renders what Python renders
- * when that is unset: the instructions are one sentence pointing at the
+ * **Python's text.** Under `reportMode: "on"` it renders what Python
+ * renders: the instructions are one sentence pointing at the
  * annotation tool, and the tool's description holds the triggers, the
  * recovery rule and the fields, so each rule is written once.
  */

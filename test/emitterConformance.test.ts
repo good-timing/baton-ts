@@ -103,10 +103,9 @@ const CASES: ReadonlyArray<{ name: string; pick: (e: Event) => boolean }> = [
 // exactly what happened one bump ago, when `tool_call_error.returned.json`
 // arrived and this list had to be edited by hand to see it. `conformance.test.ts`
 // discovers the directory; this ties that directory back to this list.
-/** Vectors this package has no way to emit. `annotation.json` is a note
- * filed through the annotate tool, which `generate.py` gets by setting
- * `proactive_mode="on"`. This package has no such mode: its tool takes
- * reports only and refuses that call, which the scenario below asserts. */
+/** Vectors this package has no way to emit. `annotation.json` is a note,
+ * which only older producers file. This package's tool takes reports only and
+ * refuses that call, which the scenario below asserts. */
 const NOT_EMITTED_HERE = ["annotation"];
 
 const VECTORS_ON_DISK = readdirSync(vectorsDir)

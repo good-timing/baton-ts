@@ -5,8 +5,8 @@
  * signature (user_goal / what_happened / tool_name / suggested_improvement /
  * context) and emits an `annotation`
  * event. Port of `baton` (Python)'s `integrations/official/annotation.py`
- * with `proactive_mode="off"`, the only mode this package has: `user_goal`
- * is required by the schema, and a call that is not a report is refused.
+ * `user_goal` is required by the schema, and a call that is not a report is
+ * refused.
  *
  * Tool-name pattern (`^[a-zA-Z0-9_-]{1,64}$`) is the strictest known client
  * pattern (Claude Desktop) — dots, slashes, and other separators rejected.

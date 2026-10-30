@@ -137,8 +137,7 @@ export interface BatonConfig {
    * `tools/list`, without enforcing it: a call that omits it still reaches
    * your handler, and its event simply carries no intent. `"optional"` injects
    * the same param and does not advertise it as required. There is no
-   * `"off"`: this SDK has no proactive reports, so nothing else would capture
-   * what the user is trying to do. The param is stripped before the vendor
+   * `"off"`: nothing else would capture what the user is trying to do. The param is stripped before the vendor
    * handler runs, so the tool never sees it.
    * This is what captures intent on runtimes that drop `instructions`
    * (notably Claude Desktop) — where the annotation tool alone yields
