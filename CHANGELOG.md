@@ -1,7 +1,13 @@
 # Changelog
 
-## Unreleased
+## 0.6.1: organization; a call refused above the tool is labelled "refused"
 
+- **A call refused before the tool runs is labelled `failure_kind:
+  "refused"`**, as the Python SDK labels it, when something other than the
+  SDK's own argument check stopped it, such as a wrapper on the `tools/call`
+  handler or an override of `executeToolHandler`. Before, it was labelled
+  `invalid_argument`. A refusal's `error_body` and `result` are withheld under
+  `resultCaptureMode: "off"`. (SPEC §11.4.3.)
 - **`organization`: the company or workspace the caller belongs to.** A
   `resolvePrincipal` hook can return `{ principalId, organization: {
   organizationId, displayName } }`, or `{ organizationId }` alone when it
