@@ -153,23 +153,13 @@ export type InputValidation = "unseen" | "passed" | "rejected";
  * is a task OBJECT, which `dispatchSlot` already answers `undefined` for and
  * the seam already declines to report on.
  *
- * ⚠ **`TASK_MODES` is a PIN, not a principle, and that is the honest reading.**
- * The other two kinds rest on POSITIVE evidence — an absent entry, an
- * `enabled: false` flag — which is why they are stable across majors.
- * `invalid_argument` is the ELSE branch: an inference from the absence of any
- * other explanation. This `Set` patches that inference by enumerating the two
- * values of one major's `taskSupport` that sit in the gap TODAY, and the SDK
- * does not branch on `taskSupport` to decide THIS question — it branches on it
- * to decide something else, which the code is reading as a proxy. So the next
- * pre-handler rejection either major adds lands in `invalid_argument`
- * silently, with nothing going red, because the elimination still "succeeds".
- *
- * The real fix is positive evidence: a THIRD seam around the SDK's own input
- * validation, setting a `validatorRejected` fact on `CallSlot` the way
- * `innerFired` is set, after which this function is three positive tests and
- * no `else` and `TASK_MODES` disappears. Not taken here — it is another
- * per-major internals reach-in and the two majors spell validation
- * differently. Recorded so the `Set` is read as the version pin it is.
+ * ⚠ **`invalid_argument` now rests on positive evidence where the probe is
+ * live.** `withBaton` wraps the SDK's `validateToolInput`, so a rejected
+ * argument is recorded as `"rejected"` rather than inferred. What is still an
+ * inference is `"unseen"`: the call stopped before validation, which today is
+ * a vendor's gate or one of 1.x's two task-mode checks. `TASK_MODES` keeps the
+ * second out of `refused`. A pre-validation rejection either major adds later
+ * would be labelled `refused` with nothing going red.
  */
 const TASK_MODES: ReadonlySet<unknown> = new Set(["required", "optional"]);
 
@@ -199,8 +189,8 @@ export function requestSideFailureKind(
   if (entry.enabled === false) return "tool_disabled";
   if (validation === "rejected") return "invalid_argument";
   if (TASK_MODES.has(entry.execution?.taskSupport)) return undefined;
-  // `undefined` validation: the probe on `validateToolInput` could not be
-  // installed, so a rejected argument cannot be told from a refusal.
+  // `undefined`: no live probe on `validateToolInput`, so a rejected argument
+  // cannot be told from a refusal and the old reading holds.
   return validation === undefined ? "invalid_argument" : REFUSED;
 }
 

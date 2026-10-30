@@ -426,6 +426,26 @@ describe.each(MAJORS)("calls refused above the executor — $label", (major) => 
     expect(terminal(sink, "tool_call_error").payload.failure_kind).toBe("invalid_argument");
   });
 
+  it("falls back to `invalid_argument` when the probe is replaced after install", async () => {
+    const sink = new CapturingSink();
+    const server = major.make();
+    major.tool(server, "works", { name: z.string() }, () => ({
+      content: [{ type: "text" as const, text: "ok" }],
+    }));
+    install(server, sink);
+    const target = server as { validateToolInput: Handler };
+    const probe = target.validateToolInput;
+    const unprobed = Object.getPrototypeOf(server) as { validateToolInput: Handler };
+    target.validateToolInput = async function (this: unknown, ...args: unknown[]) {
+      return unprobed.validateToolInput.apply(this, args);
+    };
+    expect(target.validateToolInput).not.toBe(probe);
+    const client = await major.connect(server);
+    await client.callTool({ name: "works", arguments: { name: 7 } }).catch(() => {});
+
+    expect(terminal(sink, "tool_call_error").payload.failure_kind).toBe("invalid_argument");
+  });
+
   it("lets a call the gate allows through as an ordinary success", async () => {
     const sink = new CapturingSink();
     const { client } = await gated(sink, wrapsTheCallHandler);
