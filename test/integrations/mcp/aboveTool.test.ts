@@ -73,31 +73,31 @@ describe("the registered failure_kind vocabulary", () => {
     // arguments were the problem there. SPEC permits omitting the member;
     // naming `invalid_argument` would tell the operator the agent sent bad
     // arguments when the remedy is the vendor's own registration.
-    expect(requestSideFailureKind(undefined)).toBe("unknown_tool");
-    expect(requestSideFailureKind(null)).toBe("unknown_tool");
-    expect(requestSideFailureKind({ enabled: false })).toBe("tool_disabled");
-    expect(requestSideFailureKind({ enabled: true })).toBe("invalid_argument");
-    expect(requestSideFailureKind({ enabled: true, execution: {} })).toBe("invalid_argument");
+    expect(requestSideFailureKind(undefined, "unprobed")).toBe("unknown_tool");
+    expect(requestSideFailureKind(null, "unprobed")).toBe("unknown_tool");
+    expect(requestSideFailureKind({ enabled: false }, "unprobed")).toBe("tool_disabled");
+    expect(requestSideFailureKind({ enabled: true }, "unprobed")).toBe("invalid_argument");
+    expect(requestSideFailureKind({ enabled: true, execution: {} }, "unprobed")).toBe("invalid_argument");
     // ⚠ **`"forbidden"` must stay `invalid_argument`, and this is the
     // assertion that matters most here.** 1.x's `registerTool` sets exactly
     // this on EVERY ordinary tool it builds (`mcp.js:694,704`), so a
     // predicate asking "is `taskSupport` set" withdraws the claim for the
     // whole pinned peer — which is what the first version did, caught by the
     // 1.x leg of the `invalid_argument` case below.
-    expect(requestSideFailureKind({ enabled: true, execution: { taskSupport: "forbidden" } })).toBe(
+    expect(requestSideFailureKind({ enabled: true, execution: { taskSupport: "forbidden" } }, "unprobed")).toBe(
       "invalid_argument",
     );
     expect(
-      requestSideFailureKind({ enabled: true, execution: { taskSupport: "required" } }),
+      requestSideFailureKind({ enabled: true, execution: { taskSupport: "required" } }, "unprobed"),
     ).toBeUndefined();
     expect(
-      requestSideFailureKind({ enabled: true, execution: { taskSupport: "optional" } }),
+      requestSideFailureKind({ enabled: true, execution: { taskSupport: "optional" } }, "unprobed"),
     ).toBeUndefined();
     // ⚠ A DISABLED task tool is still `tool_disabled`: the vendor switched it
     // off and that is why it did not run, regardless of what else it
     // declares. Order matters, so it is asserted.
     expect(
-      requestSideFailureKind({ enabled: false, execution: { taskSupport: "required" } }),
+      requestSideFailureKind({ enabled: false, execution: { taskSupport: "required" } }, "unprobed"),
     ).toBe("tool_disabled");
   });
 });

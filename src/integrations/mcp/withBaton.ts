@@ -132,8 +132,7 @@ import {
   messageOf,
   type InputValidation,
   OUTPUT_SCHEMA_MISMATCH,
-  REFUSED,
-  requestSideErrorFields,
+  requestSideFailureFields,
   requestSideFailureKind,
   type ResultCaptureMode,
   type ToolEntryFacts,
@@ -206,8 +205,7 @@ interface WrapContext {
    * the config door, like `intentParamMode`, so nothing downstream re-checks
    * it. */
   resultCaptureMode: ResultCaptureMode;
-  /** Whether the probe on `validateToolInput` is still the server's. Without
-   * it a rejected argument cannot be told from a refusal. */
+  /** Whether the probe on `validateToolInput` is still the server's. */
   validationProbeLive: () => boolean;
   paramRegistry: Map<string, IntentParamDispositions>;
   /** Vendor-true JSON Schema for the surface snapshot, in whatever spelling
@@ -328,9 +326,8 @@ interface CallSlot {
    * the tool's schema validates it: a strict schema would refuse the call. */
   retired: RetiredValues;
   /** Set by the probe on `validateToolInput`; stays `"unseen"` when the call
-   * was refused before the SDK validated it, and is `undefined` when no probe
-   * is live. */
-  validation: InputValidation | undefined;
+   * was refused before the SDK validated it. */
+  validation: InputValidation;
 }
 
 type MutableRetiredValues = Partial<Record<(typeof RETIRED_PARAM_NAMES)[number], string | null>>;
@@ -1512,7 +1509,7 @@ function installToolsCallSeam(
           innerFired: false,
           flushTerminal: null,
           retired: stripRetiredParams(request?.params, ctx),
-          validation: ctx.validationProbeLive() ? "unseen" : undefined,
+          validation: ctx.validationProbeLive() ? "unseen" : "unprobed",
         };
         // Reassigned by both the try and the catch before `finally` reads it;
         // the initializer is for definite assignment, not a live default.
@@ -1727,18 +1724,14 @@ async function emitRequestSideFailure(
         // determine the kind MUST OMIT the member, and omitting is what this
         // spells.
         ...(failureKind === undefined ? {} : { failure_kind: failureKind }),
-        // The SDK's own rejections are KEPT under `"off"` (see
-        // `requestSideErrorFields`); a refusal is the vendor's code speaking,
-        // so it is withheld like a tool's own failure.
-        ...(failureKind === REFUSED
-          ? resultDerivedFields(
-              ctx.resultCaptureMode,
-              text,
-              outcome.raised ? null : outcome.result,
-              (value) => errorBody(ctx, value),
-              ctx.scrubber,
-            )
-          : requestSideErrorFields(text(), (value) => errorBody(ctx, value))),
+        ...requestSideFailureFields(
+          failureKind,
+          ctx.resultCaptureMode,
+          text,
+          outcome.raised ? null : outcome.result,
+          (value) => errorBody(ctx, value),
+          ctx.scrubber,
+        ),
       },
     }),
   );
@@ -2139,7 +2132,7 @@ function install(
     annotationToolName,
     intentParamMode,
     resultCaptureMode: config.resultCaptureMode ?? "full",
-    validationProbeLive: () => false,
+    validationProbeLive: installValidationProbe(server),
     paramRegistry: new Map(),
     resolvePrincipal: config.resolvePrincipal,
     vendorToolJsonSchema,
@@ -2188,8 +2181,6 @@ function install(
     },
     ctx,
   );
-
-  ctx.validationProbeLive = installValidationProbe(server);
 
   // The lifecycle seams (SPEC §11.4.4, §11.4.5) — unconditional, like the
   // seam above, because what they capture is not configurable. Install order

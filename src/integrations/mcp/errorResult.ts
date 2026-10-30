@@ -86,8 +86,9 @@ export const OUTPUT_SCHEMA_MISMATCH = "output_schema_mismatch" satisfies Failure
 export const REFUSED = "refused" satisfies FailureKind;
 
 /** What the SDK's own `validateToolInput` did with this call: never reached,
- * accepted the arguments, or rejected them. */
-export type InputValidation = "unseen" | "passed" | "rejected";
+ * accepted the arguments, or rejected them; `"unprobed"` when no probe on it
+ * is live, so a rejected argument cannot be told from a refusal. */
+export type InputValidation = "unprobed" | "unseen" | "passed" | "rejected";
 
 /**
  * Which request-side kind a failure above the handler was, from the tool
@@ -153,13 +154,12 @@ export type InputValidation = "unseen" | "passed" | "rejected";
  * is a task OBJECT, which `dispatchSlot` already answers `undefined` for and
  * the seam already declines to report on.
  *
- * ⚠ **`invalid_argument` now rests on positive evidence where the probe is
- * live.** `withBaton` wraps the SDK's `validateToolInput`, so a rejected
- * argument is recorded as `"rejected"` rather than inferred. What is still an
- * inference is `"unseen"`: the call stopped before validation, which today is
- * a vendor's gate or one of 1.x's two task-mode checks. `TASK_MODES` keeps the
- * second out of `refused`. A pre-validation rejection either major adds later
- * would be labelled `refused` with nothing going red.
+ * ⚠ **`invalid_argument` rests on positive evidence where the probe is
+ * live**: `withBaton` wraps the SDK's `validateToolInput` and records a
+ * rejection. `"unseen"` is the inference: the call stopped before validation,
+ * which is a vendor's gate or one of 1.x's two task-mode checks, and
+ * `TASK_MODES` keeps the second out of `refused`. A pre-validation rejection
+ * either major adds later would be labelled `refused` with nothing going red.
  */
 const TASK_MODES: ReadonlySet<unknown> = new Set(["required", "optional"]);
 
@@ -178,7 +178,7 @@ export interface ToolEntryFacts {
 
 export function requestSideFailureKind(
   entry: ToolEntryFacts | null | undefined,
-  validation?: InputValidation,
+  validation: InputValidation,
 ): FailureKind | undefined {
   // `== null`, not `=== undefined`: this entry comes out of a cast past the
   // SDK's `private`, so its shape is a declaration rather than a runtime
@@ -189,9 +189,7 @@ export function requestSideFailureKind(
   if (entry.enabled === false) return "tool_disabled";
   if (validation === "rejected") return "invalid_argument";
   if (TASK_MODES.has(entry.execution?.taskSupport)) return undefined;
-  // `undefined`: no live probe on `validateToolInput`, so a rejected argument
-  // cannot be told from a refusal and the old reading holds.
-  return validation === undefined ? "invalid_argument" : REFUSED;
+  return validation === "unprobed" ? "invalid_argument" : REFUSED;
 }
 
 /** The `error_body` cap, in CODE POINTS, shared by both failure legs (SPEC
@@ -459,6 +457,25 @@ export function requestSideErrorFields(
   errorBody: (value: string) => string,
 ): { error_body: string; result: null } {
   return { error_body: errorBody(text), result: null };
+}
+
+/** The body members for a call that failed before the vendor's handler ran.
+ * The SDK's own rejections are kept under `"off"`; a refusal is the vendor's
+ * code speaking, so it is withheld like a tool's own failure.
+ *
+ * ⚠ PRECONDITION: call this ONLY from inside an `emit()` build thunk, as its
+ * siblings above. */
+export function requestSideFailureFields(
+  kind: FailureKind | undefined,
+  mode: ResultCaptureMode,
+  text: () => string,
+  result: unknown,
+  errorBody: (value: string) => string,
+  scrubber: (value: unknown) => unknown,
+): { error_body: string; result: unknown; result_capture?: string } {
+  return kind === REFUSED
+    ? resultDerivedFields(mode, text, result ?? null, errorBody, scrubber)
+    : requestSideErrorFields(text(), errorBody);
 }
 
 /** `error_type` for a thrown value: its class name, or `"Error"` for a non-Error. */
