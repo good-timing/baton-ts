@@ -45,13 +45,25 @@ import { MAJORS, CapturingSink, install, terminal } from "./_majors.js";
  * pinned here, where a change to it fails BY NAME.
  */
 describe("the registered failure_kind vocabulary", () => {
-  it("is exactly SPEC §11.4.3's four values, spelled as the Console's codes are", () => {
+  it("is exactly SPEC §11.4.3's five values, spelled as the Console's codes are", () => {
     expect([...FAILURE_KINDS]).toEqual([
       "unknown_tool",
       "tool_disabled",
       "invalid_argument",
       "output_schema_mismatch",
+      "refused",
     ]);
+  });
+
+  it("names a refusal only when the SDK's validator was seen", () => {
+    expect(requestSideFailureKind({ enabled: true }, "rejected")).toBe("invalid_argument");
+    expect(requestSideFailureKind({ enabled: true }, "passed")).toBe("refused");
+    expect(requestSideFailureKind({ enabled: true }, "unseen")).toBe("refused");
+    expect(requestSideFailureKind(undefined, "unseen")).toBe("unknown_tool");
+    expect(requestSideFailureKind({ enabled: false }, "unseen")).toBe("tool_disabled");
+    expect(
+      requestSideFailureKind({ enabled: true, execution: { taskSupport: "required" } }, "unseen"),
+    ).toBeUndefined();
   });
 
   it("withdraws the claim rather than guessing, for the two task modes 1.x rejects early", () => {
@@ -345,5 +357,96 @@ describe.each(MAJORS)("failures above the handler — $label", (major) => {
     expect(sink.events.slice(before).filter((e) => e.event_type !== "surface_snapshot")).toEqual(
       [],
     );
+  });
+});
+
+describe.each(MAJORS)("calls refused above the executor — $label", (major) => {
+  type Handler = (...args: unknown[]) => Promise<unknown>;
+  const refusal = { content: [{ type: "text" as const, text: "out of credits" }], isError: true };
+
+  /** A working tool, with the vendor's gate installed by `gate` before Baton. */
+  const gated = async (
+    sink: CapturingSink,
+    gate: (server: object) => void,
+    extra?: Parameters<typeof install>[2],
+  ) => {
+    const server = major.make();
+    major.tool(server, "works", { name: z.string() }, () => ({
+      content: [{ type: "text" as const, text: "ok" }],
+    }));
+    gate(server);
+    install(server, sink, extra);
+    return { client: await major.connect(server) };
+  };
+
+  const wrapsTheCallHandler = (server: object): void => {
+    const handlers = (server as { server: { _requestHandlers: Map<string, Handler> } }).server
+      ._requestHandlers;
+    const original = handlers.get("tools/call")!;
+    handlers.set("tools/call", async (...args: unknown[]) => {
+      const request = args[0] as { params: { arguments?: { name?: unknown } } };
+      return request.params.arguments?.name === "deny" ? refusal : original(...args);
+    });
+  };
+
+  const overridesExecuteToolHandler = (server: object): void => {
+    const target = server as { executeToolHandler: Handler };
+    const original = target.executeToolHandler;
+    target.executeToolHandler = async function (this: unknown, ...args: unknown[]) {
+      if ((args[1] as { name?: unknown } | undefined)?.name === "deny") {
+        throw new Error("out of credits");
+      }
+      return original.apply(this, args);
+    };
+  };
+
+  it.each([
+    ["a wrapper on the tools/call handler", wrapsTheCallHandler],
+    ["an override of executeToolHandler", overridesExecuteToolHandler],
+  ])("labels a call refused by %s `refused`", async (_label, gate) => {
+    const sink = new CapturingSink();
+    const { client } = await gated(sink, gate);
+    const result = await client.callTool({ name: "works", arguments: { name: "deny" } });
+
+    expect(result.isError).toBe(true);
+    const event = terminal(sink, "tool_call_error");
+    expect(event.payload.failure_kind).toBe("refused");
+    expect(event.payload.error_body).toContain("out of credits");
+    const start = sink.events[1]!;
+    expect(start.event_type).toBe("tool_call_start");
+    expect(start.payload).toMatchObject({ tool_name: "works", params: { name: "deny" } });
+    expect(event.call_id).toBe(start.call_id);
+  });
+
+  it("still labels a rejected argument `invalid_argument` behind a gate", async () => {
+    const sink = new CapturingSink();
+    const { client } = await gated(sink, overridesExecuteToolHandler);
+    await client.callTool({ name: "works", arguments: { name: 7 } }).catch(() => {});
+
+    expect(terminal(sink, "tool_call_error").payload.failure_kind).toBe("invalid_argument");
+  });
+
+  it("lets a call the gate allows through as an ordinary success", async () => {
+    const sink = new CapturingSink();
+    const { client } = await gated(sink, wrapsTheCallHandler);
+    await client.callTool({ name: "works", arguments: { name: "ok" } });
+
+    expect(sink.events.map((e) => e.event_type)).toEqual([
+      "surface_snapshot",
+      "tool_call_start",
+      "tool_call_end",
+    ]);
+  });
+
+  it("withholds a refusal's message under `resultCaptureMode: \"off\"`", async () => {
+    const sink = new CapturingSink();
+    const { client } = await gated(sink, wrapsTheCallHandler, { resultCaptureMode: "off" });
+    await client.callTool({ name: "works", arguments: { name: "deny" } });
+
+    const event = terminal(sink, "tool_call_error");
+    expect(event.payload.failure_kind).toBe("refused");
+    expect(event.payload.error_body).toBe("");
+    expect(event.payload.result).toBeNull();
+    expect(event.payload.result_capture).toBe("off");
   });
 });

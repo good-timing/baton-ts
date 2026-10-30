@@ -68,6 +68,7 @@ export const FAILURE_KINDS = [
   "tool_disabled",
   "invalid_argument",
   "output_schema_mismatch",
+  "refused",
 ] as const;
 
 /** What this producer may emit for `failure_kind`. Derived, so the type and
@@ -78,6 +79,15 @@ export type FailureKind = (typeof FAILURE_KINDS)[number];
  * conversion of its output rejected it, so `error_body` and `result` are
  * result-derived and `"off"` withholds both. */
 export const OUTPUT_SCHEMA_MISMATCH = "output_schema_mismatch" satisfies FailureKind;
+
+/** The handler never ran because code above it refused the call: a vendor's
+ * wrapper on the `tools/call` handler, or an override of the SDK's
+ * `executeToolHandler`. Its message is the vendor's, so `"off"` withholds it. */
+export const REFUSED = "refused" satisfies FailureKind;
+
+/** What the SDK's own `validateToolInput` did with this call: never reached,
+ * accepted the arguments, or rejected them. */
+export type InputValidation = "unseen" | "passed" | "rejected";
 
 /**
  * Which request-side kind a failure above the handler was, from the tool
@@ -178,6 +188,7 @@ export interface ToolEntryFacts {
 
 export function requestSideFailureKind(
   entry: ToolEntryFacts | null | undefined,
+  validation?: InputValidation,
 ): FailureKind | undefined {
   // `== null`, not `=== undefined`: this entry comes out of a cast past the
   // SDK's `private`, so its shape is a declaration rather than a runtime
@@ -186,7 +197,11 @@ export function requestSideFailureKind(
   // `settleCall`'s guard would catch it, but a sensor should not need one).
   if (entry == null) return "unknown_tool";
   if (entry.enabled === false) return "tool_disabled";
-  return TASK_MODES.has(entry.execution?.taskSupport) ? undefined : "invalid_argument";
+  if (validation === "rejected") return "invalid_argument";
+  if (TASK_MODES.has(entry.execution?.taskSupport)) return undefined;
+  // `undefined` validation: the probe on `validateToolInput` could not be
+  // installed, so a rejected argument cannot be told from a refusal.
+  return validation === undefined ? "invalid_argument" : REFUSED;
 }
 
 /** The `error_body` cap, in CODE POINTS, shared by both failure legs (SPEC

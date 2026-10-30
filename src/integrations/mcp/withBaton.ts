@@ -130,7 +130,9 @@ import {
   type FailureKind,
   scrubbedErrorBody,
   messageOf,
+  type InputValidation,
   OUTPUT_SCHEMA_MISMATCH,
+  REFUSED,
   requestSideErrorFields,
   requestSideFailureKind,
   type ResultCaptureMode,
@@ -204,6 +206,9 @@ interface WrapContext {
    * the config door, like `intentParamMode`, so nothing downstream re-checks
    * it. */
   resultCaptureMode: ResultCaptureMode;
+  /** Whether `installValidationProbe` found `validateToolInput`. Without it a
+   * rejected argument cannot be told from a refusal. */
+  validationProbed: boolean;
   paramRegistry: Map<string, IntentParamDispositions>;
   /** Vendor-true JSON Schema for the surface snapshot, in whatever spelling
    * THIS server actually puts on the wire. */
@@ -322,6 +327,9 @@ interface CallSlot {
   /** A stale client's retired names, taken off the request by the seam before
    * the tool's schema validates it: a strict schema would refuse the call. */
   retired: RetiredValues;
+  /** Set by the probe on `validateToolInput`; stays `"unseen"` when the call
+   * was refused before the SDK validated it. */
+  validation: InputValidation;
 }
 
 type MutableRetiredValues = Partial<Record<(typeof RETIRED_PARAM_NAMES)[number], string | null>>;
@@ -1503,6 +1511,7 @@ function installToolsCallSeam(
           innerFired: false,
           flushTerminal: null,
           retired: stripRetiredParams(request?.params, ctx),
+          validation: "unseen",
         };
         // Reassigned by both the try and the catch before `finally` reads it;
         // the initializer is for definite assignment, not a live default.
@@ -1526,6 +1535,37 @@ function installToolsCallSeam(
         }
       },
   );
+}
+
+const VALIDATION_PROBE = Symbol.for("baton.validationProbe");
+
+/**
+ * Record on the call's slot what the SDK's `validateToolInput` did, so the
+ * `tools/call` seam can tell a rejected argument from a refusal above the
+ * executor without reading the message. Both majors call it on the instance,
+ * right before `executeToolHandler`. Returns `false` when this SDK has none.
+ */
+function installValidationProbe(server: SupportedMcpServer): boolean {
+  const target = server as unknown as {
+    validateToolInput?: ((...args: unknown[]) => Promise<unknown>) & { [VALIDATION_PROBE]?: true };
+  };
+  const original = target.validateToolInput;
+  if (typeof original !== "function") return false;
+  if (original[VALIDATION_PROBE]) return true;
+  const probe = async function (this: unknown, ...args: unknown[]): Promise<unknown> {
+    const slot = callSlots.getStore();
+    try {
+      const parsed = await original.apply(this, args);
+      if (slot) slot.validation = "passed";
+      return parsed;
+    } catch (err) {
+      if (slot) slot.validation = "rejected";
+      throw err;
+    }
+  };
+  Object.assign(probe, { [VALIDATION_PROBE]: true as const });
+  target.validateToolInput = probe;
+  return true;
 }
 
 /**
@@ -1570,7 +1610,7 @@ async function settleCall(
     // Nothing failed and the inner never fired: a tool this package does not
     // capture (the annotate tool, a task-based tool) was called and worked.
     if (!outcome.failed) return;
-    await emitRequestSideFailure(outcome, args, slot.retired, toolEntry, ctx);
+    await emitRequestSideFailure(outcome, args, slot, toolEntry, ctx);
   } catch (err) {
     process.stderr.write(`baton: settling a tool call failed; events dropped: ${String(err)}\n`);
   }
@@ -1607,7 +1647,7 @@ async function settleCall(
 async function emitRequestSideFailure(
   outcome: OuterOutcome,
   args: AnyArgs,
-  retired: RetiredValues,
+  slot: CallSlot,
   toolEntry: (name: string) => ToolEntry | undefined,
   ctx: WrapContext,
 ): Promise<void> {
@@ -1636,13 +1676,24 @@ async function emitRequestSideFailure(
   // Baton's own params would land in `tool_call_start.params`, which SPEC
   // says equals the vendor-visible arguments.
   const params = { ...((request?.params?.arguments as Record<string, unknown>) ?? {}) };
-  const { common, sessionId } = await openCall(ctx, toolName, args[1] as Extra, params, retired, entry != null);
+  const { common, sessionId } = await openCall(
+    ctx,
+    toolName,
+    args[1] as Extra,
+    params,
+    slot.retired,
+    entry != null,
+  );
 
   // `undefined` where the SDK rejected the call for a reason this producer
   // cannot attribute — SPEC §11.4.3 permits omitting the member and
   // `requestSideFailureKind` says which shape that is. The event still goes:
   // the call failed, and the SDK's own message is on it.
-  const failureKind: FailureKind | undefined = requestSideFailureKind(entry);
+  const failureKind: FailureKind | undefined = requestSideFailureKind(
+    entry,
+    ctx.validationProbed ? slot.validation : undefined,
+  );
+  const text = outcome.raised ? messageOf(outcome.err) : errorText(outcome.result);
   await emit(ctx.sink, () =>
     ToolCallErrorEventSchema.parse({
       ...common,
@@ -1673,12 +1724,18 @@ async function emitRequestSideFailure(
         // determine the kind MUST OMIT the member, and omitting is what this
         // spells.
         ...(failureKind === undefined ? {} : { failure_kind: failureKind }),
-        // KEPT under `"off"` — see `requestSideErrorFields`, which takes no
-        // capture mode because nothing here is derived from a result.
-        ...requestSideErrorFields(
-          outcome.raised ? messageOf(outcome.err) : errorText(outcome.result),
-          (text) => errorBody(ctx, text),
-        ),
+        // The SDK's own rejections are KEPT under `"off"` (see
+        // `requestSideErrorFields`); a refusal is the vendor's code speaking,
+        // so it is withheld like a tool's own failure.
+        ...(failureKind === REFUSED
+          ? resultDerivedFields(
+              ctx.resultCaptureMode,
+              () => text,
+              outcome.raised ? null : outcome.result,
+              (value) => errorBody(ctx, value),
+              ctx.scrubber,
+            )
+          : requestSideErrorFields(text, (value) => errorBody(ctx, value))),
       },
     }),
   );
@@ -2079,6 +2136,7 @@ function install(
     annotationToolName,
     intentParamMode,
     resultCaptureMode: config.resultCaptureMode ?? "full",
+    validationProbed: false,
     paramRegistry: new Map(),
     resolvePrincipal: config.resolvePrincipal,
     vendorToolJsonSchema,
@@ -2127,6 +2185,8 @@ function install(
     },
     ctx,
   );
+
+  ctx.validationProbed = installValidationProbe(server);
 
   // The lifecycle seams (SPEC §11.4.4, §11.4.5) — unconditional, like the
   // seam above, because what they capture is not configurable. Install order
