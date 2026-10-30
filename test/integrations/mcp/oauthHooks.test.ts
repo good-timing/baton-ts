@@ -13,9 +13,8 @@ import {
 import {
   type PrincipalResolutionContext,
   type ResolvePrincipalHook,
-  resolveCallPrincipal,
 } from "../../../src/integrations/mcp/principalResolution.js";
-import { CapturingSink, MAJORS, install } from "./_majors.js";
+import { CapturingSink, MAJORS, install, resolveCallPrincipal } from "./_majors.js";
 
 const TENANT = "ten_parity";
 const CLAIMS = {

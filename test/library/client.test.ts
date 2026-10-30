@@ -327,6 +327,28 @@ describe("Client.session", () => {
     expect(JSON.stringify(sink.events)).not.toContain("Bearer");
   });
 
+  it("sends the organization beside the principal, or alone", async () => {
+    const { sink, client } = setup();
+    const acme = { organizationId: "org_acme", displayName: "Acme" };
+    client.session({ principal: { principalId: "user-7", organization: acme } }, () =>
+      client.trace({ toolName: "t" }, () => null),
+    );
+    client.session({ principal: acme }, () => client.trace({ toolName: "t" }, () => null));
+    client.session({ principal: { principalId: " ", organization: acme } }, () =>
+      client.trace({ toolName: "t" }, () => null),
+    );
+    await client.flush();
+    const acmeWire = { id: "org_acme", source: "asserted", form: "raw", display_name: "Acme" };
+    expect(sink.events.map((e) => [e.principal?.id ?? null, e.organization])).toEqual([
+      ["user-7", acmeWire],
+      ["user-7", acmeWire],
+      [null, acmeWire],
+      [null, acmeWire],
+      [null, acmeWire],
+      [null, acmeWire],
+    ]);
+  });
+
   it("keeps registered headers when another header has a name Headers refuses", async () => {
     const { sink, client } = setup();
     client.session({ headers: { "bad header": "x", "user-agent": "agent/1" } }, () =>

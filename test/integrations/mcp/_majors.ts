@@ -5,7 +5,7 @@
  * smallest surface that lets one test body drive either.
  */
 
-import { expect } from "vitest";
+import { expect, vi } from "vitest";
 import { McpServer as McpServerV1 } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { Client as ClientV1 } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport as TransportV1 } from "@modelcontextprotocol/sdk/inMemory.js";
@@ -19,6 +19,26 @@ import { z } from "zod";
 import type { Event } from "../../../src/events.js";
 import type { Sink } from "../../../src/sinks.js";
 import { withBaton } from "../../../src/integrations/mcp/withBaton.js";
+import type { PrincipalWire } from "../../../src/identity.js";
+import { resolveCaller } from "../../../src/integrations/mcp/principalResolution.js";
+
+/** Collects `process.emitWarning` messages until `restore()`. `vi.spyOn`
+ * rather than a hand-rolled swap: it restores cleanly and avoids reassigning a
+ * bound method off `process`. */
+export function spyWarnings(): { seen: string[]; restore: () => void } {
+  const seen: string[] = [];
+  const spy = vi.spyOn(process, "emitWarning").mockImplementation((m) => {
+    seen.push(String(m));
+  });
+  return { seen, restore: () => spy.mockRestore() };
+}
+
+/** The `principal` half of `resolveCaller`, for tests about the principal alone. */
+export async function resolveCallPrincipal(
+  ...args: Parameters<typeof resolveCaller>
+): Promise<PrincipalWire | null> {
+  return (await resolveCaller(...args)).principal;
+}
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 

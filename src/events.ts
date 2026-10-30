@@ -253,7 +253,7 @@ export const PrincipalWireSchema = z
 // (open `z.string()`) — see `identity.PrincipalWire`.
 //
 // Without the check below the drift is silent in the worst direction: add a
-// member to `PrincipalWire`, and `principalFor` compiles green while
+// member to `PrincipalWire`, and `identityWire` compiles green while
 // `.strict()` rejects the object at the emit boundary, where `emit()` catches
 // the throw and DROPS the event. Capture loss with no error at the site of
 // the change. Asserting the KEY SETS match both ways turns that into a
@@ -310,6 +310,7 @@ const envelopeShape = {
   // consumer names the client from `client_observed`.
   agent_runtime: z.string().default("unknown"),
   principal: PrincipalWireSchema.nullable().default(null),
+  organization: PrincipalWireSchema.nullable().default(null),
   transport_observed: z.string().nullable().default(null),
   session_id_origin: z.string().nullable().default(null),
   client_observed: ClientObservedSchema.nullable().default(null),

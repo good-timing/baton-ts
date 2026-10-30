@@ -168,7 +168,7 @@ import { observeClient } from "./clientObserved.js";
 import { resolveSessionId, type ResolvedSession } from "./sessionResolution.js";
 import {
   type ResolvePrincipalHook,
-  resolveCallPrincipal,
+  resolveCaller,
 } from "./principalResolution.js";
 import { SessionCounter } from "./sessionCounter.js";
 import {
@@ -422,11 +422,11 @@ function errorBody(ctx: WrapContext, text: string): string {
 }
 
 /** The envelope members every event shares, resolved off one MCP request —
- * everything except `principal`, which is deliberately not in here.
+ * everything except `principal` and `organization`, which are deliberately not in here.
  *
  * Split out of `openCall` so the lifecycle seams (SPEC §11.4.4, §11.4.5) can
  * build an envelope without the parts that are specific to a tool call: the
- * intent-param strip and the `call_id`. `principal` is the caller's to
+ * intent-param strip and the `call_id`. `principal` and `organization` are the caller's to
  * resolve, because the hook's input differs between a call and a listing.
  *
  * Returns the PARTS rather than an assembled `common` so each caller spells its
@@ -498,7 +498,7 @@ async function openCall(
   // Resolved AFTER the intent-param strip, so the hook's `arguments` are
   // exactly what the vendor's own handler receives — Baton's injected
   // params are never a caller's input and must not look like one.
-  const principal = await resolveCallPrincipal(
+  const caller = await resolveCaller(
     ctx.resolvePrincipal,
     { extra, toolName, arguments: params },
   );
@@ -512,7 +512,8 @@ async function openCall(
     // it. `surface_snapshot` is deliberately not among them: it describes the
     // SERVER and is captured outside any call, so it has no caller, transport
     // or client to name.
-    principal,
+    principal: caller.principal,
+    organization: caller.organization,
     transport_observed: observeTransport(extra),
     session_id_origin: origin,
     client_observed: observeClient(extra, ctx),
@@ -1217,7 +1218,7 @@ async function openLifecycleCall(
 } | null> {
   try {
     const parts = await resolveEnvelopeParts(ctx, extra);
-    const principal = await resolveCallPrincipal(ctx.resolvePrincipal, {
+    const caller = await resolveCaller(ctx.resolvePrincipal, {
       extra,
       toolName: null,
       arguments: {},
@@ -1233,7 +1234,8 @@ async function openLifecycleCall(
         vendor_id: ctx.vendorId,
         session_id: parts.sessionId,
         consent_token: ctx.consentToken,
-        principal,
+        principal: caller.principal,
+        organization: caller.organization,
         transport_observed: observeTransport(extra),
         session_id_origin: parts.origin,
         client_observed: observeClient(extra, ctx),

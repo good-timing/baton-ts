@@ -9,13 +9,7 @@
  * The TypeScript half of Python's `integrations/identity_adapter.py`.
  */
 
-import {
-  type Principal,
-  type PrincipalWire,
-  PRINCIPAL_FORM_RAW,
-  normalizePrincipal,
-  principalFor,
-} from "../../identity.js";
+import { type CallerWire, type Organization, type Principal, NO_CALLER, callerFor } from "../../identity.js";
 import { warn } from "./annotationName.js";
 import {
   type AuthInfo,
@@ -65,7 +59,7 @@ export interface PrincipalResolutionContext {
  * means "no opinion about this caller", which is not an error. */
 export type ResolvePrincipalHook = (
   context: PrincipalResolutionContext,
-) => Principal | null | Promise<Principal | null>;
+) => Principal | Organization | null | Promise<Principal | Organization | null>;
 
 /** Build the hook's input from whichever major's context arrived.
  *
@@ -117,64 +111,46 @@ async function withinHookBudget(answer: unknown): Promise<unknown> {
   }
 }
 
-let warnedPreRenameShape = false;
+// The hook runs on every request, so each kind of problem is reported once.
+const warned = new Set<string>();
 
-/** A hook still returning the pre-0.3.5 `{ userId }` resolves nobody on every
- * call and throws nothing, unlike a renamed config key. Say so once, and never
- * with the value. */
-function warnIfPreRenameShape(result: unknown): void {
-  const userId = (result as { userId?: unknown } | null | undefined)?.userId;
-  if (warnedPreRenameShape || typeof userId !== "string") return;
-  warnedPreRenameShape = true;
-  warn(
-    "baton: resolvePrincipal returned { userId }, which was renamed to { principalId } " +
-      "in 0.3.5, so the principal is dropped from every event until the hook returns the new key.",
-  );
+function warnOnce(key: string, message: string): void {
+  if (warned.has(key)) return;
+  warned.add(key);
+  warn(`baton: resolvePrincipal ${message}`);
 }
 
-/** Run a vendor's hook and turn its answer into the envelope's `principal`.
+/** Run a vendor's hook and turn its answer into the envelope's `principal`
+ * and `organization`.
  *
  * ⚠ **Never throws.** A hook that raises, returns the wrong shape, or returns
- * `null` yields an anonymous request, not a failed one — `principal` is
- * additive analytics and a vendor's own bug in their resolver may not fail
- * their request (SPEC §11.2 fail-open).
+ * `null` yields an anonymous request, not a failed one — `principal` and
+ * `organization` are additive analytics, and a vendor's own bug in their
+ * resolver may not fail their request (SPEC §11.2 fail-open).
  *
  * A hook that has not answered within `HOOK_TIMEOUT_MS` is given up on, which
  * cannot bound one that blocks synchronously.
  */
-export async function resolveCallPrincipal(
+export async function resolveCaller(
   hook: ResolvePrincipalHook | undefined,
   call: { extra: Extra; toolName: string | null; arguments: Record<string, unknown> },
-): Promise<PrincipalWire | null> {
+): Promise<CallerWire> {
   // The context is built HERE — after the hook check, inside the try — and
   // the signature takes the raw call so a caller cannot do it the other way:
   // a server with no hook pays nothing, and a throw from the header read
   // cannot escape into the vendor's request.
-  if (hook === undefined) return null;
+  if (hook === undefined) return NO_CALLER;
   try {
     const context = buildPrincipalResolutionContext(call.extra, call.toolName, call.arguments);
     const result: unknown = await withinHookBudget(hook(context));
     // Reading the result stays inside the try: a getter or Proxy on what the
     // hook returned is still the vendor's code.
-    const principal = normalizePrincipal(result);
-    if (principal === null) {
-      warnIfPreRenameShape(result);
-      return null;
-    }
-    return principalFor(principal, (form) => {
-      warn(
-        `baton: resolvePrincipal returned form ${describeForm(form)}, expected "raw" or "hashed" — ` +
-          `sending it as "${PRINCIPAL_FORM_RAW}".`,
-      );
-    });
+    return callerFor(result, warnOnce);
   } catch {
     // Broad on purpose: this calls code a VENDOR wrote, and an identity read
     // may not be able to fail a request. Nothing is logged to stdout — that
     // stream is the MCP JSON-RPC frame (AGENTS.md boundary rule 2).
-    return null;
+    return NO_CALLER;
   }
 }
 
-function describeForm(form: unknown): string {
-  return typeof form === "string" ? JSON.stringify(form.slice(0, 32)) : `of type ${typeof form}`;
-}

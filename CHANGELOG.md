@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+- **`organization`: the company or workspace the caller belongs to.** A
+  `resolvePrincipal` hook can return `{ principalId, organization: {
+  organizationId, displayName } }`, or `{ organizationId }` alone when it
+  knows only the company. `withBaton` sends it as a new optional envelope
+  member beside `principal`. Either one is dropped alone when unusable. The
+  library API's `client.session({ principal })` takes the same values. Each
+  problem with what the hook returned is now warned about once. (SPEC §11.4,
+  §11.5.1, §13.) The baton-spec pin moves past the proactive removal, whose
+  vectors no longer open with a note.
+
 ## 0.5.8: one numbered `user_goal`; reports are opt-in
 
 The Python SDK's 0.8.22 and 0.8.23. The baton-spec pin moves to bf26c5a.

@@ -141,14 +141,14 @@ export type { Baton } from "./integrations/mcp/index.js";
 // SDK major's `McpServer` is imported.
 export type { SupportedMcpServer } from "./integrations/mcp/index.js";
 
-// Principal identity. `Principal`, `PrincipalForm` and
+// Principal identity. `Principal`, `Organization`, `PrincipalForm` and
 // `PrincipalResolutionContext` are what a vendor's `resolvePrincipal` hook
 // signs its function against, so a vendor cannot write a typed hook without
 // naming them.
-export type { Principal, PrincipalForm } from "./identity.js";
-// `PrincipalWire` and `principalFor` are NOT exported: they are the
-// PRODUCER's, and `principalFor` is the single construction site for the wire
-// object. `Event.principal` is inferred from `PrincipalWireSchema`, whose
+export type { Organization, Principal, PrincipalForm } from "./identity.js";
+// `PrincipalWire` and `callerFor` are NOT exported: they are the PRODUCER's,
+// and `identityWire` behind `callerFor` is the single construction site for
+// the wire object. `Event.principal` is inferred from `PrincipalWireSchema`, whose
 // members are deliberately open, so a consumer wanting a name for the
 // received shape uses `z.infer<typeof PrincipalWireSchema>` or
 // `Event["principal"]`.

@@ -95,34 +95,42 @@ export interface Principal {
    * show, and it is personal data whatever `form` says. An unusable value is
    * dropped alone — see `wireDisplayName`. */
   displayName?: string | null | undefined;
+  /** The company this principal belongs to. Sent as `organization`, and
+   * dropped alone when unusable (SPEC §11.4). */
+  organization?: Organization | null | undefined;
 }
 
-/** What `normalizePrincipal` hands on: the resolver's `form` is still
- * unchecked, because only `principalFor` has a channel to warn on. */
-export type ResolvedPrincipal = Omit<Principal, "form"> & { form?: unknown };
+/** The company or workspace the caller belongs to, as the vendor sees it.
+ * Sent as `organization` (SPEC §11.4), beside `principal` or alone. It is
+ * never counted as a person. `form` describes `organizationId` alone. */
+export interface Organization {
+  organizationId: string;
+  form?: PrincipalForm | undefined;
+  displayName?: string | null | undefined;
+}
 
-/** Normalize whatever a vendor's hook returned into a usable principal, or
- * `null` if it gave us nothing usable.
- *
- * TypeScript types vanish at runtime and a hook is vendor code, so a plain
- * string or a half-built object is a MISS, never a partially-built principal.
- */
-export function normalizePrincipal(result: unknown): ResolvedPrincipal | null {
-  if (result === null || typeof result !== "object") return null;
-  const candidate = result as { principalId?: unknown; form?: unknown; displayName?: unknown };
-  if (typeof candidate.principalId !== "string") return null;
+function usableId(id: unknown): id is string {
+  if (typeof id !== "string") return false;
   // A lone surrogate cannot be UTF-8 encoded: the sink would send U+FFFD in
   // its place, so `"a\uD800"` and `"a\uDC00"` would arrive as one actor.
-  if (LONE_SURROGATE.test(candidate.principalId)) return null;
+  if (LONE_SURROGATE.test(id)) return false;
   // U+0000 is refused by Postgres text and would cost a collector the whole event.
-  if (candidate.principalId.includes("\u0000")) return null;
+  if (id.includes("\u0000")) return false;
   // A blank id names nobody, and every such caller would merge into one actor.
-  if (pythonStrip(candidate.principalId) === "") return null;
-  const principal: ResolvedPrincipal = { principalId: candidate.principalId };
-  if (candidate.form !== undefined) principal.form = candidate.form;
-  // Shape only; the name's own rules run once, in `principalFor`.
-  if (typeof candidate.displayName === "string") principal.displayName = candidate.displayName;
-  return principal;
+  return pythonStrip(id) !== "";
+}
+
+function readIdentity(
+  result: unknown,
+  idKey: "principalId" | "organizationId",
+): { id: string; form: unknown; displayName: string | undefined } | null {
+  if (result === null || typeof result !== "object") return null;
+  const candidate = result as Record<string, unknown>;
+  const id = candidate[idKey];
+  if (!usableId(id)) return null;
+  // Shape only; the name's own rules run once, in `identityWire`.
+  const displayName = typeof candidate.displayName === "string" ? candidate.displayName : undefined;
+  return { id, form: candidate.form, displayName };
 }
 
 /** The principal AS EMITTED — the finished envelope value (SPEC §11.4).
@@ -154,6 +162,10 @@ export interface PrincipalWire {
   display_name?: string;
 }
 
+/** The organization as emitted: `principal`'s members and rules, with its
+ * own `form` (SPEC §11.4). */
+export type OrganizationWire = PrincipalWire;
+
 // ⚠ **Literal types here, `z.string()` on `PrincipalWireSchema` — and the
 // asymmetry is deliberate.** That schema is the PARSE boundary and must
 // tolerate a value SPEC registers later; this is the PRODUCER type, and this
@@ -162,34 +174,112 @@ export interface PrincipalWire {
 // string through. Typed this way, adding a source is a compile error in one
 // place — here, where the registry is.
 
-/** The resolver's principal as the wire object.
- *
- * The id is sent as given: not scrubbed, since a scrubber that redacts emails
- * would map every user onto one redaction constant and merge them into a
- * single actor.
- */
-export function principalFor(
-  principal: ResolvedPrincipal,
+/** The envelope's `principal` and `organization`. Either, both or neither
+ * may be set: SPEC §11.4 keeps them independent. */
+export interface CallerWire {
+  principal: PrincipalWire | null;
+  organization: OrganizationWire | null;
+}
+
+export const NO_CALLER: CallerWire = Object.freeze({ principal: null, organization: null });
+
+/** Told why `callerFor` dropped or rewrote something. `key` is fixed text, so
+ * a caller can report each kind of problem once; `message` may hold part of
+ * the vendor's value. */
+export type CallerWarning = (key: string, message: string) => void;
+
+/** What a `resolvePrincipal` hook returned, or `principal` was given, as wire
+ * objects: a `Principal`, which may carry its `organization`, or an
+ * `Organization` alone. Each is dropped alone when unusable. Never throws:
+ * the value is vendor code, and a getter or Proxy on it may. */
+export function callerFor(result: unknown, warn: CallerWarning): CallerWire {
+  try {
+    return readCaller(result, warn);
+  } catch {
+    warn("unreadable", "could not be read — sending neither principal nor organization.");
+    return NO_CALLER;
+  }
+}
+
+function readCaller(result: unknown, warn: CallerWarning): CallerWire {
+  if (result === undefined || result === null) return NO_CALLER;
+  if (typeof result !== "object") {
+    warn("not-object", `got a ${typeof result}, not an object — sending neither principal nor organization.`);
+    return NO_CALLER;
+  }
+  // A `principalId` or an `organization` key makes it a `Principal`, so a
+  // missing or blank person still keeps the company; otherwise an `Organization`.
+  if (!("principalId" in result) && !("organization" in result)) {
+    if ("organizationId" in result) {
+      return { principal: null, organization: identityFor(result, "organization", warn) };
+    }
+    if (typeof (result as { userId?: unknown }).userId === "string") {
+      warn(
+        "user-id",
+        "returned { userId }, which was renamed to { principalId } in 0.3.5, so the principal " +
+          "is dropped from every event until it returns the new key.",
+      );
+    } else {
+      warn("no-id", "got an object with neither principalId nor organizationId — sending neither.");
+    }
+    return NO_CALLER;
+  }
+  if ("organizationId" in result) {
+    warn("flat-organization-id", "got principalId and organizationId side by side; put the company in `organization`.");
+  }
+  const nested = (result as { organization?: unknown }).organization;
+  return {
+    principal: identityFor(result, "principal", warn),
+    organization: nested == null ? null : identityFor(nested, "organization", warn),
+  };
+}
+
+function identityFor(
+  value: unknown,
+  member: "principal" | "organization",
+  warn: CallerWarning,
+): PrincipalWire | null {
+  const idKey = member === "principal" ? "principalId" : "organizationId";
+  const identity = readIdentity(value, idKey);
+  if (identity === null) {
+    warn(`${member}:id`, `${member} has no usable ${idKey} — sending no ${member}.`);
+    return null;
+  }
+  return identityWire(identity.id, identity.form, identity.displayName, (form) =>
+    warn(`${member}:form`, `${member} form ${describeForm(form)} is not registered — sending "raw".`),
+  );
+}
+
+function describeForm(form: unknown): string {
+  return typeof form === "string" ? JSON.stringify(form.slice(0, 32)) : `of type ${typeof form}`;
+}
+
+/** The id is sent as given: not scrubbed, since a scrubber that redacts emails
+ * would map every user onto one redaction constant and merge them into one. */
+function identityWire(
+  id: string,
+  stated: unknown,
+  displayName: unknown,
   onUnregisteredForm?: (form: unknown) => void,
 ): PrincipalWire {
   let form: PrincipalForm = PRINCIPAL_FORM_RAW;
-  if (principal.form !== undefined) {
-    if (PRINCIPAL_FORMS.has(principal.form)) {
-      form = principal.form as PrincipalForm;
+  if (stated !== undefined) {
+    if (PRINCIPAL_FORMS.has(stated)) {
+      form = stated as PrincipalForm;
     } else {
       // SPEC §11.4: anything not "hashed" is personal data, so that is the
       // only safe reading of a form nobody registered.
-      onUnregisteredForm?.(principal.form);
+      onUnregisteredForm?.(stated);
     }
   }
   const wire: PrincipalWire = {
     // `capCodePoints`, not `.slice()`: a plain slice counts UTF-16 units, so
     // an astral id cut at the boundary would ship a lone surrogate.
-    id: capCodePoints(principal.principalId, PRINCIPAL_ID_MAX_LEN),
+    id: capCodePoints(id, PRINCIPAL_ID_MAX_LEN),
     source: PRINCIPAL_SOURCE_ASSERTED,
     form,
   };
-  const displayName = wireDisplayName(principal.displayName);
-  if (displayName !== null) wire.display_name = displayName;
+  const name = wireDisplayName(displayName);
+  if (name !== null) wire.display_name = name;
   return wire;
 }

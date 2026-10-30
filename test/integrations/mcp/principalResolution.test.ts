@@ -9,20 +9,10 @@ import {
 import { extraHeaders } from "../../../src/integrations/mcp/mcpTypes.js";
 import {
   HOOK_TIMEOUT_MS,
-  resolveCallPrincipal,
   type PrincipalResolutionContext,
 } from "../../../src/integrations/mcp/principalResolution.js";
+import { resolveCallPrincipal, spyWarnings } from "./_majors.js";
 
-/** Collects `process.emitWarning` messages until `restore()`. `vi.spyOn`
- * rather than a hand-rolled swap: it restores cleanly and avoids reassigning a
- * bound method off `process`. */
-function spyWarnings(): { seen: string[]; restore: () => void } {
-  const seen: string[] = [];
-  const spy = vi.spyOn(process, "emitWarning").mockImplementation((m) => {
-    seen.push(String(m));
-  });
-  return { seen, restore: () => spy.mockRestore() };
-}
 
 /** What a vendor writes — the canonical header spelling, because that is what
  * the header is called in every document describing it. ONE function, run
@@ -302,8 +292,8 @@ describe("resolveCallPrincipal fail-open", () => {
     expect(warnings.seen[0]).not.toContain("employee-4417");
   });
 
-  it("routes the hook's return through normalizePrincipal", async () => {
-    // One representative shape, not six: `normalizePrincipal`'s own test
+  it("routes the hook's return through callerFor", async () => {
+    // One representative shape, not six: `callerFor`'s own test (test/identity.test.ts)
     // enumerates the rejection modes, and re-running them through the wrapper
     // reds two files for one cause. What is unique HERE is only that the
     // wrapper consults it at all — a snake_case key is the shape a vendor

@@ -50,7 +50,7 @@ import {
   sessionEnvelope,
   sessionForCall,
 } from "./session.js";
-import { pythonStrip, type Principal } from "../identity.js";
+import { pythonStrip, type Organization, type Principal } from "../identity.js";
 import type { HeaderInput } from "../integrations/mcp/clientObserved.js";
 
 export interface ClientOptions {
@@ -74,8 +74,11 @@ export interface ClientOptions {
 export interface SessionOptions {
   /** The vendor's own id for the conversation; without one, the block mints one. */
   sessionId?: string;
-  /** Who the vendor says is calling. */
-  principal?: Principal;
+  /** Who the vendor says is calling: a `Principal`, which may carry its
+   * `organization`, or an `Organization` alone when only the company is known.
+   * A block with only a company and no `sessionId` is never joined to another
+   * (SPEC §11.5.1), so pass your own `sessionId` then. */
+  principal?: Principal | Organization;
   /** What the calling client said about itself. */
   clientInfo?: { name?: string; version?: string };
   /** The request's headers; only registered ones are kept. */

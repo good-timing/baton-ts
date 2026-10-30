@@ -320,11 +320,12 @@ describe("baton-spec conformance", () => {
     ["named", { id: "abc", source: "asserted", form: "hashed", display_name: "alice" }],
     ["null name (Python's shape)", { id: "abc", source: "asserted", form: "raw", display_name: null }],
     ["no name (this SDK's shape)", { id: "abc", source: "asserted", form: "hashed" }],
-  ])("a %s principal is valid against the PINNED schema", (_label, principal) => {
+  ])("a %s principal and organization are valid against the PINNED schema", (_label, principal) => {
     const event = BRANCHES.tool_call_start!.parse({
       ...commonEnvelope(),
       call_id: "call-1",
       principal,
+      organization: principal,
       payload: MINIMAL.tool_call_start,
     });
     const valid = validate(JSON.parse(JSON.stringify(event)));

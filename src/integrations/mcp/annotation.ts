@@ -18,7 +18,7 @@ import { roundMetaCoordinates } from "../../metaCoordinates.js";
 import type { Sink } from "../../sinks.js";
 import { deriveAnnotationToolName } from "./annotationName.js";
 import { emit } from "./emit.js";
-import { type ResolvePrincipalHook, resolveCallPrincipal } from "./principalResolution.js";
+import { type ResolvePrincipalHook, resolveCaller } from "./principalResolution.js";
 import { buildAnnotationToolDescription } from "./llmText.js";
 import { extraMeta, observeTransport, type Extra } from "./mcpTypes.js";
 import type { SupportedMcpServer } from "./withBaton.js";
@@ -135,7 +135,7 @@ export function registerAnnotationTool(
       // answers per call rather than per install. Wiring one path and not the
       // other would put an annotation and the calls it describes under two
       // different actors, which is unjoinable downstream.
-      const principal = await resolveCallPrincipal(
+      const caller = await resolveCaller(
         options.resolvePrincipal,
         { extra, toolName: name, arguments: args },
       );
@@ -148,7 +148,8 @@ export function registerAnnotationTool(
           sequence_number: options.counter.next(sessionId),
           captured_at: new Date().toISOString(),
           consent_token: options.consentToken,
-          principal,
+          principal: caller.principal,
+          organization: caller.organization,
           transport_observed: observeTransport(extra),
           session_id_origin: origin,
           client_observed: observeClient(extra, { server, scrubber: options.scrubber }),

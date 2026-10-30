@@ -126,7 +126,7 @@ Capture never throws into your code. Only the constructor throws, on a bad confi
 
 ## Who is calling
 
-**Nothing is captured about the person behind a call unless you say how to find them.** Pass `resolvePrincipal`: it receives the request's headers, `_meta`, tool name, arguments and validated `authInfo`, and returns a `Principal` or `null`. Two ready-made hooks cover OAuth:
+**Nothing is captured about the person behind a call unless you say how to find them.** Pass `resolvePrincipal`: it receives the request's headers, `_meta`, tool name, arguments and validated `authInfo`, and returns a `Principal`, an `Organization` or `null`. Two ready-made hooks cover OAuth:
 
 ```typescript
 import { withBaton, principalFromOAuthEmail } from "@goodtiming/baton-sdk";
@@ -144,6 +144,14 @@ withBaton(server, {
 The hook runs on every tool call, every `tools/list` request and every resource and prompt request (list, read, get), before your handler. On a request that is not a tool call `toolName` is `null` and `arguments` is empty, so a hook that names the person from the headers or `authInfo` needs no change. If it has not answered after 5 seconds, the SDK stops waiting and that request is sent without a principal. That covers an async hook waiting on a slow lookup. A hook that blocks synchronously cannot be interrupted, so keep the work in it async.
 
 The id is sent exactly as your hook returns it, so the hook decides what is safe to send. To send a pseudonym instead, hash the id inside your hook and return `form: "hashed"` with it.
+
+If your users belong to your customers' companies, return the company too, so you can filter by it:
+
+```ts
+{ principalId: "u_123", organization: { organizationId: "org_acme", displayName: "Acme" } }
+```
+
+If you know only the company, for example from an org-wide API key, return `{ organizationId: ... }` alone. A company is never counted as a person. It has its own `form`, so you can hash one id and not the other. The library API takes the same values in `client.session({ principal })`. If you pass only a company there, also pass your own `sessionId`: without a person, Baton cannot join that block's calls to the next one.
 
 ## Not capturing responses at all
 

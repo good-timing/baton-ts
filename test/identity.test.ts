@@ -6,10 +6,23 @@ import {
   PRINCIPAL_SOURCE_ASSERTED,
   PRINCIPAL_ID_MAX_LEN,
   DISPLAY_NAME_MAX_LEN,
-  normalizePrincipal,
-  principalFor,
+  callerFor,
+  type PrincipalWire,
 } from "../src/identity.js";
 import { PrincipalWireSchema } from "../src/events.js";
+
+/** The `principal` `callerFor` builds from `value`; `warn` collects why
+ * anything was dropped or rewritten. */
+function principalOf(value: unknown, warn: (message: string) => void = () => {}): PrincipalWire | null {
+  return callerFor(value, (_key, message) => warn(message)).principal;
+}
+
+/** As `principalOf`, for a value the test expects to be usable. */
+function wired(value: unknown, warn?: (message: string) => void): PrincipalWire {
+  const got = principalOf(value, warn);
+  expect(got).not.toBeNull();
+  return got!;
+}
 
 describe("the principal object's REQUIRED shape", () => {
   it("names the provenance by the LITERAL the spec registers, not by our constant", () => {
@@ -21,7 +34,7 @@ describe("the principal object's REQUIRED shape", () => {
     expect(PRINCIPAL_FORM_HASHED).toBe("hashed");
     expect(PRINCIPAL_FORM_RAW).toBe("raw");
 
-    expect(principalFor({ principalId: "e-1" }).source).toBe("asserted");
+    expect(wired({ principalId: "e-1" }).source).toBe("asserted");
   });
 
   it("refuses a PARTIAL object — all three members or nothing", () => {
@@ -37,53 +50,61 @@ describe("the principal object's REQUIRED shape", () => {
   });
 });
 
-describe("normalizePrincipal", () => {
+describe("which principals are usable", () => {
   it("accepts a well-formed principal and keeps the form the hook stated", () => {
-    expect(normalizePrincipal({ principalId: "e-1" })).toEqual({ principalId: "e-1" });
-    expect(normalizePrincipal({ principalId: "9f2c", form: "hashed" })).toEqual({
-      principalId: "9f2c",
-      form: "hashed",
-    });
+    expect(wired({ principalId: "e-1" }).id).toBe("e-1");
+    expect(wired({ principalId: "9f2c", form: "hashed" }).form).toBe("hashed");
   });
 
   it("rejects an empty or whitespace-only principalId", () => {
     // A blank id names nobody, and every such caller would merge into one actor.
-    expect(normalizePrincipal({ principalId: "" })).toBeNull();
-    expect(normalizePrincipal({ principalId: "   " })).toBeNull();
-    expect(normalizePrincipal({ principalId: " " })).toBeNull();
+    expect(principalOf({ principalId: "" })).toBeNull();
+    expect(principalOf({ principalId: "   " })).toBeNull();
+    expect(principalOf({ principalId: " " })).toBeNull();
   });
 
   it("rejects an id holding U+0000", () => {
-    expect(normalizePrincipal({ principalId: "jane\u0000" })).toBeNull();
+    expect(principalOf({ principalId: "jane\u0000" })).toBeNull();
   });
 
   it("rejects a lone surrogate, which would otherwise MERGE distinct people", () => {
     const HIGH = String.fromCharCode(0xd800);
     const LOW = String.fromCharCode(0xdc00);
-    expect(normalizePrincipal({ principalId: `a${HIGH}` })).toBeNull();
-    expect(normalizePrincipal({ principalId: `a${LOW}` })).toBeNull();
+    expect(principalOf({ principalId: `a${HIGH}` })).toBeNull();
+    expect(principalOf({ principalId: `a${LOW}` })).toBeNull();
     // A well-formed pair is NOT a lone surrogate and must still resolve —
     // otherwise the guard eats every emoji-bearing subject.
-    expect(normalizePrincipal({ principalId: "a😀" })).toEqual({ principalId: "a😀" });
+    expect(wired({ principalId: "a😀" }).id).toBe("a😀");
   });
 
   it("treats anything that is not a principal-shaped object as a miss", () => {
     // Types vanish at runtime and a hook is vendor code.
     for (const junk of [null, undefined, "e-1", 42, [], { principal_id: "e-1" }, { userId: "e-1" }, { principalId: 7 }]) {
-      expect(normalizePrincipal(junk)).toBeNull();
+      expect(principalOf(junk)).toBeNull();
     }
   });
 
   it("does not carry members the wire has no place for", () => {
-    expect(normalizePrincipal({ principalId: "e-1", issuer: "https://idp" })).toEqual({
-      principalId: "e-1",
+    expect(wired({ principalId: "e-1", issuer: "https://idp" })).toEqual({
+      id: "e-1",
+      source: PRINCIPAL_SOURCE_ASSERTED,
+      form: PRINCIPAL_FORM_RAW,
     });
   });
 });
 
-describe("principalFor", () => {
+describe("callerFor", () => {
+  it("never throws, though the value's getters may", () => {
+    const hostile = new Proxy({}, { has: () => { throw new Error("vendor bug"); } });
+    const seen: string[] = [];
+    expect(callerFor(hostile, (key) => seen.push(key))).toEqual({ principal: null, organization: null });
+    expect(seen).toEqual(["unreadable"]);
+  });
+});
+
+describe("the principal on the wire", () => {
   it("sends the id exactly as the hook returned it, and calls it raw", () => {
-    expect(principalFor({ principalId: "Alice@Acme.example" })).toEqual({
+    expect(wired({ principalId: "Alice@Acme.example" })).toEqual({
       id: "Alice@Acme.example",
       source: PRINCIPAL_SOURCE_ASSERTED,
       form: PRINCIPAL_FORM_RAW,
@@ -91,42 +112,43 @@ describe("principalFor", () => {
   });
 
   it("sends the form the hook stated, with the id untouched", () => {
-    expect(principalFor({ principalId: "9F2C-not-hex", form: "hashed" })).toEqual({
+    expect(wired({ principalId: "9F2C-not-hex", form: "hashed" })).toEqual({
       id: "9F2C-not-hex",
       source: PRINCIPAL_SOURCE_ASSERTED,
       form: PRINCIPAL_FORM_HASHED,
     });
-    expect(principalFor({ principalId: "e-1", form: "raw" }).form).toBe("raw");
+    expect(wired({ principalId: "e-1", form: "raw" }).form).toBe("raw");
   });
 
   it.each([["encrypted"], ["HASHED"], [""], [7], [null], [true]])(
     "sends an unregistered form (%j) as raw, and says so",
     (form) => {
       // SPEC §11.4: anything not exactly "hashed" is personal data.
-      const seen: unknown[] = [];
-      const got = principalFor({ principalId: "e-1", form }, (f) => seen.push(f));
+      const seen: string[] = [];
+      const got = wired({ principalId: "e-1", form }, (m) => seen.push(m));
       expect(got.form).toBe("raw");
       expect(got.id).toBe("e-1");
-      expect(seen).toEqual([form]);
+      expect(seen).toHaveLength(1);
+      expect(seen[0]).toContain("is not registered");
     },
   );
 
   it("does not warn for a registered or an omitted form", () => {
-    const seen: unknown[] = [];
-    principalFor({ principalId: "e-1" }, (f) => seen.push(f));
-    principalFor({ principalId: "e-1", form: "hashed" }, (f) => seen.push(f));
+    const seen: string[] = [];
+    wired({ principalId: "e-1" }, (m) => seen.push(m));
+    wired({ principalId: "e-1", form: "hashed" }, (m) => seen.push(m));
     expect(seen).toEqual([]);
   });
 
   it("caps the id at the same length Python does, in CODE POINTS", () => {
     const long = "u".repeat(500);
-    expect(principalFor({ principalId: long }).id).toHaveLength(PRINCIPAL_ID_MAX_LEN);
+    expect(wired({ principalId: long }).id).toHaveLength(PRINCIPAL_ID_MAX_LEN);
     expect(PRINCIPAL_ID_MAX_LEN).toBe(128);
 
     // A plain `.slice()` counts UTF-16 units and would cut this id through
     // the middle of the emoji, shipping a lone surrogate.
     const astral = `${"u".repeat(127)}😀tail`;
-    const capped = principalFor({ principalId: astral });
+    const capped = wired({ principalId: astral });
     expect([...capped.id]).toHaveLength(PRINCIPAL_ID_MAX_LEN);
     expect(capped.id.endsWith("😀")).toBe(true);
     expect(/\p{Surrogate}/u.test(capped.id)).toBe(false);
@@ -135,7 +157,7 @@ describe("principalFor", () => {
 
 describe("display_name on the wire (SPEC §11.4)", () => {
   const named = (displayName: unknown, form: "hashed" | "raw" = "hashed") =>
-    principalFor(normalizePrincipal({ principalId: "alice", form, displayName })!);
+    wired({ principalId: "alice", form, displayName });
 
   it.each(["hashed", "raw"] as const)("rides a %s id", (form) => {
     const got = named("Alice", form);
