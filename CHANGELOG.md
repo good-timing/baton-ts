@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **The scrubber's whitespace is SPEC §7's fixed set: space, tab, LF, CR, FF
+  and U+00A0.** A phone number or `Bearer` token split by one of these is
+  still redacted. One split by other whitespace, such as U+2003, U+3000 or a
+  vertical tab, no longer is: JS `\s` matched those too. This matches
+  `baton-sdk`, which made the same change. Digits (0-9) and word boundaries
+  (ASCII) were already the fixed sets here.
 - **`flush()` and `aclose()` have a time limit and never reject, for any
   sink (SPEC §11.2 rule 7).** This holds for `BatonHandle`, `createBaton` and
   the library `Client`. Before, they waited with no limit, so a collector that

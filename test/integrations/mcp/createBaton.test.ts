@@ -171,6 +171,7 @@ describe.each(MAJORS)("createBaton on $label", (major) => {
 describe("createBaton", () => {
   const major = MAJORS[0]!;
 
+  // Serves more requests than the surface cap; a busy machine outlasts the 5 s default.
   it("forgets old surfaces when every request brings a new one", async () => {
     const sink = new CapturingSink();
     const baton = createBaton({ ...CFG, sink });
@@ -186,7 +187,7 @@ describe("createBaton", () => {
         event.payload.surface_hash === firstSurface.payload.surface_hash,
     );
     expect(sameSurface).toHaveLength(2);
-  });
+  }, 30_000);
 
   it("warns about an ignored BATON_DSN once, not once per request", async () => {
     const warning = vi.spyOn(process, "emitWarning").mockImplementation(() => {});

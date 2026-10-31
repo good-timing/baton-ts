@@ -25,7 +25,7 @@
  */
 
 import { describe, expect, it, vi } from "vitest";
-import { DEPTH_LIMIT, DEPTH_MARKER, Scrubber, identityScrub } from "../src/scrub.js";
+import { CC_CANDIDATE, DEPTH_LIMIT, DEPTH_MARKER, PATTERNS, Scrubber, identityScrub } from "../src/scrub.js";
 
 // =============================================================================
 // Pattern coverage
@@ -115,6 +115,46 @@ describe("pattern coverage", () => {
     expect(out).toContain("[REDACTED:phone]");
     expect(s.count("email")).toBe(1);
     expect(s.count("phone")).toBe(1);
+  });
+});
+
+// =============================================================================
+// SPEC §7: digits, word boundaries and whitespace are fixed sets
+// =============================================================================
+
+describe("fixed character sets", () => {
+  const arabicIndic = (digits: string) =>
+    [...digits].map((d) => String.fromCharCode(0x0660 + Number(d))).join("");
+
+  it("treats a word boundary as ASCII", () => {
+    expect(new Scrubber().scrub("éjane@example.com")).toBe("é[REDACTED:email]");
+  });
+
+  it("treats only 0-9 as a digit", () => {
+    const card = `card ${arabicIndic("4111111111111111")}`;
+    expect(new Scrubber().scrub(card)).toBe(card);
+  });
+
+  // `u` with `i` widens `\b` past ASCII.
+  it.each([...PATTERNS, ["card", CC_CANDIDATE] as const])("no pattern uses `\\s` or the `u` flag (%s)", (_category, pattern) => {
+    expect(pattern.source).not.toMatch(/\\[sS]/);
+    expect(pattern.unicode).toBe(false);
+    expect(pattern.flags).not.toContain("v");
+  });
+
+  it.each([" ", "\t", "\n", "\r", "\f", "\u00a0"])("separates on whitespace in the set (%j)", (space) => {
+    const s = new Scrubber();
+    expect(s.scrub(`call 555${space}123${space}4567`)).toBe("call [REDACTED:phone]");
+    expect(s.scrub(`call 1${space}(555)${space}123${space}4567`)).toBe("call [REDACTED:phone]");
+    expect(s.scrub(`Bearer${space}abcdefghijklmnop1234`)).toBe("[REDACTED:bearer]");
+  });
+
+  it.each(["\u2003", "\u3000", "\v", "\u2028"])("does not separate on whitespace outside the set (%j)", (space) => {
+    const s = new Scrubber();
+    const phone = `call 555${space}123${space}4567`;
+    const bearer = `Bearer${space}abcdefghijklmnop1234`;
+    expect(s.scrub(phone)).toBe(phone);
+    expect(s.scrub(bearer)).toBe(bearer);
   });
 });
 

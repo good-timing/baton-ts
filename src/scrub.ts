@@ -72,6 +72,11 @@ const REDACT_FIELD_NAMES: ReadonlySet<string> = new Set([
   "user_name",
 ]);
 
+// SPEC §7's whitespace set; JS `\s` is wider. Held by "no pattern uses `\s` or
+// the `u` flag" in scrub.test.ts.
+const WS_CHARS = String.raw` \t\n\r\f\u00a0`;
+const PHONE_SEP = String.raw`[${WS_CHARS}\-.]`;
+
 // Ordered list of [category, pattern]. Order matters where patterns can
 // overlap: JWT must run before bearer because a bare JWT can look
 // bearer-shaped. sk_key / aws_key run before email because their token
@@ -81,21 +86,24 @@ const REDACT_FIELD_NAMES: ReadonlySet<string> = new Set([
 // a JS regex without `g` replaces only the first. Safe as module-level
 // constants because `String.prototype.replace` with a global regex resets
 // `lastIndex` itself — never call `.test()` on these.
-const PATTERNS: ReadonlyArray<readonly [string, RegExp]> = [
+export const PATTERNS: ReadonlyArray<readonly [string, RegExp]> = [
   ["jwt", /\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g],
-  ["bearer", /\bBearer\s+[A-Za-z0-9_\-.+/=]{16,}/gi],
+  ["bearer", new RegExp(String.raw`\bBearer[${WS_CHARS}]+[A-Za-z0-9_\-.+/=]{16,}`, "gi")],
   ["sk_key", /\bsk-[A-Za-z0-9_-]{20,}\b/g],
   ["aws_key", /\bAKIA[0-9A-Z]{16}\b/g],
   ["email", /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g],
   // Phone: optional `+1`, optional area-code parens, separators
-  // `-` / `.` / space, 10 digits. Conservative — won't catch every
+  // `-`, `.` or `WS_CHARS`, 10 digits. Conservative — won't catch every
   // international format, but won't trip on every 10-digit identifier.
-  ["phone", /\b(?:\+?1[\s\-.]?)?\(?\d{3}\)?[\s\-.]?\d{3}[\s\-.]?\d{4}\b/g],
+  [
+    "phone",
+    new RegExp(String.raw`\b(?:\+?1${PHONE_SEP}?)?\(?\d{3}\)?${PHONE_SEP}?\d{3}${PHONE_SEP}?\d{4}\b`, "g"),
+  ],
 ];
 
 // Credit-card candidates — Luhn-filtered before redacting to keep false
 // positives down on long numeric IDs (timestamps, order numbers).
-const CC_CANDIDATE = /\b\d{13,19}\b/g;
+export const CC_CANDIDATE = /\b\d{13,19}\b/g;
 
 /** Standard Luhn checksum. Caller passes a digits-only string of the right
  * length; we don't re-validate length here. */
