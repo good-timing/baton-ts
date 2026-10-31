@@ -239,6 +239,56 @@ describe("HttpSink", () => {
     }
   });
 
+  it("returns from flush() and aclose() within shutdownFlushTimeoutMs on a stalled collector", async () => {
+    const fetchImpl = vi.fn().mockImplementation(
+      (_url: string, init: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          init.signal?.addEventListener("abort", () => reject(new Error("aborted")));
+        }),
+    );
+    const warnings: string[] = [];
+    const spy = vi.spyOn(process, "emitWarning").mockImplementation((w: string | Error) => {
+      warnings.push(String(w));
+    });
+    const sink = new HttpSink("https://collector.example", {
+      apiKey: "k",
+      fetchImpl,
+      requestTimeoutMs: 10_000,
+      shutdownFlushTimeoutMs: 80,
+    });
+    try {
+      await sink.write(makeEvent());
+      const started = Date.now();
+      await sink.flush();
+      await sink.aclose();
+      // flush() spent the budget; aclose() does not wait behind the same drain.
+      expect(Date.now() - started).toBeLessThan(300);
+      expect(warnings.filter((w) => w.includes("goes on in the background"))).toHaveLength(1);
+      expect(warnings.filter((w) => w.includes("closed with 1 event(s) unsent"))).toHaveLength(1);
+      // Nothing it started keeps running past aclose(): the request is aborted.
+      const [, init] = fetchImpl.mock.calls.at(-1) as [string, RequestInit];
+      expect(init.signal?.aborted).toBe(true);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("warns about events left when aclose() ends early on a failing collector", async () => {
+    const fetchImpl = vi.fn().mockRejectedValue(new Error("refused"));
+    const warnings: string[] = [];
+    const spy = vi.spyOn(process, "emitWarning").mockImplementation((w: string | Error) => {
+      warnings.push(String(w));
+    });
+    const sink = new HttpSink("https://collector.example", { apiKey: "k", fetchImpl, maxRetries: 0 });
+    try {
+      await sink.write(makeEvent());
+      await sink.aclose();
+      expect(warnings.filter((w) => w.includes("closed with 1 event(s) unsent"))).toHaveLength(1);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it("does not start a second exit pass for an event written during shutdown", async () => {
     const fetchImpl = vi.fn().mockRejectedValue(new Error("refused"));
     const sink = new HttpSink("https://collector.example", {

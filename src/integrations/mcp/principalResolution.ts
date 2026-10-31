@@ -10,6 +10,7 @@
  */
 
 import { type CallerWire, type Organization, type Principal, NO_CALLER, callerFor } from "../../identity.js";
+import { raceDeadline, TIMED_OUT } from "../../deadline.js";
 import { warn } from "../../warn.js";
 import {
   type AuthInfo,
@@ -86,29 +87,15 @@ function buildPrincipalResolutionContext(
 /** How long a vendor's hook may take, the same budget Python gives one. */
 export const HOOK_TIMEOUT_MS = 5000;
 
-const TIMED_OUT = Symbol("hookTimedOut");
-
 async function withinHookBudget(answer: unknown): Promise<unknown> {
   if (!isThenable(answer)) return answer;
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const deadline = new Promise<typeof TIMED_OUT>((resolve) => {
-    timer = setTimeout(() => resolve(TIMED_OUT), HOOK_TIMEOUT_MS);
-    // A pending hook must not hold a finished process open. Outside Node a
-    // timer is a number with no `unref`: `principalResolution.test.ts`,
-    // "where a timer is a plain number".
-    (timer as { unref?: () => void }).unref?.();
-  });
-  try {
-    const first = await Promise.race([answer, deadline]);
-    if (first !== TIMED_OUT) return first;
-    warn(
-      `baton: resolvePrincipal did not answer within ${String(HOOK_TIMEOUT_MS / 1000)}s; ` +
-        "this request is sent without a principal.",
-    );
-    return null;
-  } finally {
-    clearTimeout(timer);
-  }
+  const first = await raceDeadline(answer, HOOK_TIMEOUT_MS);
+  if (first !== TIMED_OUT) return first;
+  warn(
+    `baton: resolvePrincipal did not answer within ${String(HOOK_TIMEOUT_MS / 1000)}s; ` +
+      "this request is sent without a principal.",
+  );
+  return null;
 }
 
 // The hook runs on every request, so each kind of problem is reported once.

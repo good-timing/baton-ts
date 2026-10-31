@@ -1,3 +1,4 @@
+import { boundedSinkCall } from "../../deadline.js";
 import type { Sink } from "../../sinks.js";
 
 /**
@@ -30,13 +31,14 @@ export class BatonHandle {
     this.annotationToolName = options.annotationToolName;
   }
 
-  /** Flush any pending events held by the sink. */
+  /** Flush any pending events held by the sink. Never rejects; returns within
+   * the shutdown budget (SPEC §11.2 rule 7). */
   async flush(): Promise<void> {
-    await this.sink.flush();
+    await boundedSinkCall(() => this.sink.flush(), "flush()");
   }
 
-  /** Flush and release sink resources. Subsequent writes reject. */
+  /** Flush and release sink resources, on the same terms as `flush()`. */
   async aclose(): Promise<void> {
-    await this.sink.aclose();
+    await boundedSinkCall(() => this.sink.aclose(), "aclose()");
   }
 }

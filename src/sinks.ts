@@ -18,6 +18,7 @@
  * need shows up rather than porting them speculatively.
  */
 
+import { raceDeadline, SHUTDOWN_FLUSH_TIMEOUT_MS, TIMED_OUT } from "./deadline.js";
 import { warn } from "./warn.js";
 import type { Event } from "./events.js";
 
@@ -125,7 +126,8 @@ export interface HttpSinkOptions {
   backoffMaxMs?: number;
   circuitBreakerThreshold?: number;
   circuitBreakerResetMs?: number;
-  /** How long the flush at process exit may take, in total. Default 3000. */
+  /** How long the flush at process exit, or an explicit `flush()` or
+   * `aclose()`, may take in total. Default 3000. */
   shutdownFlushTimeoutMs?: number;
   /** Injectable for tests; defaults to the global `fetch`. */
   fetchImpl?: typeof fetch;
@@ -156,7 +158,10 @@ export class HttpSink implements Sink {
   private readonly circuit: CircuitBreaker;
   private readonly fetchImpl: typeof fetch;
   private overflowWarned = false;
-  private closed = false;
+  /** Aborted once `aclose()` returns: nothing Baton started may keep the
+   * process alive after the vendor closed it. */
+  private readonly closing = new AbortController();
+  private drainStalled = false;
   private drainChain: Promise<void> = Promise.resolve();
   private beforeExitHandler: (() => void) | null = null;
 
@@ -165,7 +170,7 @@ export class HttpSink implements Sink {
     this.apiKey = options.apiKey;
     this.bufferSize = options.bufferSize ?? 1000;
     this.requestTimeoutMs = options.requestTimeoutMs ?? 1000;
-    this.shutdownFlushTimeoutMs = options.shutdownFlushTimeoutMs ?? 3000;
+    this.shutdownFlushTimeoutMs = options.shutdownFlushTimeoutMs ?? SHUTDOWN_FLUSH_TIMEOUT_MS;
     this.maxRetries = options.maxRetries ?? 3;
     this.backoffBaseMs = options.backoffBaseMs ?? 100;
     this.backoffMaxMs = options.backoffMaxMs ?? 5000;
@@ -189,6 +194,10 @@ export class HttpSink implements Sink {
    * `Symbol.for` rather than importing `node:util`, since this package runs on
    * runtimes that have no such module.
    */
+  private get closed(): boolean {
+    return this.closing.signal.aborted;
+  }
+
   toJSON(): Record<string, unknown> {
     return { url: this.url, apiKey: "<key>" };
   }
@@ -206,16 +215,36 @@ export class HttpSink implements Sink {
 
   async flush(): Promise<void> {
     if (this.closed) return;
-    await this.scheduleDrain();
+    await this.withinShutdownBudget(this.scheduleDrain(), "flush()");
   }
 
   async aclose(): Promise<void> {
     if (this.closed) return;
-    await this.flush();
-    this.closed = true;
+    // A drain an earlier flush() gave up on still holds the queue; waiting
+    // behind it would spend a second budget on the same stalled collector.
+    if (!this.drainStalled) await this.withinShutdownBudget(this.scheduleDrain(), "aclose()");
+    this.closing.abort();
+    if (this.buffer.length > 0) {
+      warn(`baton: the sink closed with ${this.buffer.length} event(s) unsent.`);
+    }
     if (this.beforeExitHandler) {
       process.off("beforeExit", this.beforeExitHandler);
       this.beforeExitHandler = null;
+    }
+  }
+
+  /** SPEC §11.2 rule 7: an explicit flush or close returns within
+   * `shutdownFlushTimeoutMs` and never rejects. The drain is not cancelled
+   * here, so after `flush()` it goes on sending; `aclose()` stops it. */
+  private async withinShutdownBudget(work: Promise<void>, what: string): Promise<void> {
+    const settled = work.catch(() => undefined);
+    if ((await raceDeadline(settled, this.shutdownFlushTimeoutMs)) !== TIMED_OUT) return;
+    this.drainStalled = true;
+    void settled.then(() => {
+      this.drainStalled = false;
+    });
+    if (what === "flush()") {
+      warn(`baton: flush() took over ${this.shutdownFlushTimeoutMs} ms; it goes on in the background.`);
     }
   }
 
@@ -302,7 +331,7 @@ export class HttpSink implements Sink {
 
   private async drainLocked(): Promise<void> {
     while (this.buffer.length > 0) {
-      if (!this.circuit.canRequest()) return;
+      if (!this.circuit.canRequest() || this.closing.signal.aborted) return;
       const event = this.buffer[0]!;
       const outcome = await this.sendWithRetry(event);
       if (outcome === "success" || outcome === "permanent_failure") {
@@ -327,7 +356,8 @@ export class HttpSink implements Sink {
       if (outcome !== "transient_failure") return outcome;
       if (attempt < this.maxRetries) {
         const backoff = Math.min(this.backoffBaseMs * 2 ** attempt, this.backoffMaxMs);
-        await new Promise((resolve) => setTimeout(resolve, backoff));
+        await this.sleepUnlessClosed(backoff);
+        if (this.closing.signal.aborted) return "transient_failure";
       }
     }
     return "transient_failure";
@@ -346,19 +376,42 @@ export class HttpSink implements Sink {
     }
   }
 
+
+  private sleepUnlessClosed(ms: number): Promise<void> {
+    return new Promise((resolve) => {
+      const done = (): void => {
+        clearTimeout(timer);
+        this.closing.signal.removeEventListener("abort", done);
+        resolve();
+      };
+      const timer = setTimeout(done, ms);
+      this.closing.signal.addEventListener("abort", done);
+    });
+  }
+
+  /** Aborted by the timeout or by `aclose()`. Built by hand: `AbortSignal.any`
+   * is missing before Node 20.3, and on some later versions it keeps every
+   * combined signal alive as long as the long-lived `closing` signal. */
   private async postOnce(body: string, timeoutMs: number): Promise<SendOutcome> {
+    const request = new AbortController();
+    const abort = (): void => request.abort();
+    const timer = setTimeout(abort, timeoutMs);
+    this.closing.signal.addEventListener("abort", abort);
     try {
       const response = await this.fetchImpl(this.events_url(), {
         method: "POST",
         headers: this.authHeaders(),
         body,
-        signal: AbortSignal.timeout(timeoutMs),
+        signal: request.signal,
       });
       // An unread body holds its connection until GC.
       void response.body?.cancel().catch(() => undefined);
       return HttpSink.classifyStatus(response.status);
     } catch {
       return "transient_failure";
+    } finally {
+      clearTimeout(timer);
+      this.closing.signal.removeEventListener("abort", abort);
     }
   }
 }

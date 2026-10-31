@@ -60,7 +60,7 @@ app.post("/mcp", async (req, res) => {
 });
 ```
 
-Call `await baton.aclose()` in your own shutdown path, after the HTTP server stops taking requests. It sends what is still buffered.
+Call `await baton.aclose()` in your own shutdown path, after the HTTP server stops taking requests. It sends what is still buffered, and returns within 3 seconds (`shutdownFlushTimeoutMs`) even if the collector does not answer.
 
 `createBaton` takes the same config as `withBaton`. The Baton owns the sink, so there is nothing to close per request. Calling `withBaton` per request instead builds a new sink each time and re-sends the tool surface on every request.
 

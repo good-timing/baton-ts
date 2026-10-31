@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **`flush()` and `aclose()` return within 3 seconds and never reject, for
+  any sink (SPEC §11.2 rule 7).** This holds for `BatonHandle`, `createBaton`
+  and the library `Client`, whose wait for in-flight events counts against the
+  same budget. Before, they waited with no limit, so a collector that never
+  answered, or a sink of the vendor's own that hung, held the vendor's
+  shutdown. `HttpSink`'s budget is `shutdownFlushTimeoutMs`. `flush()` leaves
+  the drain running when time runs out; `aclose()` then stops it, aborting the
+  request in progress and any retry, so nothing Baton began keeps the process
+  alive. Events left unsent at close are reported in one warning, whatever
+  stopped them.
 - **The scrubber no longer sends plain objects and arrays nested 10 or more
   levels deep unscrubbed.** One at the depth limit is replaced by
   `"[REDACTED:depth-limit]"` (exported as `DEPTH_MARKER`), counted under

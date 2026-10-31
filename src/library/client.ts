@@ -16,6 +16,7 @@
  * dropped. Only a bad config throws, and only from the constructor.
  */
 
+import { boundedSinkCall } from "../deadline.js";
 import { nextClockSequence } from "../sequence.js";
 import type { Event } from "../events.js";
 import {
@@ -578,14 +579,14 @@ export class Client {
     return this.#core.annotate(sessionForCall(this), given.consentToken || this.#core.consentToken, given);
   }
 
-  /** Wait until every event so far has reached the sink and the sink has flushed. */
+  /** Wait until every event so far has reached the sink and the sink has
+   * flushed. Never rejects; returns within the shutdown budget (SPEC §11.2
+   * rule 7). */
   async flush(): Promise<void> {
-    await this.#core.settle();
-    try {
+    await boundedSinkCall(async () => {
+      await this.#core.settle();
       await this.#core.sink.flush();
-    } catch (err) {
-      process.stderr.write(`baton: sink.flush failed: ${String(err)}\n`);
-    }
+    }, "flush()");
   }
 
   /** Flush, then close the sink. Later events are dropped. */
@@ -595,12 +596,11 @@ export class Client {
   }
 
   async #close(): Promise<void> {
-    await this.#core.settle();
-    this.#core.closed = true;
-    try {
+    await boundedSinkCall(async () => {
+      await this.#core.settle();
+      this.#core.closed = true;
       await this.#core.sink.aclose();
-    } catch (err) {
-      process.stderr.write(`baton: sink.aclose failed: ${String(err)}\n`);
-    }
+    }, "aclose()");
+    this.#core.closed = true;
   }
 }

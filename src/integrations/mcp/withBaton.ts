@@ -83,6 +83,7 @@
  * instead of the vendor's.
  */
 
+import { boundedSinkCall } from "../../deadline.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { uuid7 } from "../../uuid7.js";
 import {
@@ -1923,7 +1924,11 @@ export function createBaton(supplied: BatonConfig = {}): Baton {
   if (disabledBy !== null) {
     logDisabled(disabledBy, "createBaton");
     const unused = supplied.sink ?? new DisabledSink();
-    return { wrap: () => {}, flush: () => unused.flush(), aclose: () => unused.aclose() };
+    return {
+      wrap: () => {},
+      flush: () => boundedSinkCall(() => unused.flush(), "flush()"),
+      aclose: () => boundedSinkCall(() => unused.aclose(), "aclose()"),
+    };
   }
 
   // Everything the environment or a bad config can decide is settled here, so
@@ -1944,8 +1949,8 @@ export function createBaton(supplied: BatonConfig = {}): Baton {
     wrap: (server) => {
       install(server, supplied, config, emittedSurfaceHashes, warned);
     },
-    flush: () => sink.flush(),
-    aclose: () => sink.aclose(),
+    flush: () => boundedSinkCall(() => sink.flush(), "flush()"),
+    aclose: () => boundedSinkCall(() => sink.aclose(), "aclose()"),
   };
 }
 
