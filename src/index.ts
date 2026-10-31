@@ -126,7 +126,7 @@ export {
   ToolListErrorPayloadSchema,
 } from "./events.js";
 
-export { Scrubber, identityScrub, DEPTH_LIMIT } from "./scrub.js";
+export { Scrubber, identityScrub, DEPTH_LIMIT, DEPTH_MARKER } from "./scrub.js";
 
 export type { Sink, StdoutSinkOptions, HttpSinkOptions } from "./sinks.js";
 export { StdoutSink, HttpSink, safeWrite } from "./sinks.js";

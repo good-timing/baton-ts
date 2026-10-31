@@ -45,9 +45,13 @@
  *   — matching Python, where those aren't dicts either.
  */
 
+import { warn } from "./warn.js";
+
 /** Cap on recursive walk depth. Matches LangSmith's default; protects
  * against pathological inputs without truncating realistic MCP payloads. */
 export const DEPTH_LIMIT = 10;
+
+export const DEPTH_MARKER = "[REDACTED:depth-limit]";
 
 // Object keys whose string values are redacted regardless of value-pattern
 // match. Case-insensitive exact match (no plural / prefix matching to keep
@@ -134,6 +138,7 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
  */
 export class Scrubber {
   readonly counts = new Map<string, number>();
+  private warnedDepth = false;
 
   /** Bound so `new Scrubber().scrub` can be passed as a bare function
    * reference — the closest TS gets to Python's `__call__`. */
@@ -148,8 +153,21 @@ export class Scrubber {
     this.counts.set(category, this.count(category) + 1);
   }
 
+  private pastTheDepthLimit(): string {
+    this.bump("depth_limit");
+    if (!this.warnedDepth) {
+      this.warnedDepth = true;
+      warn(
+        `baton: a payload nests deeper than ${DEPTH_LIMIT} levels; containers past that depth are sent as ${JSON.stringify(DEPTH_MARKER)}`,
+      );
+    }
+    return DEPTH_MARKER;
+  }
+
   private walk(value: unknown, depth: number, forceField: string | null): unknown {
-    if (depth >= DEPTH_LIMIT) return value;
+    if (depth >= DEPTH_LIMIT && (isPlainObject(value) || Array.isArray(value))) {
+      return this.pastTheDepthLimit();
+    }
     if (isPlainObject(value)) {
       const out: Record<string, unknown> = {};
       for (const [k, v] of Object.entries(value)) {

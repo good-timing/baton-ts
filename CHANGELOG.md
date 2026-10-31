@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- **The scrubber no longer sends plain objects and arrays nested 10 or more
+  levels deep unscrubbed.** One at the depth limit is replaced by
+  `"[REDACTED:depth-limit]"` (exported as `DEPTH_MARKER`), counted under
+  `depth_limit`, and warned about once per scrubber, without the value. A
+  plain value at the limit is scrubbed as usual. This matches `baton-sdk`
+  0.8.21 and SPEC §7's depth rule.
+
 ## 0.6.1: organization; a call refused above the tool is labelled "refused"
 
 - **A call refused before the tool runs is labelled `failure_kind:

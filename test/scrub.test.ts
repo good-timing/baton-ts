@@ -24,8 +24,8 @@
  * Python counterpart to mirror.
  */
 
-import { describe, expect, it } from "vitest";
-import { DEPTH_LIMIT, Scrubber, identityScrub } from "../src/scrub.js";
+import { describe, expect, it, vi } from "vitest";
+import { DEPTH_LIMIT, DEPTH_MARKER, Scrubber, identityScrub } from "../src/scrub.js";
 
 // =============================================================================
 // Pattern coverage
@@ -186,33 +186,63 @@ describe("recursion and depth limit", () => {
     expect(s.scrub(payload)).toEqual(payload);
   });
 
-  it("does not crash on input deeper than the cap", () => {
-    // Construct a structure deeper than DEPTH_LIMIT — should return
-    // cleanly without scrubbing past the cap. Just verifying no recursion
-    // blow-up and a sane result; the deep leaf may or may not be scrubbed
-    // depending on exactly where the cap hits.
-    const s = new Scrubber();
-    const deep: Record<string, unknown> = { a: "x@y.co" };
-    let cur = deep;
-    for (let i = 0; i < DEPTH_LIMIT + 5; i += 1) {
-      cur.next = { a: "x@y.co" };
-      cur = cur.next as Record<string, unknown>;
-    }
-    const out = s.scrub(deep);
-    expect(typeof out).toBe("object");
-    expect(out).not.toBeNull();
+  const wrapped = (value: unknown, levels: number): unknown => {
+    let out = value;
+    for (let i = 0; i < levels; i += 1) out = { wrap: out };
+    return out;
+  };
+  const LEAKY = { email: "jane@client.com", note: "call jane@client.com" };
+
+  it("scrubs values inside the depth limit", () => {
+    const out = JSON.stringify(new Scrubber().scrub(wrapped(LEAKY, DEPTH_LIMIT - 2)));
+    expect(out).not.toContain("jane@client.com");
+    expect(out).not.toContain(DEPTH_MARKER);
   });
 
-  it("returns the value untouched at the depth cap rather than dropping it", () => {
-    // Python returns `value` unchanged at `depth >= DEPTH_LIMIT` — it
-    // neither redacts nor drops. A port that returned null/undefined there
-    // would silently truncate deep payloads.
-    const s = new Scrubber();
-    let leaf: unknown = "a@b.co";
-    for (let i = 0; i < DEPTH_LIMIT; i += 1) leaf = { nest: leaf };
-    const out = s.scrub(leaf);
-    expect(JSON.stringify(out)).toContain("a@b.co");
-    expect(s.count("email")).toBe(0);
+  it.each([0, 1, 5])("never sends a container past the depth limit raw (+%i)", (extra) => {
+    const out = JSON.stringify(new Scrubber().scrub(wrapped(LEAKY, DEPTH_LIMIT + extra)));
+    expect(out).not.toContain("jane@client.com");
+    expect(out).toContain(DEPTH_MARKER);
+  });
+
+  it("scrubs plain values at the depth limit instead of replacing them", () => {
+    const out = JSON.stringify(
+      new Scrubber().scrub(
+        wrapped({ status: "ok", note: "call jane@client.com" }, DEPTH_LIMIT - 1),
+      ),
+    );
+    expect(out).toContain('"ok"');
+    expect(out).not.toContain("jane@client.com");
+    expect(out).not.toContain(DEPTH_MARKER);
+  });
+
+  it("replaces arrays at the limit too, and non-string leaves inside them", () => {
+    const out = JSON.stringify(
+      new Scrubber().scrub(wrapped([{ card: 4111111111111111 }], DEPTH_LIMIT)),
+    );
+    expect(out).not.toContain("4111111111111111");
+    expect(out).toContain(DEPTH_MARKER);
+  });
+
+  it("counts every hit and warns once, without the value", () => {
+    const warnings: string[] = [];
+    const spy = vi.spyOn(process, "emitWarning").mockImplementation((w: string | Error) => {
+      warnings.push(String(w));
+    });
+    try {
+      const s = new Scrubber();
+      s.scrub(wrapped(LEAKY, DEPTH_LIMIT));
+      s.scrub(wrapped(LEAKY, DEPTH_LIMIT));
+      expect(s.count("depth_limit")).toBeGreaterThanOrEqual(2);
+      expect(warnings.filter((w) => w.includes("depth"))).toHaveLength(1);
+      expect(warnings.join("\n")).not.toContain("jane@client.com");
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("does not crash on very deep input", () => {
+    expect(typeof new Scrubber().scrub(wrapped("x@y.co", 5000))).toBe("object");
   });
 });
 
