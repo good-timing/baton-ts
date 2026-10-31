@@ -52,6 +52,8 @@
  * Every throw below goes through `redact`.
  */
 
+import { warn } from "./warn.js";
+
 /**
  * Vendor IDs become annotation tool name prefixes; same client-pattern as
  * annotation tool names. Rejects dots so the default tool name is valid.
@@ -146,24 +148,6 @@ function containsKey(value: string): boolean {
 const BARE_KEY_HINT =
   "this looks like a bare key, not a DSN — copy the full value from " +
   "/account, which starts with https:// and ends with your server's name";
-
-/**
- * Warn on stderr, never stdout: stdout is the JSON-RPC stream under stdio
- * transport, which is exactly the deployment this feature exists for.
- *
- * `process.emitWarning` is this repo's existing convention (`HttpSink`'s
- * buffer overflow), guarded here the way `resolveTenantId` guards its
- * environment read — `process` is absent on edge and worker runtimes, and a
- * missing warning channel must not crash a vendor's server startup.
- */
-function warn(message: string): void {
-  if (
-    typeof process !== "undefined" &&
-    typeof process.emitWarning === "function"
-  ) {
-    process.emitWarning(message);
-  }
-}
 
 /** The four values unpacked from one string. See the module docstring. */
 export interface Dsn {

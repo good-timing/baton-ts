@@ -10,7 +10,7 @@
  */
 
 import { type CallerWire, type Organization, type Principal, NO_CALLER, callerFor } from "../../identity.js";
-import { warn } from "./annotationName.js";
+import { warn } from "../../warn.js";
 import {
   type AuthInfo,
   type Extra,

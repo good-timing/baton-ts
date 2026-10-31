@@ -39,6 +39,7 @@
  */
 
 import { pythonStrip } from "../../identity.js";
+import { warn } from "../../warn.js";
 import { fitsInstructionsCap } from "./llmText.js";
 
 /** The strictest known client pattern (Claude Desktop): dots, slashes and
@@ -76,15 +77,6 @@ function isLibraryPlaceholder(serverName: string, className: string): boolean {
   if (PLACEHOLDER_LITERALS.has(stripped.toLowerCase())) return true;
   const stem = stripped.replace(RANDOM_SUFFIX, "");
   return stem !== stripped && stem === className;
-}
-
-/** `process.emitWarning`, guarded like every `process` read in this package:
- * `console` is banned (stdout is the MCP JSON-RPC frame under stdio), and edge
- * runtimes have no `process` at all. */
-export function warn(message: string): void {
-  if (typeof process !== "undefined" && typeof process.emitWarning === "function") {
-    process.emitWarning(message);
-  }
 }
 
 /**
