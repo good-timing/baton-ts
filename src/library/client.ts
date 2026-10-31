@@ -22,6 +22,7 @@ import type { Event } from "../events.js";
 import {
   AnnotationEventSchema,
   DEFAULT_CONSENT_TOKEN,
+  SurfaceSnapshotEventSchema,
   ToolCallEndEventSchema,
   ToolCallErrorEventSchema,
   ToolCallStartEventSchema,
@@ -45,6 +46,7 @@ import {
 import { INTENT_SOURCE_LIBRARY } from "../integrations/mcp/llmText.js";
 import { isThenable } from "../integrations/mcp/mcpTypes.js";
 import { scrubOrNull, type ScrubbedField } from "../integrations/mcp/safeScrub.js";
+import { SentSurfaces } from "../integrations/mcp/surface.js";
 import {
   type LibrarySession,
   newSession,
@@ -52,6 +54,7 @@ import {
   sessionEnvelope,
   sessionForCall,
 } from "./session.js";
+import { type ListToolsOptions, serveTools, snapshotPayload, type Surface } from "./surface.js";
 import { pythonStrip, type Organization, type Principal } from "../identity.js";
 import type { HeaderInput } from "../integrations/mcp/clientObserved.js";
 
@@ -91,6 +94,9 @@ export interface SessionOptions {
   /** The vendor's own id for the user request these calls answer. Pass the
    * same value to every block that serves it, and those calls stay one turn. */
   turnId?: string;
+  /** The request's MCP `_meta`, for a vendor serving MCP itself. It is sent
+   * as `runtime_meta`, and a client declaration in it wins over `clientInfo`. */
+  meta?: Record<string, unknown>;
 }
 
 export interface TraceOptions {
@@ -233,6 +239,10 @@ class Core {
   closed = false;
   private readonly pending = new Set<Promise<void>>();
   private closedWarned = false;
+  // A snapshot describes the server, so it takes no block's session,
+  // principal or client: SPEC §11.5.1's join must not count it.
+  private readonly surfaceSessionId = uuid7();
+  private readonly sentSurfaces = new SentSurfaces();
 
   readonly sink: Sink;
   readonly vendorId: string;
@@ -278,9 +288,47 @@ class Core {
 
   /** Never rejects. Tracked so `flush()` can wait for it. */
   emit(build: () => Event): Promise<void> {
-    const write = emit(this.sink, build).finally(() => this.pending.delete(write));
-    this.pending.add(write);
-    return write;
+    return this.track(emit(this.sink, build));
+  }
+
+  private track(work: Promise<void>): Promise<void> {
+    const tracked = work.finally(() => this.pending.delete(tracked));
+    this.pending.add(tracked);
+    return tracked;
+  }
+
+  /** Sends `surface` unless this client already has. Never rejects; a failed
+   * write unmarks it, so the next `listTools` tries again. A surface that does
+   * not fit the schema stays marked: it would fail the same way every time. */
+  sendSurface(surface: Surface): Promise<void> {
+    if (this.sentSurfaces.wasSent(surface.digest)) return Promise.resolve();
+    this.sentSurfaces.mark(surface.digest);
+    let event: Event;
+    try {
+      event = SurfaceSnapshotEventSchema.parse({
+        tenant_id: this.tenantId,
+        vendor_id: this.vendorId,
+        session_id: this.surfaceSessionId,
+        session_id_origin: "minted",
+        sequence_number: nextClockSequence(),
+        captured_at: new Date().toISOString(),
+        consent_token: this.consentToken,
+        payload: snapshotPayload(surface),
+      });
+    } catch (err) {
+      process.stderr.write(`baton: surface snapshot dropped; it does not fit the schema: ${printable(err)}\n`);
+      return Promise.resolve();
+    }
+    return this.track(
+      (async () => {
+        try {
+          await this.sink.write(event);
+        } catch (err) {
+          process.stderr.write(`baton: surface snapshot not sent; will retry: ${printable(err)}\n`);
+          this.sentSurfaces.unmark(surface.digest);
+        }
+      })(),
+    );
   }
 
   /** Resolves once every pending event has reached the sink, including ones
@@ -588,6 +636,23 @@ export class Client {
   annotate(options: AnnotateOptions & { consentToken?: string }): Promise<void> {
     const given = options ?? {};
     return this.#core.annotate(sessionForCall(this), given.consentToken || this.#core.consentToken, given);
+  }
+
+  /** `tools`, the vendor's own `tools/list` entries, with `user_goal` added
+   * to each `inputSchema` as `withBaton` adds it, and a `surface_snapshot`
+   * of `tools` as passed, sent once per distinct surface. For a vendor
+   * serving MCP itself (SPEC §5.6).
+   *
+   * Pass the tools before anything of Baton's is added, so the snapshot
+   * describes the vendor's own surface. `options` holds the vendor's own
+   * `initialize` values. The input is not changed. Never rejects over the
+   * tool list: one it cannot read is returned as it came. Does not wait for
+   * the snapshot to be sent; `flush()` does. */
+  async listTools<T>(tools: readonly T[], options: ListToolsOptions = {}): Promise<T[]> {
+    if (this.#core.disabled) return tools as T[];
+    const { served, surface } = serveTools(tools, options);
+    if (surface !== null && this.#core.live()) void this.#core.sendSurface(surface);
+    return served;
   }
 
   /** Wait for events so far to reach the sink, then flush it. Never rejects;

@@ -179,6 +179,7 @@ import {
   toolInputJsonSchema,
   type IntentParamDispositions,
   type IntentParamMode,
+  DEFAULT_INTENT_PARAM_MODE,
 } from "./schemaCompat.js";
 import { assembleSurface, buildServerMeta, buildSeamAugmentations, surfaceHash } from "./surface.js";
 
@@ -1995,7 +1996,7 @@ function install(
   const annotationToolName = reports
     ? resolveAnnotationToolName(serverName, { ...config, vendorDisplayName: reports.vendorDisplayName })
     : "";
-  const intentParamMode: IntentParamMode = config.intentParamMode ?? "required";
+  const intentParamMode: IntentParamMode = config.intentParamMode ?? DEFAULT_INTENT_PARAM_MODE;
   const counter = new SessionCounter();
   const fallbackSessionId = `sdk-${uuid7()}`;
   // Resolved ONCE, here, and read by every emit path below — the tool-call

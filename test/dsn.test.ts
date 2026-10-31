@@ -791,19 +791,16 @@ describe("the leaks review found", () => {
   });
 
   it.each([
+    ["a tab", "\t"],
     ["a line feed", "\n"],
     ["a carriage return", "\r"],
     ["a null", "\x00"],
   ])("refuses %s inside the KEY", (_name, ch) => {
-    // Measured, not assumed: `new Headers` rejects exactly these three and
-    // accepts every other control character, so these are the ones that could
-    // never have been sent — `Authorization: Bearer <key>` throws inside
-    // `HttpSink`'s bare catch and retries forever. The key is the longest part
-    // of a DSN, so it is where a line wrap most likely lands, and the host
-    // message says nothing about it.
+    // `new Headers` refuses all but the tab, so `HttpSink` would throw on
+    // every send; the tab is refused because `baton` refuses it too.
     expect(() =>
       parseDsn(`https://baton_pk_aaaa${ch}aaaa@h.example.com/${WORKSPACE}/srv`),
-    ).toThrow(/never be sent in an Authorization header/);
+    ).toThrow(/no key from \/account contains one/);
   });
 
   it("still accepts the control characters a bearer CAN carry", () => {

@@ -25,6 +25,7 @@ import { z as zV3 } from "zod/v3";
 import { RETIRED_PARAM_NAMES, USER_GOAL_PARAM_NAME, buildUserGoalParamDescription } from "./llmText.js";
 
 export type IntentParamMode = "optional" | "required";
+export const DEFAULT_INTENT_PARAM_MODE: IntentParamMode = "required";
 
 /** The sliver of a zod namespace the injected fields need — written
  * structurally so the same builder serves zod v3, zod v4, and whichever

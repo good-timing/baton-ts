@@ -94,14 +94,14 @@ const WORKSPACE_PATTERN = /^ten_(?:[0-9a-fA-F]{8}|[0-9a-fA-F]{32})$/;
 // eslint-disable-next-line no-control-regex
 const NOT_IN_A_HOST = /[\\\s\x00-\x1f\x7f]/;
 
-// What a BEARER can never carry, measured rather than assumed: `new Headers`
-// rejects exactly NUL, LF and CR, and accepts every other control character
-// and the space. Narrow on purpose — the tail's alphabet belongs to the
-// console's mint, and a parser stricter than the mint refuses valid keys in
-// the field. These three cannot be sent at all, so they are catchable here
-// instead of surfacing as a fetch that throws on every write.
+// NUL, LF and CR are what `new Headers` refuses, so a key holding one could
+// never be sent. The tab can be sent, but is refused because `baton` refuses
+// it anywhere in a DSN: a tab inside a key is a line wrap from copying, not
+// part of any minted key. Narrow on purpose otherwise: the tail's alphabet
+// belongs to the console's mint, and a parser stricter than the mint refuses
+// valid keys in the field.
 // eslint-disable-next-line no-control-regex
-const NOT_IN_A_KEY = /[\x00\n\r]/;
+const NOT_IN_A_KEY = /[\x00\t\n\r]/;
 
 const PUBLISHABLE_PREFIX = "baton_pk_";
 const SECRET_PREFIX = "baton_sk_";
@@ -469,12 +469,11 @@ export function parseDsn(raw: string): Dsn {
     // The key is the longest part of a DSN — a 9-character prefix and a
     // 43-character tail out of about a hundred — so it is the likeliest place
     // a line wrap lands, and the host message below would never have mentioned
-    // it. `HttpSink` builds `Authorization: Bearer <key>`, which throws inside
-    // the sink's bare catch and retries forever.
+    // it.
     fail(
-      `dsn ${safe} has a line break or a null inside its key — those can ` +
-        `never be sent in an Authorization header, so this DSN could not ` +
-        `have worked. Check for a line wrap where the value was copied.`,
+      `dsn ${safe} has a tab, a line break or a null inside its key — no ` +
+        `key from /account contains one, so this DSN could not have worked. ` +
+        `Check for a line wrap where the value was copied.`,
     );
   }
   if (key.includes(":")) {

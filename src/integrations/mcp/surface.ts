@@ -26,9 +26,11 @@ export function surfaceHash(surface: unknown): string {
 
 function canonicalJson(value: unknown): string {
   if (value === null || typeof value !== "object") return JSON.stringify(value);
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (Array.isArray(value)) return `[${value.map((v) => (v === undefined ? "null" : canonicalJson(v))).join(",")}]`;
   const record = value as Record<string, unknown>;
-  const keys = Object.keys(record).sort();
+  const keys = Object.keys(record)
+    .filter((k) => record[k] !== undefined)
+    .sort();
   return `{${keys.map((k) => `${JSON.stringify(k)}:${canonicalJson(record[k])}`).join(",")}}`;
 }
 
@@ -72,18 +74,44 @@ export function assembleSurface(
   };
 }
 
+export const SENT_SURFACES_CAP = 256;
+
+/** The last `SENT_SURFACES_CAP` surface hashes sent, least recent dropped
+ * first. Bounded because a tool list that differs per caller would otherwise
+ * grow it for the life of the process; a dropped hash is only sent again. */
+export class SentSurfaces {
+  private readonly hashes = new Set<string>();
+
+  wasSent(digest: string): boolean {
+    if (!this.hashes.has(digest)) return false;
+    this.hashes.delete(digest);
+    this.hashes.add(digest);
+    return true;
+  }
+
+  mark(digest: string): void {
+    this.hashes.add(digest);
+    if (this.hashes.size > SENT_SURFACES_CAP) {
+      this.hashes.delete(this.hashes.values().next().value as string);
+    }
+  }
+
+  unmark(digest: string): void {
+    this.hashes.delete(digest);
+  }
+}
+
 /** The as-served delta Baton added on top of the vendor-true surface —
  * mirrors proxy's/Python's `seam_augmentations` so a consumer can render
- * both layers. Always records `instructions_suffix: true`: the SDK's
- * `buildServerInstructions` unconditionally documents the annotation tool
- * whenever `withBaton` runs. */
+ * both layers. */
 export function buildSeamAugmentations(options: {
   injectedToolNames: string[];
   intentParamNames: string[];
   intentParamMode: "optional" | "required";
   requiredParamNames: string[];
-  /** Whether Baton's text reached the served instructions. */
-  instructionsSuffix: boolean;
+  /** Whether Baton's text reached the served instructions; `null` when the
+   * producer cannot tell. */
+  instructionsSuffix: boolean | null;
 }): Record<string, unknown> {
   return {
     injected_tools: [...options.injectedToolNames].sort(),

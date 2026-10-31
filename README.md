@@ -107,12 +107,18 @@ app.use((req, res, next) =>
 );
 ```
 
-- **`session(options, fn)`** gives every `trace()` and `annotate()` inside `fn` the same session, principal, client and turn, including after `await`. Its options are `sessionId`, `principal`, `clientInfo`, `headers` and `turnId`, all optional. Without a `sessionId` the block makes one up. Pass the same `turnId` to every block that serves one user request.
+- **`session(options, fn)`** gives every `trace()` and `annotate()` inside `fn` the same session, principal, client and turn, including after `await`. Its options are `sessionId`, `principal`, `clientInfo`, `headers`, `turnId` and `meta`, all optional. Without a `sessionId` the block makes one up. Pass the same `turnId` to every block that serves one user request.
 - **`trace(options, fn)`** runs `fn` as one tool call and returns what it returns. If `fn` returns a promise, the call ends when the promise settles, and `trace()` returns a new native Promise of the same value. Its `then` is called once, so a lazy query builder is not run twice, but its own methods are not on what comes back. A throw or rejection is recorded and passed on unchanged. The options are `toolName`, `intent`, `expectedOutcome`, `workflow`, `params` and `consentToken`. The callback's return value is the recorded result unless `fn` calls `trace.observed(...)`.
 - **`wrap(toolName, fn)`** returns `fn` traced on every call, for code with no single place to put `trace()`. A single plain-object argument is recorded as `params`.
 - **`annotate(...)`** and `trace.annotate(...)` send a report your code relays from the agent.
 
 `INTENT_PARAMS` holds the name and wording of the one param `withBaton` adds to MCP tools. Use them to ask for the same values in your own API, then pass the answers to `trace()`.
+
+**Serving MCP yourself**, with a server `withBaton` does not wrap:
+
+- **`await listTools(tools, { serverInfo, capabilities, instructions })`** returns your `tools/list` entries with `user_goal` added to each `inputSchema`, exactly as `withBaton` adds it. It also sends a `surface_snapshot` of the tools you passed, once for each distinct surface. Pass your tools before anything else is added to them, and your own `initialize` values. Your list is not changed.
+- **`session({ meta })`** takes the request's `_meta`. It is sent as `runtime_meta`, and a client declaration in it wins over `clientInfo`.
+- **`INTENT_INSTRUCTIONS`** is the sentence to add to your server's instructions.
 
 Capture never throws into your code. Only the constructor throws, on a bad config. Call `await baton.aclose()` at shutdown.
 
@@ -252,7 +258,6 @@ Checking it worked: `handle.sink` is still an object, so finding one there is no
 
 None of it blocks the quickstart above.
 
-- Only `StdoutSink` and `HttpSink`. `FileSink` and `MultiSink` are deferred; the Python package has all four.
 - Only the high-level `McpServer`. The low-level `Server` is not wrapped.
 - **Task-based tools are not wrapped, and are not left alone either.** A 1.x tool registered with an object at `.handler` rather than a function produces no `tool_call_*` events at all, and nothing reports that. It still gets the intent parameters added to its advertised schema, because injection runs before the wrap is skipped and the strip only happens inside the wrapper. So `user_goal` can arrive in your own handler's arguments. Tools on the same server registered the ordinary way are unaffected. ⚠ **The request-level seam above does not rescue this one**: it reports only on tools this package wrapped, so a task-based tool emits nothing even for a rejected argument, where an unknown tool now emits a `tool_call_error`.
 - Intent parameters need a Zod schema. On the 2.x SDK a tool registered with a non-Zod standard schema is still wrapped and still emits `tool_call_*`; it just advertises no intent parameters.

@@ -4,23 +4,25 @@
  * A `Sink` is the egress side of the SDK; `withBaton` hands fully-formed
  * `Event` envelopes to a sink and the sink decides what to do with them.
  *
- * Two sinks ship, mirroring `sinks.py`'s core pair:
+ * The same four sinks as `sinks.py`:
  *
  * - `StdoutSink` — JSONL to a writable stream (default `process.stderr`,
  *   for the same reason as Python: MCP stdio transport reserves stdout for
  *   JSON-RPC framing).
+ * - `FileSink` — JSONL appended to a file.
  * - `HttpSink` — POST to any HTTP endpoint with bearer auth; bounded
  *   buffer, retry with backoff, circuit breaker. This is the contract a
  *   Console or any compatible collector consumes.
- *
- * `FileSink` / `MultiSink` are deferred per design-notes/typescript_sdk.md
- * ("HttpSink + StdoutSink covers all real use cases") — add them if a real
- * need shows up rather than porting them speculatively.
+ * - `MultiSink` — every event to each of several sinks.
  */
 
+import { closeSync, openSync, writeSync } from "node:fs";
+import { capCodePoints } from "./_text.js";
 import { MAX_TIMER_MS, raceDeadline, SHUTDOWN_FLUSH_TIMEOUT_MS, TIMED_OUT } from "./deadline.js";
 import { printable, warn } from "./warn.js";
 import type { Event } from "./events.js";
+
+const REFUSAL_BODY_MAX_LEN = 500;
 
 export interface Sink {
   /** Hand one event to the sink. Resolves once the sink has accepted it
@@ -63,6 +65,8 @@ function shutdownFlushTimeoutOption(given: unknown): number {
 
 function shutdownBudgetMs(sink: Sink): number {
   try {
+    // MultiSink runs its sinks side by side, so it needs the longest budget.
+    if (sink instanceof MultiSink) return Math.max(...sink["sinks"].map(shutdownBudgetMs));
     const budget: unknown = sink instanceof HttpSink ? sink["shutdownFlushTimeoutMs"] : undefined;
     if (isTimerMs(budget)) return budget;
   } catch {
@@ -129,6 +133,75 @@ export class StdoutSink implements Sink {
   async aclose(): Promise<void> {
     this.closed = true;
     // Don't end the stream — we don't own stderr/stdout.
+  }
+}
+
+// =============================================================================
+// FileSink — JSONL append to a path
+// =============================================================================
+
+/** Appends one JSON envelope per line to a file, opened on the first write so
+ * an unused sink creates no file. Each line reaches the file before `write`
+ * resolves, so `tail -f` sees it at once. */
+export class FileSink implements Sink {
+  private fd: number | null = null;
+  private closed = false;
+
+  constructor(private readonly path: string) {}
+
+  async write(event: Event): Promise<void> {
+    if (this.closed) throw new Error("FileSink is closed");
+    // Synchronous so concurrent writes land in call order: async writes on
+    // one fd go through the libuv thread pool and can interleave.
+    this.fd ??= openSync(this.path, "a");
+    writeSync(this.fd, JSON.stringify(event) + "\n");
+  }
+
+  async flush(): Promise<void> {}
+
+  async aclose(): Promise<void> {
+    if (this.closed) return;
+    this.closed = true;
+    if (this.fd !== null) {
+      closeSync(this.fd);
+      this.fd = null;
+    }
+  }
+}
+
+// =============================================================================
+// MultiSink — fan out to several sinks
+// =============================================================================
+
+/** Sends each event to every sink, e.g. `new MultiSink([new StdoutSink(),
+ * new HttpSink(...)])` to watch what is shipped. Every sink is tried even when
+ * one fails; one failure is rethrown as is, several as an `AggregateError`. */
+export class MultiSink implements Sink {
+  private readonly sinks: readonly Sink[];
+
+  constructor(sinks: readonly Sink[]) {
+    if (sinks.length === 0) throw new Error("MultiSink requires at least one sink");
+    this.sinks = [...sinks];
+  }
+
+  write(event: Event): Promise<void> {
+    return this.fanOut((sink) => sink.write(event));
+  }
+
+  flush(): Promise<void> {
+    return this.fanOut((sink) => sink.flush());
+  }
+
+  aclose(): Promise<void> {
+    return this.fanOut((sink) => sink.aclose());
+  }
+
+  private async fanOut(op: (sink: Sink) => Promise<void>): Promise<void> {
+    // The async wrapper turns a sink that throws synchronously into a rejection.
+    const results = await Promise.allSettled(this.sinks.map(async (sink) => op(sink)));
+    const errors = results.flatMap((r): unknown[] => (r.status === "rejected" ? [r.reason] : []));
+    if (errors.length === 1) throw errors[0];
+    if (errors.length > 1) throw new AggregateError(errors, "MultiSink fan-out failures");
   }
 }
 
@@ -390,6 +463,43 @@ export class HttpSink implements Sink {
     return "transient_failure";
   }
 
+  /** A refused event is otherwise dropped silently, which looks the same from
+   * the vendor's process as an accepted one. The collector's own message is
+   * logged because it names the field at fault; it is capped because it is a
+   * remote server's text landing in the vendor's log. */
+  private static async logRefusal(response: Response): Promise<void> {
+    // The body read is under the request's timeout signal, so a stalled body
+    // logs "<unreadable>" instead of holding the drain.
+    const detail = await HttpSink.readHead(response).then(
+      (text) => capCodePoints(text, REFUSAL_BODY_MAX_LEN),
+      () => "<unreadable>",
+    );
+    warn(
+      `baton: collector REFUSED an event and it has been dropped ` +
+        `(HTTP ${response.status}): ${detail} — the event is gone; nothing retries a 4xx.`,
+    );
+  }
+
+  /** Enough of the body for `REFUSAL_BODY_MAX_LEN` code points; the rest is
+   * cancelled unread, so a large error page does not hold the drain. */
+  private static async readHead(response: Response): Promise<string> {
+    const reader = (response.body as ReadableStream<Uint8Array> | null)?.getReader();
+    if (reader === undefined) return "";
+    const decoder = new TextDecoder();
+    let text = "";
+    try {
+      // A code point is at most two UTF-16 units.
+      while (text.length < REFUSAL_BODY_MAX_LEN * 2) {
+        const { done, value } = await reader.read();
+        if (done) return text + decoder.decode();
+        text += decoder.decode(value, { stream: true });
+      }
+      return text;
+    } finally {
+      void reader.cancel().catch(() => {});
+    }
+  }
+
   private async drainLocked(): Promise<void> {
     while (this.buffer.length > 0) {
       if (!this.circuit.canRequest() || this.closing.signal.aborted) return;
@@ -437,7 +547,6 @@ export class HttpSink implements Sink {
     }
   }
 
-
   private sleepUnlessClosed(ms: number): Promise<void> {
     if (this.closed) return Promise.resolve();
     return new Promise((resolve) => {
@@ -466,9 +575,11 @@ export class HttpSink implements Sink {
         body,
         signal: request.signal,
       });
+      const outcome = HttpSink.classifyStatus(response.status);
+      if (outcome === "permanent_failure") await HttpSink.logRefusal(response);
       // An unread body holds its connection until GC.
-      void response.body?.cancel().catch(() => undefined);
-      return HttpSink.classifyStatus(response.status);
+      else void response.body?.cancel().catch(() => undefined);
+      return outcome;
     } catch {
       return "transient_failure";
     } finally {

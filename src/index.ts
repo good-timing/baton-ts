@@ -129,7 +129,7 @@ export {
 export { Scrubber, identityScrub, DEPTH_LIMIT, DEPTH_MARKER } from "./scrub.js";
 
 export type { Sink, StdoutSinkOptions, HttpSinkOptions } from "./sinks.js";
-export { StdoutSink, HttpSink, safeWrite } from "./sinks.js";
+export { StdoutSink, FileSink, HttpSink, MultiSink, safeWrite } from "./sinks.js";
 
 export type { BatonConfig } from "./integrations/mcp/index.js";
 // `BatonConfig.resultCaptureMode` is typed with it, so a vendor cannot name
@@ -175,6 +175,7 @@ export type {
   SessionOptions,
   TraceOptions,
 } from "./library/client.js";
+export type { ListToolsOptions } from "./library/surface.js";
 export type { HeaderInput } from "./integrations/mcp/clientObserved.js";
 // The injected params' names and wording, for a vendor adding them to its own API.
 export { INTENT_INSTRUCTIONS, INTENT_PARAMS } from "./integrations/mcp/llmText.js";

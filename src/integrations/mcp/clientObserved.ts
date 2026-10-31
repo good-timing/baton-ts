@@ -171,14 +171,17 @@ function registeredHeaders(input: HeaderInput): Headers {
 }
 
 /** The library path's `client_observed` (SPEC §5.6 rule 4): what the vendor's
- * code passed, under the same rules as what a client sends over MCP. */
+ * code passed, under the same rules as what a client sends over MCP. A
+ * declaration in the request's `_meta` wins over `clientInfo`, as the
+ * request's own wins over the handshake's on MCP. */
 export function clientObservedFrom(
   clientInfo: unknown,
   headers: HeaderInput | undefined,
   scrubber: ObserveClientOptions["scrubber"],
+  meta?: Record<string, unknown> | null,
 ): ClientObserved | null {
   return assemble(
-    orNothing(() => cleanInfo(declared(clientInfo), scrubber)),
+    orNothing(() => cleanInfo(declared(meta?.[CLIENT_INFO_META_KEY]) ?? declared(clientInfo), scrubber)),
     orNothing(() => (headers ? cleanHeaders(registeredHeaders(headers), scrubber) : undefined)),
   );
 }

@@ -1,5 +1,8 @@
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { HttpSink, StdoutSink, safeWrite, type Sink } from "../src/sinks.js";
+import { FileSink, HttpSink, MultiSink, StdoutSink, safeWrite, type Sink } from "../src/sinks.js";
 import { ToolCallStartEventSchema, type Event } from "../src/events.js";
 
 function makeEvent(overrides: Partial<{ sequence_number: number }> = {}): Event {
@@ -46,6 +49,86 @@ function exitHooks(sink: HttpSink): { atExit: () => void; drained: () => Promise
   const internals = sink as unknown as { beforeExitHandler: () => void; drainChain: Promise<void> };
   return { atExit: () => internals.beforeExitHandler(), drained: () => internals.drainChain };
 }
+describe("FileSink", () => {
+  const tempPath = () => join(mkdtempSync(join(tmpdir(), "baton-filesink-")), "events.jsonl");
+
+  it("creates no file until the first write", async () => {
+    const path = tempPath();
+    const sink = new FileSink(path);
+    await sink.aclose();
+    expect(existsSync(path)).toBe(false);
+  });
+
+  it("appends one JSONL line per event, in call order, after what was there", async () => {
+    const path = tempPath();
+    writeFileSync(path, "earlier\n");
+    const sink = new FileSink(path);
+
+    await Promise.all([0, 1, 2, 3, 4].map((n) => sink.write(makeEvent({ sequence_number: n }))));
+    expect(readFileSync(path, "utf8").split("\n")).toHaveLength(7);
+    await sink.aclose();
+
+    const [first, ...rest] = readFileSync(path, "utf8").trimEnd().split("\n");
+    expect(first).toBe("earlier");
+    expect(rest.map((line) => (JSON.parse(line) as Event).sequence_number)).toEqual([0, 1, 2, 3, 4]);
+  });
+
+  it("rejects writes after close, and a second close is a no-op", async () => {
+    const sink = new FileSink(tempPath());
+    await sink.write(makeEvent());
+    await sink.aclose();
+    await sink.aclose();
+    await expect(sink.write(makeEvent())).rejects.toThrow("FileSink is closed");
+  });
+});
+
+describe("MultiSink", () => {
+  const recording = () => {
+    const seen: string[] = [];
+    const sink: Sink = {
+      write: async (event) => void seen.push(`write:${event.sequence_number}`),
+      flush: async () => void seen.push("flush"),
+      aclose: async () => void seen.push("aclose"),
+    };
+    return { sink, seen };
+  };
+  const failing = (message: string): Sink => ({
+    write: () => {
+      throw new Error(message);
+    },
+    flush: async () => {},
+    aclose: async () => {},
+  });
+
+  it("refuses an empty list", () => {
+    expect(() => new MultiSink([])).toThrow("at least one sink");
+  });
+
+  it("passes write, flush and aclose to every sink", async () => {
+    const a = recording();
+    const b = recording();
+    const sink = new MultiSink([a.sink, b.sink]);
+    await sink.write(makeEvent({ sequence_number: 7 }));
+    await sink.flush();
+    await sink.aclose();
+    expect(a.seen).toEqual(["write:7", "flush", "aclose"]);
+    expect(b.seen).toEqual(a.seen);
+  });
+
+  it("still reaches the other sinks when one fails, and rethrows that one failure", async () => {
+    const ok = recording();
+    const sink = new MultiSink([failing("boom"), ok.sink]);
+    await expect(sink.write(makeEvent({ sequence_number: 1 }))).rejects.toThrow("boom");
+    expect(ok.seen).toEqual(["write:1"]);
+  });
+
+  it("aggregates several failures", async () => {
+    const sink = new MultiSink([failing("one"), failing("two")]);
+    const err = await sink.write(makeEvent()).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(AggregateError);
+    expect((err as AggregateError).errors.map((e: Error) => e.message)).toEqual(["one", "two"]);
+  });
+});
 
 describe("HttpSink", () => {
   it("POSTs to {url}/v0/events with bearer auth and drains the buffer", async () => {
@@ -89,6 +172,80 @@ describe("HttpSink", () => {
 
     expect(fetchImpl).toHaveBeenCalledTimes(1);
     await sink.aclose();
+  });
+
+  it("logs a refusal with the collector's capped message", async () => {
+    const reason = "envelope carries both principal and principal_id";
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValue(new Response(reason + "😀".repeat(600), { status: 422 }));
+    const warning = vi.spyOn(process, "emitWarning").mockImplementation(() => {});
+    try {
+      const sink = new HttpSink("https://collector.example", { apiKey: "k", fetchImpl });
+      await sink.write(makeEvent());
+      await sink.flush();
+      await sink.aclose();
+
+      const logged = warning.mock.calls.map(([message]) => String(message)).join("");
+      expect(logged).toContain(`REFUSED an event and it has been dropped (HTTP 422): ${reason}`);
+      const detail = logged.slice(logged.indexOf(reason), logged.indexOf(" — the event is gone"));
+      expect([...detail]).toHaveLength(500);
+      expect(detail.endsWith("😀")).toBe(true);
+    } finally {
+      warning.mockRestore();
+    }
+  });
+
+  it("logs a refusal from the head of a long body without reading the rest", async () => {
+    const reason = "payload too large";
+    let pulls = 0;
+    const endless = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        controller.enqueue(new TextEncoder().encode(pulls++ === 0 ? reason : "x".repeat(100)));
+      },
+    });
+    const fetchImpl = vi.fn().mockResolvedValue(new Response(endless, { status: 413 }));
+    const warning = vi.spyOn(process, "emitWarning").mockImplementation(() => {});
+    try {
+      const sink = new HttpSink("https://collector.example", { apiKey: "k", fetchImpl });
+      await sink.write(makeEvent());
+      await sink.flush();
+      await sink.aclose();
+
+      expect(warning.mock.calls.map(([message]) => String(message)).join("")).toContain(`(HTTP 413): ${reason}x`);
+      expect(pulls).toBeLessThan(20);
+    } finally {
+      warning.mockRestore();
+    }
+  });
+
+  it("logs a refusal whose body stalls as unreadable once the request times out, and sends on", async () => {
+    const stalled = (signal: AbortSignal) =>
+      new Response(
+        new ReadableStream({
+          start(controller) {
+            signal.addEventListener("abort", () => controller.error(signal.reason));
+          },
+        }),
+        { status: 413 },
+      );
+    const fetchImpl = vi
+      .fn()
+      .mockImplementationOnce(async (_url: string, init: RequestInit) => stalled(init.signal!))
+      .mockResolvedValue(new Response(null, { status: 202 }));
+    const warning = vi.spyOn(process, "emitWarning").mockImplementation(() => {});
+    try {
+      const sink = new HttpSink("https://collector.example", { apiKey: "k", fetchImpl, requestTimeoutMs: 20 });
+      await sink.write(makeEvent({ sequence_number: 1 }));
+      await sink.write(makeEvent({ sequence_number: 2 }));
+      await sink.flush();
+      await sink.aclose();
+
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
+      expect(warning.mock.calls.map(([message]) => String(message)).join("")).toContain("(HTTP 413): <unreadable>");
+    } finally {
+      warning.mockRestore();
+    }
   });
 
   it("opens the circuit breaker after consecutive failures and stops sending", async () => {

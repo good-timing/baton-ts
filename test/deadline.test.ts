@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { raceDeadline, TIMED_OUT } from "../src/deadline.js";
-import { boundedSinkCall, HttpSink } from "../src/sinks.js";
+import { boundedSinkCall, HttpSink, MultiSink } from "../src/sinks.js";
 import { Client, type Sink } from "../src/index.js";
 
 function collectWarnings(): { seen: string[]; restore: () => void } {
@@ -74,6 +74,25 @@ describe("boundedSinkCall (SPEC §11.2 rule 7)", () => {
       let done = false;
       const sink = new SlowFlush("https://collector.example", { apiKey: "k", shutdownFlushTimeoutMs: 10_000 });
       const call = boundedSinkCall(sink, "flush").then(() => {
+        done = true;
+      });
+      await vi.advanceTimersByTimeAsync(4999);
+      expect(done).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      await call;
+      expect(done).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("waits as long as the longest budget inside a MultiSink", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      let done = false;
+      const http = new HttpSink("https://collector.example", { apiKey: "k", shutdownFlushTimeoutMs: 10_000 });
+      vi.spyOn(http, "flush").mockImplementation(() => new Promise((resolve) => setTimeout(resolve, 5000)));
+      const call = boundedSinkCall(new MultiSink([sinkWith({}), http]), "flush").then(() => {
         done = true;
       });
       await vi.advanceTimersByTimeAsync(4999);

@@ -13,7 +13,10 @@ import {
   type ClientObserved,
   type HeaderInput,
 } from "../integrations/mcp/clientObserved.js";
+import { roundMetaCoordinates } from "../metaCoordinates.js";
+import { scrubOrNull } from "../integrations/mcp/safeScrub.js";
 import { uuid7 } from "../uuid7.js";
+import { isRecord } from "./surface.js";
 
 const TRANSPORT_LIBRARY = "library";
 const TURN_ID_META_KEY = "baton/turn_id";
@@ -25,7 +28,7 @@ export interface LibrarySession {
   readonly principal: PrincipalWire | null;
   readonly organization: OrganizationWire | null;
   readonly clientObserved: ClientObserved | null;
-  readonly turnId: string | null;
+  readonly runtimeMeta: Record<string, unknown> | null;
 }
 
 export function sessionEnvelope(session: LibrarySession): Record<string, unknown> {
@@ -36,7 +39,7 @@ export function sessionEnvelope(session: LibrarySession): Record<string, unknown
     principal: session.principal,
     organization: session.organization,
     client_observed: session.clientObserved,
-    runtime_meta: session.turnId !== null ? { [TURN_ID_META_KEY]: session.turnId } : null,
+    runtime_meta: session.runtimeMeta,
   };
 }
 
@@ -46,6 +49,7 @@ export interface SessionValues {
   clientInfo?: { name?: string; version?: string };
   headers?: HeaderInput;
   turnId?: string;
+  meta?: unknown;
 }
 
 function warn(message: string): void {
@@ -62,7 +66,28 @@ function vendorId(name: string, value: unknown): string | null {
 }
 
 function blank(sessionId: string, origin: LibrarySession["origin"]): LibrarySession {
-  return { sessionId, origin, ...NO_CALLER, clientObserved: null, turnId: null };
+  return { sessionId, origin, ...NO_CALLER, clientObserved: null, runtimeMeta: null };
+}
+
+function requestMeta(meta: unknown): Record<string, unknown> | null {
+  if (isRecord(meta)) return meta;
+  if (meta !== undefined && meta !== null) warn("meta is not an object — ignoring it.");
+  return null;
+}
+
+function runtimeMeta(
+  meta: Record<string, unknown> | null,
+  turnId: string | null,
+  scrubber: (value: unknown) => unknown,
+): Record<string, unknown> | null {
+  // A client could send its own `baton/turn_id`; on a library event that key
+  // is the vendor's (SPEC §11.4.1), so the client's copy never rides.
+  const clientKeys = Object.fromEntries(Object.entries(meta ?? {}).filter(([key]) => key !== TURN_ID_META_KEY));
+  const cleaned =
+    Object.keys(clientKeys).length > 0 ? scrubOrNull(scrubber, roundMetaCoordinates(clientKeys), "_meta") : null;
+  const out: Record<string, unknown> = isRecord(cleaned) ? { ...cleaned } : {};
+  if (turnId !== null) out[TURN_ID_META_KEY] = turnId;
+  return Object.keys(out).length > 0 ? out : null;
 }
 
 /** A `session()` block's values. A value that is not usable is logged and dropped. */
@@ -75,11 +100,12 @@ export function newSession(
   const base = id !== null ? blank(id, "observed") : blank(uuid7(), "minted");
   // Off stops the work too: no scrubber runs on a value that is never sent.
   if (disabled) return base;
+  const meta = requestMeta(values.meta);
   return {
     ...base,
     ...callerFor(values.principal, (_key, message) => warn(`principal ${message}`)),
-    clientObserved: clientObservedFrom(values.clientInfo, values.headers, scrubber),
-    turnId: vendorId("turnId", values.turnId),
+    clientObserved: clientObservedFrom(values.clientInfo, values.headers, scrubber, meta),
+    runtimeMeta: runtimeMeta(meta, vendorId("turnId", values.turnId), scrubber),
   };
 }
 

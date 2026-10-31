@@ -57,6 +57,27 @@
   arguments, is labelled `failure_kind: "refused"`.** Before, it guessed
   `invalid_argument`. SPEC §11.4.3: a producer that knows the handler never
   ran, but not why, sends `refused`.
+- **`client.listTools(tools, { serverInfo, capabilities, instructions })`**,
+  for a vendor serving MCP itself, as in `baton-sdk` 0.8.23. It returns the
+  vendor's own `tools/list` entries with `user_goal` added as `withBaton` adds
+  it, and sends a `surface_snapshot` of the tools as passed,
+  once per distinct surface. It does not wait for the send; `flush()` does.
+  The last 256 surfaces are remembered. A failed send is tried again on the
+  next call. (SPEC §5.6.)
+- **`client.session({ meta })`** takes the request's `_meta`. It is sent as
+  `runtime_meta`, coordinates rounded and scrubbed, beside the vendor's
+  `turnId`. A client declaration in it wins over `clientInfo`.
+- **`FileSink` and `MultiSink`**, as in the Python SDK. `FileSink(path)`
+  appends JSONL and creates the file on the first write. `MultiSink([...])`
+  sends every event to each sink, tries them all when one fails, and rethrows
+  one failure as it is or several as an `AggregateError`. Its `flush()` and
+  `aclose()` get the longest shutdown budget of its sinks.
+- **`HttpSink` logs a refused event.** A 4xx is still dropped without a retry,
+  but it is now logged with the status and the first 500 characters of the
+  collector's reply, read within `requestTimeoutMs`. Before, nothing was
+  logged.
+- **A DSN with a tab inside its key is refused**, as the Python SDK refuses a
+  tab anywhere in a DSN.
 
 ## 0.6.1: organization; a call refused above the tool is labelled "refused"
 
