@@ -40,6 +40,13 @@ describe("StdoutSink", () => {
   });
 });
 
+/** The sink's `beforeExit` handler and its drain chain, without firing the
+ * test runner's own `beforeExit` listeners. */
+function exitHooks(sink: HttpSink): { atExit: () => void; drained: () => Promise<void> } {
+  const internals = sink as unknown as { beforeExitHandler: () => void; drainChain: Promise<void> };
+  return { atExit: () => internals.beforeExitHandler(), drained: () => internals.drainChain };
+}
+
 describe("HttpSink", () => {
   it("POSTs to {url}/v0/events with bearer auth and drains the buffer", async () => {
     const fetchImpl = vi.fn().mockResolvedValue(new Response(null, { status: 202 }));
@@ -153,6 +160,159 @@ describe("HttpSink", () => {
     // design (matches sinks.py), so this test's contract is "doesn't crash
     // and the sink keeps accepting writes."
     expect(fetchImpl).toHaveBeenCalled();
+  });
+
+  it("drops an event that cannot be encoded and still sends the ones after it", async () => {
+    const sent: number[] = [];
+    const fetchImpl = vi.fn().mockImplementation((_url: string, init: RequestInit) => {
+      sent.push((JSON.parse(init.body as string) as { sequence_number: number }).sequence_number);
+      return Promise.resolve(new Response(null, { status: 202 }));
+    });
+    const warnings: string[] = [];
+    const spy = vi.spyOn(process, "emitWarning").mockImplementation((w: string | Error) => {
+      warnings.push(String(w));
+    });
+    const sink = new HttpSink("https://collector.example", { apiKey: "k", fetchImpl });
+    try {
+      const bad = makeEvent({ sequence_number: 0 });
+      (bad.payload as { params: Record<string, unknown> }).params = { n: 10n, secret: "jane@x.co" };
+      await sink.write(bad);
+      await sink.write(makeEvent({ sequence_number: 1 }));
+      await sink.flush();
+      await sink.aclose();
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(sent).toEqual([1]);
+    expect(warnings.some((w) => w.includes("could not be encoded"))).toBe(true);
+    expect(warnings.join("\n")).not.toContain("jane@x.co");
+  });
+
+  it("stops the exit flush at shutdownFlushTimeoutMs and warns once", async () => {
+    // Before exit every send fails at once, so the events stay buffered; at
+    // exit every send hangs until its signal aborts.
+    let exiting = false;
+    const fetchImpl = vi.fn().mockImplementation((_url: string, init: RequestInit) =>
+      exiting
+        ? new Promise<Response>((_resolve, reject) => {
+            init.signal?.addEventListener("abort", () => reject(new Error("aborted")));
+          })
+        : Promise.reject(new Error("offline")),
+    );
+    const warnings: string[] = [];
+    const spy = vi.spyOn(process, "emitWarning").mockImplementation((w: string | Error) => {
+      warnings.push(String(w));
+    });
+    const sink = new HttpSink("https://collector.example", {
+      apiKey: "k",
+      fetchImpl,
+      shutdownFlushTimeoutMs: 60,
+      maxRetries: 0,
+      circuitBreakerResetMs: 0,
+    });
+    const { atExit, drained } = exitHooks(sink);
+    try {
+      for (let i = 0; i < 5; i += 1) await sink.write(makeEvent({ sequence_number: i }));
+      await sink.flush();
+      exiting = true;
+      fetchImpl.mockClear();
+
+      const started = Date.now();
+      atExit();
+      await drained();
+      atExit();
+      atExit();
+
+      expect(Date.now() - started).toBeLessThan(500);
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+      expect(warnings.filter((w) => w.includes("5 unsent event"))).toHaveLength(1);
+
+      // The process kept running after all: a write leaves exit mode.
+      exiting = false;
+      fetchImpl.mockImplementation(() => Promise.resolve(new Response(null, { status: 202 })));
+      await sink.write(makeEvent({ sequence_number: 5 }));
+      await sink.flush();
+      expect(fetchImpl.mock.calls.length).toBe(7);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("does not start a second exit pass for an event written during shutdown", async () => {
+    const fetchImpl = vi.fn().mockRejectedValue(new Error("refused"));
+    const sink = new HttpSink("https://collector.example", {
+      apiKey: "k",
+      fetchImpl,
+      maxRetries: 0,
+      circuitBreakerResetMs: 0,
+    });
+    const { atExit, drained } = exitHooks(sink);
+    const spy = vi.spyOn(process, "emitWarning").mockImplementation(() => {});
+    try {
+      await sink.write(makeEvent());
+      await sink.flush();
+      fetchImpl.mockClear();
+      atExit();
+      await drained();
+      // A vendor's own beforeExit listener records one more event.
+      await sink.write(makeEvent({ sequence_number: 1 }));
+      await drained();
+      atExit();
+      await drained();
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("does not retry a fast-failing send at exit", async () => {
+    const fetchImpl = vi.fn().mockRejectedValue(new Error("refused"));
+    const sink = new HttpSink("https://collector.example", {
+      apiKey: "k",
+      fetchImpl,
+      maxRetries: 0,
+      circuitBreakerResetMs: 0,
+    });
+    const { atExit, drained } = exitHooks(sink);
+    const spy = vi.spyOn(process, "emitWarning").mockImplementation(() => {});
+    try {
+      await sink.write(makeEvent());
+      await sink.flush();
+      fetchImpl.mockClear();
+      for (let i = 0; i < 5; i += 1) {
+        atExit();
+        await drained();
+      }
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("gives up on a request that outlives requestTimeoutMs", async () => {
+    const fetchImpl = vi.fn().mockImplementation(
+      (_url: string, init: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          init.signal?.addEventListener("abort", () => reject(new Error("aborted")));
+        }),
+    );
+    const sink = new HttpSink("https://collector.example", {
+      apiKey: "k",
+      fetchImpl,
+      requestTimeoutMs: 20,
+      maxRetries: 1,
+      backoffBaseMs: 1,
+    });
+
+    await sink.write(makeEvent());
+    await sink.flush();
+
+    expect(fetchImpl.mock.calls.length).toBeGreaterThanOrEqual(2);
+    for (const [, init] of fetchImpl.mock.calls as [string, RequestInit][]) {
+      expect(init.signal?.aborted).toBe(true);
+    }
+    await sink.aclose();
   });
 });
 

@@ -8,6 +8,20 @@
   `depth_limit`, and warned about once per scrubber, without the value. A
   plain value at the limit is scrubbed as usual. This matches `baton-sdk`
   0.8.21 and SPEC §7's depth rule.
+- **`HttpSink` drops an event it cannot encode and keeps sending the rest.**
+  Before, an event holding a value `JSON.stringify` rejects (a `BigInt`, a
+  cycle) stayed at the head of the buffer: nothing after it was sent,
+  `flush()` and `aclose()` rejected, and the rejection could go unhandled. It
+  now warns once per event, naming only its type, as `baton-sdk` does.
+- **`requestTimeoutMs` is applied.** It was accepted and never read, so a
+  collector that never answered held the sink forever. Each request now
+  aborts after it (default 1000 ms) and is retried like a network error.
+- **The flush at process exit stops after 3 seconds.** When the process
+  exits without `aclose()`, `HttpSink` gives each buffered event one attempt
+  within `shutdownFlushTimeoutMs` (default 3000) in total, then warns how many
+  events were left unsent. Before, it retried with no limit and could hold the
+  process open. This matches `baton-sdk`'s `shutdown_flush_timeout_seconds`.
+  (SPEC §11.2.)
 
 ## 0.6.1: organization; a call refused above the tool is labelled "refused"
 

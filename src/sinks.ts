@@ -18,6 +18,7 @@
  * need shows up rather than porting them speculatively.
  */
 
+import { warn } from "./warn.js";
 import type { Event } from "./events.js";
 
 export interface Sink {
@@ -86,7 +87,7 @@ export class StdoutSink implements Sink {
 // HttpSink — POST + bearer + bounded buffer + retry + circuit breaker
 // =============================================================================
 
-type SendOutcome = "success" | "permanent_failure" | "transient_failure";
+type SendOutcome = "success" | "permanent_failure" | "transient_failure" | "unencodable";
 
 class CircuitBreaker {
   private failures = 0;
@@ -124,6 +125,8 @@ export interface HttpSinkOptions {
   backoffMaxMs?: number;
   circuitBreakerThreshold?: number;
   circuitBreakerResetMs?: number;
+  /** How long the flush at process exit may take, in total. Default 3000. */
+  shutdownFlushTimeoutMs?: number;
   /** Injectable for tests; defaults to the global `fetch`. */
   fetchImpl?: typeof fetch;
 }
@@ -142,6 +145,11 @@ export class HttpSink implements Sink {
   private readonly apiKey: string;
   private readonly buffer: Event[] = [];
   private readonly bufferSize: number;
+  private readonly requestTimeoutMs: number;
+  private readonly shutdownFlushTimeoutMs: number;
+  /** Set when an exit pass ends; cleared once a normal drain empties the
+   * buffer, which means the process went on. */
+  private exitPassRan = false;
   private readonly maxRetries: number;
   private readonly backoffBaseMs: number;
   private readonly backoffMaxMs: number;
@@ -156,6 +164,8 @@ export class HttpSink implements Sink {
     this.url = url.replace(/\/+$/, "");
     this.apiKey = options.apiKey;
     this.bufferSize = options.bufferSize ?? 1000;
+    this.requestTimeoutMs = options.requestTimeoutMs ?? 1000;
+    this.shutdownFlushTimeoutMs = options.shutdownFlushTimeoutMs ?? 3000;
     this.maxRetries = options.maxRetries ?? 3;
     this.backoffBaseMs = options.backoffBaseMs ?? 100;
     this.backoffMaxMs = options.backoffMaxMs ?? 5000;
@@ -212,7 +222,7 @@ export class HttpSink implements Sink {
   private enqueue(event: Event): void {
     if (this.buffer.length >= this.bufferSize) {
       if (!this.overflowWarned) {
-        process.emitWarning(
+        warn(
           `Baton HTTP sink buffer full (${this.bufferSize}); oldest events dropped. Further overflows will be silent.`,
         );
         this.overflowWarned = true;
@@ -236,18 +246,44 @@ export class HttpSink implements Sink {
   }
 
   /** Best-effort flush when the process is about to exit without an
-   * explicit `aclose()`. Node re-runs `beforeExit` if new async work is
-   * scheduled during it, so an in-flight flush here can complete normally —
-   * unlike Python's synchronous `atexit`, no separate sync-client fallback
-   * is needed. Real residual gap, not fixable in-process: SIGKILL, or
-   * SIGTERM with no installed handler, skip `beforeExit` entirely. A vendor
-   * needing that guarantee must call `aclose()` from their own handler. */
+   * explicit `aclose()`. SIGKILL, or SIGTERM with no installed handler, skip
+   * `beforeExit` entirely: a vendor needing that guarantee must call
+   * `aclose()` from their own handler. */
   private ensureBeforeExitRegistered(): void {
     if (this.beforeExitHandler) return;
     this.beforeExitHandler = () => {
-      void this.flush();
+      // Node re-fires `beforeExit` once the pass's work is done; one pass only.
+      if (this.buffer.length === 0 || this.exitPassRan) return;
+      this.drainChain = this.drainChain.then(
+        () => this.exitPass(),
+        () => this.exitPass(),
+      );
     };
     process.on("beforeExit", this.beforeExitHandler);
+  }
+
+  /** One attempt per event, no retry, within `shutdownFlushTimeoutMs` in
+   * total (SPEC §11.2); what is left is reported, not sent. */
+  private async exitPass(): Promise<void> {
+    const deadline = Date.now() + this.shutdownFlushTimeoutMs;
+    while (this.buffer.length > 0 && this.circuit.canRequest()) {
+      const timeLeft = deadline - Date.now();
+      if (timeLeft <= 0) break;
+      const body = this.encode(this.buffer[0]!);
+      if (body !== null) {
+        const outcome = await this.postOnce(body, Math.min(this.requestTimeoutMs, timeLeft));
+        if (outcome === "transient_failure") {
+          this.circuit.recordFailure();
+          break;
+        }
+        this.circuit.recordSuccess();
+      }
+      this.buffer.shift();
+    }
+    this.exitPassRan = true;
+    if (this.buffer.length > 0) {
+      warn(`baton: process exiting with ${this.buffer.length} unsent event(s).`);
+    }
   }
 
   private events_url(): string {
@@ -272,31 +308,57 @@ export class HttpSink implements Sink {
       if (outcome === "success" || outcome === "permanent_failure") {
         this.buffer.shift();
         this.circuit.recordSuccess();
+      } else if (outcome === "unencodable") {
+        // Nothing was sent, so the circuit learns nothing about the endpoint.
+        this.buffer.shift();
       } else {
         this.circuit.recordFailure();
         return;
       }
     }
+    this.exitPassRan = false;
   }
 
   private async sendWithRetry(event: Event): Promise<SendOutcome> {
-    const url = this.events_url();
-    const headers = this.authHeaders();
-    const body = JSON.stringify(event);
-
+    const body = this.encode(event);
+    if (body === null) return "unencodable";
     for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
-      try {
-        const response = await this.fetchImpl(url, { method: "POST", headers, body });
-        const outcome = HttpSink.classifyStatus(response.status);
-        if (outcome !== "transient_failure") return outcome;
-      } catch {
-        // network error — fall through to retry/backoff below
-      }
+      const outcome = await this.postOnce(body, this.requestTimeoutMs);
+      if (outcome !== "transient_failure") return outcome;
       if (attempt < this.maxRetries) {
         const backoff = Math.min(this.backoffBaseMs * 2 ** attempt, this.backoffMaxMs);
         await new Promise((resolve) => setTimeout(resolve, backoff));
       }
     }
     return "transient_failure";
+  }
+
+  /** `null`, with a warning, for an event `JSON.stringify` rejects. */
+  private encode(event: Event): string | null {
+    try {
+      return JSON.stringify(event);
+    } catch (err) {
+      // Only the error's name: its message can quote the event's own text.
+      warn(
+        `baton: a ${event.event_type} event could not be encoded and has been dropped (${(err as Error)?.name ?? "Error"}) — the event is gone; the events after it are still sent.`,
+      );
+      return null;
+    }
+  }
+
+  private async postOnce(body: string, timeoutMs: number): Promise<SendOutcome> {
+    try {
+      const response = await this.fetchImpl(this.events_url(), {
+        method: "POST",
+        headers: this.authHeaders(),
+        body,
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+      // An unread body holds its connection until GC.
+      void response.body?.cancel().catch(() => undefined);
+      return HttpSink.classifyStatus(response.status);
+    } catch {
+      return "transient_failure";
+    }
   }
 }
