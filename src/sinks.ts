@@ -209,7 +209,9 @@ export class HttpSink implements Sink {
   /** Aborted once `aclose()` returns: nothing Baton started may keep the
    * process alive after the vendor closed it. */
   private readonly closing = new AbortController();
-  private drainStalled = false;
+  /** The drain chain's tail when a flush() or aclose() gave up waiting, until it settles. */
+  private stalledDrain: Promise<unknown> | null = null;
+  private skipWarnedFor: Promise<unknown> | null = null;
   private closeOnce: Promise<void> | undefined;
   private drainChain: Promise<void> = Promise.resolve();
   private beforeExitHandler: (() => void) | null = null;
@@ -262,7 +264,7 @@ export class HttpSink implements Sink {
 
   async flush(): Promise<void> {
     if (this.closed) return;
-    await this.withinShutdownBudget(this.scheduleDrain(), "flush()");
+    await this.drainWithinBudget("flush()");
   }
 
   /** A second call waits for the first (SPEC §11.2 rule 7). */
@@ -272,9 +274,7 @@ export class HttpSink implements Sink {
   }
 
   private async close(): Promise<void> {
-    // A drain an earlier flush() gave up on still holds the queue; waiting
-    // behind it would spend a second budget on the same stalled collector.
-    if (!this.drainStalled) await this.withinShutdownBudget(this.scheduleDrain(), "aclose()");
+    await this.drainWithinBudget("aclose()");
     this.closing.abort();
     if (this.buffer.length > 0) {
       warn(`baton: the sink closed with ${this.buffer.length} event(s) unsent.`);
@@ -286,14 +286,23 @@ export class HttpSink implements Sink {
   }
 
   /** SPEC §11.2 rule 7: an explicit flush or close returns within
-   * `shutdownFlushTimeoutMs` and never rejects. The drain is not cancelled
-   * here, so after `flush()` it goes on sending; `aclose()` stops it. */
-  private async withinShutdownBudget(work: Promise<void>, what: string): Promise<void> {
-    const settled = work.catch(() => undefined);
+   * `shutdownFlushTimeoutMs` and never rejects. While an earlier wait's drain
+   * is still stuck it returns at once, without queuing a pass. The drain is not
+   * cancelled here, so after `flush()` it goes on sending; `aclose()` stops it. */
+  private async drainWithinBudget(what: "flush()" | "aclose()"): Promise<void> {
+    if (this.stalledDrain) {
+      if (what === "flush()" && this.skipWarnedFor !== this.stalledDrain) {
+        this.skipWarnedFor = this.stalledDrain;
+        warn(`baton: flush() skipped: an earlier drain is still stuck; ${this.buffer.length} event(s) wait to be sent.`);
+      }
+      return;
+    }
+    const settled = this.scheduleDrain().catch(() => undefined);
     if ((await raceDeadline(settled, this.shutdownFlushTimeoutMs)) !== TIMED_OUT) return;
-    this.drainStalled = true;
-    void settled.then(() => {
-      this.drainStalled = false;
+    const stalled = this.drainChain.catch(() => undefined);
+    this.stalledDrain = stalled;
+    void stalled.then(() => {
+      if (this.stalledDrain === stalled) this.stalledDrain = null;
     });
     if (what === "flush()") {
       warn(`baton: flush() took over ${this.shutdownFlushTimeoutMs} ms; it goes on in the background.`);

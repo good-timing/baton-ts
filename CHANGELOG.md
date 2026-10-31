@@ -15,7 +15,9 @@
   and any retry, so nothing Baton began keeps the process alive. Events left
   unsent at close are reported in one warning, whatever stopped them. A sink
   whose methods return no promise is handled. A second `aclose()` on an
-  `HttpSink` or a `Client` waits for the first.
+  `HttpSink` or a `Client` waits for the first. While a drain that an earlier
+  `flush()` gave up on is still stalled, a later `flush()` returns at once;
+  the first to do so in each stall warns how many events wait to be sent.
 - **The scrubber no longer sends plain objects and arrays nested 10 or more
   levels deep unscrubbed.** One at the depth limit is replaced by
   `"[REDACTED:depth-limit]"` (exported as `DEPTH_MARKER`), counted under

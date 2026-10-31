@@ -260,10 +260,18 @@ describe("HttpSink", () => {
       await sink.write(makeEvent());
       const started = Date.now();
       await sink.flush();
+      // flush() spent the budget; a second flush() and aclose() do not wait
+      // behind the same drain.
+      const second = Date.now();
+      await sink.flush();
+      await sink.flush();
+      expect(Date.now() - second).toBeLessThan(50);
       await sink.aclose();
-      // flush() spent the budget; aclose() does not wait behind the same drain.
       expect(Date.now() - started).toBeLessThan(300);
       expect(warnings.filter((w) => w.includes("goes on in the background"))).toHaveLength(1);
+      expect(warnings.filter((w) => w.includes("flush() skipped"))).toEqual([
+        "baton: flush() skipped: an earlier drain is still stuck; 1 event(s) wait to be sent.",
+      ]);
       expect(warnings.filter((w) => w.includes("closed with 1 event(s) unsent"))).toHaveLength(1);
       // Nothing it started keeps running past aclose(): the request is aborted.
       const [, init] = fetchImpl.mock.calls.at(-1) as [string, RequestInit];
@@ -287,6 +295,82 @@ describe("HttpSink", () => {
       await second;
       expect(warnings.filter((w) => w.includes("unsent"))).toHaveLength(1);
     } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("keeps flush() from waiting while a pass queued during the wait is stuck", async () => {
+    let fail: (err: Error) => void = () => {};
+    const fetchImpl = vi
+      .fn()
+      .mockImplementationOnce(
+        () =>
+          new Promise<Response>((_resolve, reject) => {
+            fail = reject;
+          }),
+      )
+      .mockImplementationOnce(() => Promise.reject(new Error("refused")))
+      .mockImplementation(
+        (_url: string, init: RequestInit) =>
+          new Promise<Response>((_resolve, reject) => {
+            init.signal?.addEventListener("abort", () => reject(new Error("aborted")));
+          }),
+      );
+    const spy = vi.spyOn(process, "emitWarning").mockImplementation(() => {});
+    const sink = new HttpSink("https://collector.example", {
+      apiKey: "k",
+      fetchImpl,
+      maxRetries: 0,
+      requestTimeoutMs: 10_000,
+      shutdownFlushTimeoutMs: 200,
+    });
+    try {
+      await sink.write(makeEvent());
+      const flushing = sink.flush();
+      await sink.write(makeEvent());
+      await flushing;
+      // The flush's own pass ends; the one the second write() queued is stuck.
+      fail(new Error("refused"));
+      await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalledTimes(3));
+      const started = Date.now();
+      await sink.flush();
+      expect(Date.now() - started).toBeLessThan(100);
+    } finally {
+      await sink.aclose();
+      spy.mockRestore();
+    }
+  });
+
+  it("waits in flush() again once the stalled drain has finished", async () => {
+    let release: (response: Response) => void = () => {};
+    const fetchImpl = vi
+      .fn()
+      .mockImplementationOnce(
+        () =>
+          new Promise<Response>((resolve) => {
+            release = resolve;
+          }),
+      )
+      .mockImplementation(() => Promise.resolve(new Response(null, { status: 202 })));
+    const spy = vi.spyOn(process, "emitWarning").mockImplementation(() => {});
+    const sink = new HttpSink("https://collector.example", {
+      apiKey: "k",
+      fetchImpl,
+      requestTimeoutMs: 10_000,
+      shutdownFlushTimeoutMs: 50,
+    });
+    try {
+      await sink.write(makeEvent());
+      await sink.flush();
+      release(new Response(null, { status: 202 }));
+      await vi.waitFor(() => expect(sink["stalledDrain"]).toBeNull());
+      await sink.write(makeEvent());
+      await sink.flush();
+      // The buffer, not the fetch count: the POST starts at write(), so only
+      // a flush() that waited sees it answered.
+      expect(sink["buffer"]).toHaveLength(0);
+    } finally {
+      await sink.aclose();
       spy.mockRestore();
     }
   });
