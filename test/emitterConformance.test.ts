@@ -9,13 +9,13 @@
  * one level off. All of that is emitter behavior, and all of it was
  * untested until this file.
  *
- * This test drives a REAL tool call through `withBaton` into a capturing
+ * This test drives REAL tool calls through `withBaton` into a capturing
  * sink, then diffs each emitted event against the corresponding
  * `baton-spec/vectors/*.json`.
  *
  * **Why no Python subprocess** (the design note's original Phase 3 shape):
- * `baton-spec/scripts/generate.py` builds the vectors by driving this exact
- * scenario through the Python SDK's mcp adapter and reading back FileSink's
+ * `baton-spec/scripts/generate.py` builds the vectors by driving these exact
+ * scenarios through the Python SDK's mcp adapter and reading back FileSink's
  * JSONL — they are real Python-emitted envelopes, not hand-authored
  * examples. The vectors therefore ARE the cross-SDK reference, and shelling
  * to Python from a standalone TS repo's CI would add a Python toolchain, a
@@ -24,16 +24,9 @@
  * land here through the submodule bump — which is what should fail this
  * test.
  *
- * The scenario below MIRRORS `generate.py`'s: same vendor id, consent
+ * The two scenarios below MIRROR `generate.py`'s: same vendor id, consent
  * token, tool names, arguments, and call order. Keep them in sync — if that
- * script's scenario changes, change this one.
- *
- * **Known coverage gap:** `generate.py` never calls a tool with
- * `user_goal`/`expected_result`, so the `tool_call_start` vector has
- * `call_intent: null` and `intent_source: null`. Deleting the emitter's
- * `intent_source` assignment does not fail this file; withBaton.test.ts's
- * intent-param suite catches it. Closing the gap needs an intent-carrying
- * call in `generate.py`.
+ * script's scenarios change, change these.
  */
 
 import { readFileSync, readdirSync } from "node:fs";
@@ -86,7 +79,14 @@ const isThrownError = (e: Event) =>
 const isReturnedError = (e: Event) =>
   e.event_type === "tool_call_error" && e.payload.error_type === TOOL_ERROR_TYPE;
 
-const CASES: ReadonlyArray<{ name: string; pick: (e: Event) => boolean }> = [
+interface Case {
+  name: string;
+  pick: (e: Event) => boolean;
+  /** The scenario whose events it is picked from; `spec` when unset. */
+  scenario?: "spec" | "identified";
+}
+
+const CASES: ReadonlyArray<Case> = [
   {
     name: "annotation.report",
     pick: (e) => e.event_type === "annotation" && e.payload.what_happened !== null,
@@ -96,12 +96,15 @@ const CASES: ReadonlyArray<{ name: string; pick: (e: Event) => boolean }> = [
   { name: "tool_call_end", pick: (e) => e.event_type === "tool_call_end" },
   { name: "tool_call_error", pick: isThrownError },
   { name: "tool_call_error.returned", pick: isReturnedError },
+  {
+    name: "tool_call_start.identified",
+    pick: (e) => e.event_type === "tool_call_start",
+    scenario: "identified",
+  },
 ];
 
 // ⚠ `CASES` is hand-maintained and `baton-spec` owns the vector files, so a
-// bump that adds one would otherwise land here silently unchecked — which is
-// exactly what happened one bump ago, when `tool_call_error.returned.json`
-// arrived and this list had to be edited by hand to see it. `conformance.test.ts`
+// bump that adds one would otherwise land here unchecked. `conformance.test.ts`
 // discovers the directory; this ties that directory back to this list.
 /** Vectors this package has no way to emit. `annotation.json` is a note,
  * which only older producers file. This package's tool takes reports only. */
@@ -180,6 +183,7 @@ function withoutNulls(payload: Record<string, unknown>): Record<string, unknown>
 const PAYLOAD_ALLOWED_TO_DIFFER: Record<string, ReadonlySet<string>> = {
   "annotation.report": new Set<string>(),
   tool_call_start: new Set<string>(),
+  "tool_call_start.identified": new Set<string>(),
   tool_call_end: new Set([
     // The MCP handler contract differs by language: FastMCP returns the
     // serialized content list, the TS McpServer returns the `{content: [...]}`
@@ -236,26 +240,35 @@ class CapturingSink implements Sink {
   async aclose(): Promise<void> {}
 }
 
+/** What `generate.py` installs with in both scenarios. */
+const SPEC_INSTALL = {
+  vendorId: "spec-vectors",
+  consentToken: "ct_spec_vectors",
+  // Pinned to what `generate.py` ran with, so a change of this package's
+  // default does not move the comparison.
+  intentParamMode: "required",
+} as const;
+
+/** `generate.py`'s server and its `lookup` tool, which both scenarios share. */
+function specServer(): McpServer {
+  const server = new McpServer({ name: "spec-vector-generator", version: "1.0.0" });
+  server.registerTool("lookup", { inputSchema: { name: z.string() } }, (args: { name: string }) => ({
+    content: [{ type: "text" as const, text: JSON.stringify({ found: true, name: args.name }, null, 2) }],
+  }));
+  return server;
+}
+
+async function connectSpecClient(server: McpServer): Promise<Client> {
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: "spec-scenario", version: "1.0.0" });
+  await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+  return client;
+}
+
 /** Mirrors `baton-spec/scripts/generate.py::_capture_events`. */
 async function runSpecScenario(): Promise<Event[]> {
   const sink = new CapturingSink();
-  const server = new McpServer({
-    name: "spec-vector-generator",
-    version: "1.0.0",
-  });
-
-  server.registerTool(
-    "lookup",
-    { inputSchema: { name: z.string() } },
-    (args: { name: string }) => ({
-      content: [
-        {
-          type: "text" as const,
-          text: JSON.stringify({ found: true, name: args.name }, null, 2),
-        },
-      ],
-    }),
-  );
+  const server = specServer();
   server.registerTool("boom", {}, () => {
     throw new Error("simulated failure");
   });
@@ -270,30 +283,9 @@ async function runSpecScenario(): Promise<Event[]> {
     isError: true,
   }));
 
-  withBaton(server, {
-    vendorId: "spec-vectors",
-    vendorDisplayName: "Spec Vector Generator",
-    consentToken: "ct_spec_vectors",
-    // Pinned to what `generate.py` ran with, which is now `"required"` on
-    // both sides. It was `"optional"` here until 2026-09-16: Python moved its
-    // default in 0.8.7 and this package followed, but the VECTORS had not been
-    // regenerated since, so they still carried the pre-0.8.7 value and this
-    // pin existed to match them. Regenerating for `transport_observed` caught
-    // them up and this line with them — which is the documented workflow, the
-    // vectors moving and this test failing until the scenario follows.
-    intentParamMode: "required",
-    reportMode: "on",
-    sink,
-  });
+  withBaton(server, { ...SPEC_INSTALL, vendorDisplayName: "Spec Vector Generator", reportMode: "on", sink });
 
-  const [clientTransport, serverTransport] =
-    InMemoryTransport.createLinkedPair();
-  const client = new Client({ name: "spec-scenario", version: "1.0.0" });
-  await Promise.all([
-    server.connect(serverTransport),
-    client.connect(clientTransport),
-  ]);
-
+  const client = await connectSpecClient(server);
   await client.callTool({ name: "lookup", arguments: { name: "alice" } });
   await client.callTool({ name: "boom", arguments: {} });
   await client.callTool({ name: "soft_fail", arguments: {} });
@@ -309,11 +301,45 @@ async function runSpecScenario(): Promise<Event[]> {
   return sink.events;
 }
 
+/** Mirrors `baton-spec/scripts/generate.py::_capture_identified_events`: a
+ * second install, so its principal and intent reach no other vector. */
+async function runIdentifiedScenario(): Promise<Event[]> {
+  const sink = new CapturingSink();
+  const server = specServer();
+  withBaton(server, {
+    ...SPEC_INSTALL,
+    resolvePrincipal: () => ({
+      principalId: "user-123",
+      displayName: "Jane",
+      organization: { organizationId: "org-456", displayName: "Acme" },
+    }),
+    sink,
+  });
+
+  const client = await connectSpecClient(server);
+  await client.callTool({
+    name: "lookup",
+    arguments: { name: "alice", user_goal: "1: find alice; success is a match" },
+  });
+  return sink.events;
+}
+
 describe("cross-SDK emitter conformance (Phase 3)", () => {
   let events: Event[];
+  let identified: Event[];
+  let allEvents: Event[];
+  const emitted = new Map<string, Event>();
 
   beforeAll(async () => {
     events = await runSpecScenario();
+    identified = await runIdentifiedScenario();
+    allEvents = [...events, ...identified];
+    const captured = { spec: events, identified };
+    for (const { name, pick, scenario = "spec" } of CASES) {
+      const found = captured[scenario].find(pick);
+      if (found === undefined) throw new Error(`the ${scenario} scenario emitted no event for the ${name} vector`);
+      emitted.set(name, found);
+    }
   });
 
   it("covers every vector `baton-spec` ships", () => {
@@ -336,6 +362,7 @@ describe("cross-SDK emitter conformance (Phase 3)", () => {
       "tool_call_error",
       "annotation",
     ]);
+    expect(identified.map((e) => e.event_type)).toEqual(["surface_snapshot", "tool_call_start", "tool_call_end"]);
   });
 
   it("assigns the same sequence numbers as the Python reference run", () => {
@@ -343,31 +370,31 @@ describe("cross-SDK emitter conformance (Phase 3)", () => {
     // off-by-one start would let the Console mis-order a TS-sourced session
     // against a Python-sourced one.
     expect(events.map((e) => e.sequence_number)).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
-    // An added call that drifted the two scenarios apart would show up here
+    // An added call that drifted a scenario from `generate.py`'s would show up here
     // rather than silently.
-    for (const { name, pick } of CASES) {
-      expect(events.find(pick)!.sequence_number, name).toBe(vector(name).sequence_number);
+    for (const { name } of CASES) {
+      expect(emitted.get(name)!.sequence_number, name).toBe(vector(name).sequence_number);
     }
   });
 
-  it.each(CASES)("$name: envelope matches the Python vector field-for-field", ({ name, pick }) => {
-    const emitted = JSON.parse(JSON.stringify(events.find(pick)!)) as Record<string, unknown>;
+  it.each(CASES)("$name: envelope matches the Python vector field-for-field", ({ name }) => {
+    const event = JSON.parse(JSON.stringify(emitted.get(name)!)) as Record<string, unknown>;
     const reference = vector(name);
 
     // Key set first — a missing or extra envelope field is the failure this
     // test most needs to catch, and comparing values alone would miss an
     // extra one entirely.
-    expect(Object.keys(emitted).sort()).toEqual(Object.keys(reference).sort());
+    expect(Object.keys(event).sort()).toEqual(Object.keys(reference).sort());
 
     for (const key of Object.keys(reference)) {
       if (key === "payload" || ENVELOPE_ALLOWED_TO_DIFFER.has(key)) continue;
-      expect(emitted[key], `envelope field ${key}`).toEqual(reference[key]);
+      expect(event[key], `envelope field ${key}`).toEqual(reference[key]);
     }
   });
 
-  it.each(CASES)("$name: payload matches the Python vector field-for-field", ({ name, pick }) => {
-    const emitted = JSON.parse(JSON.stringify(events.find(pick)!)) as Record<string, unknown>;
-    const emittedPayload = withoutNulls(emitted.payload as Record<string, unknown>);
+  it.each(CASES)("$name: payload matches the Python vector field-for-field", ({ name }) => {
+    const event = JSON.parse(JSON.stringify(emitted.get(name)!)) as Record<string, unknown>;
+    const emittedPayload = withoutNulls(event.payload as Record<string, unknown>);
     const referencePayload = withoutNulls(
       vector(name).payload as Record<string, unknown>,
     );
@@ -427,9 +454,8 @@ describe("cross-SDK emitter conformance (Phase 3)", () => {
     }
   });
 
-  // X-2: the vectors carry no intent-bearing call, so the two producers'
-  // handling of `required` is compared here by behaviour: advertised, and
-  // never the reason a vendor's own call is refused.
+  // X-2: the vectors pin a call that carries user_goal; these pin the call
+  // that omits it, and what `required` advertises.
   it("X-2: `required` never refuses a vendor call that omits user_goal", async () => {
     const sink = new CapturingSink();
     const server = new McpServer({ name: "parity", version: "1.0.0" });
@@ -511,7 +537,7 @@ describe("cross-SDK emitter conformance (Phase 3)", () => {
   });
 
   it("names no client itself, and sends what this harness's client declared", () => {
-    for (const event of events) {
+    for (const event of allEvents) {
       expect(event.agent_runtime).toBe("unknown");
       if (event.event_type === "surface_snapshot") continue;
       expect(event.client_observed?.info?.name).toBe("spec-scenario");
@@ -567,6 +593,10 @@ describe("cross-SDK emitter conformance (Phase 3)", () => {
     // above is passing on one shared id.
     expect(new Set(starts.map((e) => e.call_id)).size).toBe(3);
 
+    const identifiedStart = identified.find((e) => e.event_type === "tool_call_start")!;
+    expect(identifiedStart.call_id).toEqual(expect.any(String));
+    expect(identified.find((e) => e.event_type === "tool_call_end")!.call_id).toBe(identifiedStart.call_id);
+
     // Null on the two types SPEC defines no call_id for. The field is still
     // PRESENT — the key-set assertion above covers that; this covers the value.
     for (const eventType of ["annotation", "surface_snapshot"] as const) {
@@ -583,7 +613,7 @@ describe("cross-SDK emitter conformance (Phase 3)", () => {
     // request behind it — so every per-call event must say so POSITIVELY.
     // `null` here would be the SDK failing to look, and `"http"` would be a
     // false claim that one process might be serving many callers.
-    for (const event of events) {
+    for (const event of allEvents) {
       if (event.event_type === "surface_snapshot") continue;
       expect(event.transport_observed, event.event_type).toBe("no-http-request");
     }
@@ -600,7 +630,7 @@ describe("cross-SDK emitter conformance (Phase 3)", () => {
     // The one envelope field that MUST differ from Python — the Console
     // uses it to attribute a session to the TS SDK. A test that only
     // allowed it to differ wouldn't catch it silently becoming Python's.
-    for (const event of events) {
+    for (const event of allEvents) {
       expect(event.sdk_version).toMatch(/^ts-/);
     }
     expect(vector("tool_call_start").sdk_version).not.toMatch(/^ts-/);
