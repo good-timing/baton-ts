@@ -83,7 +83,6 @@
  * instead of the vendor's.
  */
 
-import { boundedSinkCall } from "../../deadline.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { uuid7 } from "../../uuid7.js";
 import {
@@ -108,7 +107,7 @@ import {
   ToolListErrorEventSchema,
   ToolListStartEventSchema,
 } from "../../events.js";
-import { StdoutSink, type Sink } from "../../sinks.js";
+import { boundedSinkCall, StdoutSink, type Sink } from "../../sinks.js";
 import { registerAnnotationTool, TOOL_NAME_PARAM_NAME } from "./annotation.js";
 import { Scrubber } from "../../scrub.js";
 import { scrubOrNull } from "./safeScrub.js";
@@ -1926,8 +1925,8 @@ export function createBaton(supplied: BatonConfig = {}): Baton {
     const unused = supplied.sink ?? new DisabledSink();
     return {
       wrap: () => {},
-      flush: () => boundedSinkCall(() => unused.flush(), "flush()"),
-      aclose: () => boundedSinkCall(() => unused.aclose(), "aclose()"),
+      flush: () => boundedSinkCall(unused, "flush"),
+      aclose: () => boundedSinkCall(unused, "aclose"),
     };
   }
 
@@ -1949,8 +1948,8 @@ export function createBaton(supplied: BatonConfig = {}): Baton {
     wrap: (server) => {
       install(server, supplied, config, emittedSurfaceHashes, warned);
     },
-    flush: () => boundedSinkCall(() => sink.flush(), "flush()"),
-    aclose: () => boundedSinkCall(() => sink.aclose(), "aclose()"),
+    flush: () => boundedSinkCall(sink, "flush"),
+    aclose: () => boundedSinkCall(sink, "aclose"),
   };
 }
 

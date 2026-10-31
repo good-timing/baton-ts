@@ -273,6 +273,49 @@ describe("HttpSink", () => {
     }
   });
 
+  it("runs one close for overlapping aclose() calls, and the second waits for it", async () => {
+    const fetchImpl = vi.fn().mockRejectedValue(new Error("refused"));
+    const warnings: string[] = [];
+    const spy = vi.spyOn(process, "emitWarning").mockImplementation((w: string | Error) => {
+      warnings.push(String(w));
+    });
+    const sink = new HttpSink("https://collector.example", { apiKey: "k", fetchImpl, maxRetries: 0 });
+    try {
+      await sink.write(makeEvent());
+      const [first, second] = [sink.aclose(), sink.aclose()];
+      expect(second).toBe(first);
+      await second;
+      expect(warnings.filter((w) => w.includes("unsent"))).toHaveLength(1);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("starts no retry wait after aclose() aborts the request in progress", async () => {
+    const fetchImpl = vi.fn(
+      (_url: unknown, init?: { signal?: AbortSignal }) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => reject(new Error("aborted")));
+        }),
+    );
+    const spy = vi.spyOn(process, "emitWarning").mockImplementation(() => {});
+    const sink = new HttpSink("https://collector.example", {
+      apiKey: "k",
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      backoffBaseMs: 2000,
+      shutdownFlushTimeoutMs: 50,
+    });
+    try {
+      await sink.write(makeEvent());
+      await sink.aclose();
+      const started = Date.now();
+      await sink["drainChain"];
+      expect(Date.now() - started).toBeLessThan(500);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it("warns about events left when aclose() ends early on a failing collector", async () => {
     const fetchImpl = vi.fn().mockRejectedValue(new Error("refused"));
     const warnings: string[] = [];

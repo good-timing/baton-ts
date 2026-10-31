@@ -16,7 +16,7 @@
  * dropped. Only a bad config throws, and only from the constructor.
  */
 
-import { boundedSinkCall } from "../deadline.js";
+import { raceDeadline } from "../deadline.js";
 import { nextClockSequence } from "../sequence.js";
 import type { Event } from "../events.js";
 import {
@@ -29,7 +29,8 @@ import {
 import { parseDsn, selectDsn } from "../dsn.js";
 import { captureDisabled, DisabledSink, logDisabled } from "../optout.js";
 import { Scrubber } from "../scrub.js";
-import { HttpSink, type Sink } from "../sinks.js";
+import { boundedSinkCall, HttpSink, type Sink } from "../sinks.js";
+import { printable } from "../warn.js";
 import { uuid7 } from "../uuid7.js";
 import { resolveTenantId } from "../integrations/mcp/config.js";
 import { emit } from "../integrations/mcp/emit.js";
@@ -53,6 +54,9 @@ import {
 } from "./session.js";
 import { pythonStrip, type Organization, type Principal } from "../identity.js";
 import type { HeaderInput } from "../integrations/mcp/clientObserved.js";
+
+/** How long `flush()` and `aclose()` let in-flight events reach the sink before calling it. */
+const SETTLE_BUDGET_MS = 1000;
 
 export interface ClientOptions {
   /** The packed connection string from /account. Resolved explicit →
@@ -279,8 +283,15 @@ class Core {
     return write;
   }
 
+  /** Resolves once every pending event has reached the sink, including ones
+   * emitted while it waits. */
   async settle(): Promise<void> {
-    while (this.pending.size > 0) await Promise.all([...this.pending]);
+    while (this.pending.size > 0) await this.settleSoFar();
+  }
+
+  /** Resolves once the events emitted so far have reached the sink. */
+  async settleSoFar(): Promise<void> {
+    await Promise.allSettled([...this.pending]);
   }
 
   scrub(value: unknown, field: ScrubbedField): unknown {
@@ -380,7 +391,7 @@ export class Trace {
         // eslint-disable-next-line no-restricted-syntax -- the throw is caught here and parks SCRUB_FAILED, which drops the end event
         this.#result = this.#core.scrubber(result);
       } catch (err) {
-        process.stderr.write(`baton: scrubber threw on a result; that call's end event is dropped: ${String(err)}\n`);
+        process.stderr.write(`baton: scrubber threw on a result; that call's end event is dropped: ${printable(err)}\n`);
         this.#result = SCRUB_FAILED;
       }
     }
@@ -544,7 +555,7 @@ export class Client {
     try {
       block = newSession(options, this.#core.scrubber, this.#core.disabled);
     } catch (err) {
-      process.stderr.write(`baton: session values could not be read; using a minted session: ${String(err)}\n`);
+      process.stderr.write(`baton: session values could not be read; using a minted session: ${printable(err)}\n`);
       block = newSession({}, this.#core.scrubber, this.#core.disabled);
     }
     return runInSession(this, block, fn);
@@ -579,14 +590,19 @@ export class Client {
     return this.#core.annotate(sessionForCall(this), given.consentToken || this.#core.consentToken, given);
   }
 
-  /** Wait until every event so far has reached the sink and the sink has
-   * flushed. Never rejects; returns within the shutdown budget (SPEC §11.2
-   * rule 7). */
+  /** Wait for events so far to reach the sink, then flush it. Never rejects;
+   * returns within `SETTLE_BUDGET_MS` plus the sink's shutdown budget plus
+   * 250 ms (SPEC §11.2 rule 7). */
   async flush(): Promise<void> {
-    await boundedSinkCall(async () => {
-      await this.#core.settle();
-      await this.#core.sink.flush();
-    }, "flush()");
+    await boundedSinkCall(
+      this.#core.sink,
+      "flush",
+      async () => {
+        await raceDeadline(this.#core.settleSoFar(), SETTLE_BUDGET_MS);
+        await this.#core.sink.flush();
+      },
+      SETTLE_BUDGET_MS,
+    );
   }
 
   /** Flush, then close the sink. Later events are dropped. */
@@ -596,11 +612,17 @@ export class Client {
   }
 
   async #close(): Promise<void> {
-    await boundedSinkCall(async () => {
-      await this.#core.settle();
-      this.#core.closed = true;
-      await this.#core.sink.aclose();
-    }, "aclose()");
-    this.#core.closed = true;
+    await boundedSinkCall(
+      this.#core.sink,
+      "aclose",
+      async () => {
+        // Bounded on its own so the sink is always told to close: an HttpSink
+        // that is never closed keeps draining and holds the process open.
+        await raceDeadline(this.#core.settle(), SETTLE_BUDGET_MS);
+        this.#core.closed = true;
+        await this.#core.sink.aclose();
+      },
+      SETTLE_BUDGET_MS,
+    );
   }
 }

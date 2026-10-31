@@ -6,3 +6,12 @@ export function warn(message: string): void {
     process.emitWarning(message);
   }
 }
+
+/** `String(err)`, which throws for an object with no usable `toString`. */
+export function printable(err: unknown): string {
+  try {
+    return String(err);
+  } catch {
+    return "(an error that cannot be printed)";
+  }
+}

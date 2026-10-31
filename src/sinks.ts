@@ -18,8 +18,8 @@
  * need shows up rather than porting them speculatively.
  */
 
-import { raceDeadline, SHUTDOWN_FLUSH_TIMEOUT_MS, TIMED_OUT } from "./deadline.js";
-import { warn } from "./warn.js";
+import { MAX_TIMER_MS, raceDeadline, SHUTDOWN_FLUSH_TIMEOUT_MS, TIMED_OUT } from "./deadline.js";
+import { printable, warn } from "./warn.js";
 import type { Event } from "./events.js";
 
 export interface Sink {
@@ -45,7 +45,55 @@ export async function safeWrite(sink: Sink, event: Event): Promise<void> {
   try {
     await sink.write(event);
   } catch (err) {
-    process.stderr.write(`baton: sink.write failed; event dropped, tool call continues: ${String(err)}\n`);
+    process.stderr.write(`baton: sink.write failed; event dropped, tool call continues: ${printable(err)}\n`);
+  }
+}
+
+function isTimerMs(value: unknown): value is number {
+  return typeof value === "number" && value >= 0 && value <= MAX_TIMER_MS;
+}
+
+function shutdownFlushTimeoutOption(given: unknown): number {
+  if (isTimerMs(given)) return given;
+  if (given !== undefined) {
+    warn(`baton: shutdownFlushTimeoutMs must be from 0 to ${MAX_TIMER_MS} ms; using ${SHUTDOWN_FLUSH_TIMEOUT_MS}.`);
+  }
+  return SHUTDOWN_FLUSH_TIMEOUT_MS;
+}
+
+function shutdownBudgetMs(sink: Sink): number {
+  try {
+    const budget: unknown = sink instanceof HttpSink ? sink["shutdownFlushTimeoutMs"] : undefined;
+    if (isTimerMs(budget)) return budget;
+  } catch {
+    // A Proxy or subclass whose read throws gets the default.
+  }
+  return SHUTDOWN_FLUSH_TIMEOUT_MS;
+}
+
+/** Run a sink's `flush()` or `aclose()` for the vendor (or `work`, which ends
+ * in one): never rejects, and returns within the sink's shutdown budget plus
+ * `beforeMs` of work run ahead of the sink call. The budget gets a little
+ * extra, so `HttpSink`, which enforces its own, is the one whose warning,
+ * which counts what was left, is shown. */
+export async function boundedSinkCall(
+  sink: Sink,
+  method: "flush" | "aclose",
+  work: () => unknown = () => sink[method](),
+  beforeMs = 0,
+): Promise<void> {
+  const what = `${method}()`;
+  const ms = beforeMs + shutdownBudgetMs(sink) + 250;
+  // `Promise.resolve().then(work)` also catches a sync throw and a method
+  // that returns no promise.
+  const settled = Promise.resolve()
+    .then(work)
+    .then(
+      () => undefined,
+      (err: unknown) => warn(`baton: ${what} failed: ${printable(err)}`),
+    );
+  if ((await raceDeadline(settled, ms)) === TIMED_OUT) {
+    warn(`baton: ${what} took over ${String(ms)} ms and was left unfinished.`);
   }
 }
 
@@ -127,7 +175,7 @@ export interface HttpSinkOptions {
   circuitBreakerThreshold?: number;
   circuitBreakerResetMs?: number;
   /** How long the flush at process exit, or an explicit `flush()` or
-   * `aclose()`, may take in total. Default 3000. */
+   * `aclose()`, may take in total, in ms, at most 2^31 - 1. Default 3000. */
   shutdownFlushTimeoutMs?: number;
   /** Injectable for tests; defaults to the global `fetch`. */
   fetchImpl?: typeof fetch;
@@ -162,6 +210,7 @@ export class HttpSink implements Sink {
    * process alive after the vendor closed it. */
   private readonly closing = new AbortController();
   private drainStalled = false;
+  private closeOnce: Promise<void> | undefined;
   private drainChain: Promise<void> = Promise.resolve();
   private beforeExitHandler: (() => void) | null = null;
 
@@ -170,7 +219,7 @@ export class HttpSink implements Sink {
     this.apiKey = options.apiKey;
     this.bufferSize = options.bufferSize ?? 1000;
     this.requestTimeoutMs = options.requestTimeoutMs ?? 1000;
-    this.shutdownFlushTimeoutMs = options.shutdownFlushTimeoutMs ?? SHUTDOWN_FLUSH_TIMEOUT_MS;
+    this.shutdownFlushTimeoutMs = shutdownFlushTimeoutOption(options.shutdownFlushTimeoutMs);
     this.maxRetries = options.maxRetries ?? 3;
     this.backoffBaseMs = options.backoffBaseMs ?? 100;
     this.backoffMaxMs = options.backoffMaxMs ?? 5000;
@@ -187,23 +236,21 @@ export class HttpSink implements Sink {
    * ⚠ **A sink built from a DSN holds a key the vendor never typed**, and it
    * hangs off `BatonHandle.sink` and off the resolved config, so
    * `console.log(handle.sink)` or a structured logger serialising either one
-   * wrote a publishable key into the vendor's logs. Found by the S2 test that
-   * asserts the DSN's own string does not survive resolution: it does not, and
-   * the key was one field further down. Same treatment as the parsed DSN —
+   * would write a publishable key into the vendor's logs. Same treatment as the parsed DSN —
    * `toJSON` for serialisers, the inspect symbol for `console.log`, and
    * `Symbol.for` rather than importing `node:util`, since this package runs on
    * runtimes that have no such module.
    */
-  private get closed(): boolean {
-    return this.closing.signal.aborted;
-  }
-
   toJSON(): Record<string, unknown> {
     return { url: this.url, apiKey: "<key>" };
   }
 
   [Symbol.for("nodejs.util.inspect.custom")](): Record<string, unknown> {
     return this.toJSON();
+  }
+
+  private get closed(): boolean {
+    return this.closing.signal.aborted;
   }
 
   async write(event: Event): Promise<void> {
@@ -218,8 +265,13 @@ export class HttpSink implements Sink {
     await this.withinShutdownBudget(this.scheduleDrain(), "flush()");
   }
 
-  async aclose(): Promise<void> {
-    if (this.closed) return;
+  /** A second call waits for the first (SPEC §11.2 rule 7). */
+  aclose(): Promise<void> {
+    this.closeOnce ??= this.close();
+    return this.closeOnce;
+  }
+
+  private async close(): Promise<void> {
     // A drain an earlier flush() gave up on still holds the queue; waiting
     // behind it would spend a second budget on the same stalled collector.
     if (!this.drainStalled) await this.withinShutdownBudget(this.scheduleDrain(), "aclose()");
@@ -378,6 +430,7 @@ export class HttpSink implements Sink {
 
 
   private sleepUnlessClosed(ms: number): Promise<void> {
+    if (this.closed) return Promise.resolve();
     return new Promise((resolve) => {
       const done = (): void => {
         clearTimeout(timer);

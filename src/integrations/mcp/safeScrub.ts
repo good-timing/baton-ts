@@ -3,6 +3,7 @@ import {
   OVERALL_TASK_PARAM_NAME,
   USER_GOAL_PARAM_NAME,
 } from "./llmText.js";
+import { printable } from "../../warn.js";
 
 /** The fields a vendor scrubber is applied to OUTSIDE an `emit()` build thunk.
  *
@@ -76,7 +77,7 @@ export function scrubOrNull<T>(
       warned.add(field);
       process.stderr.write(
         `baton: scrubber threw on ${field}; that field is dropped, tool call continues. ` +
-          `Further failures on this field will be silent: ${String(err)}\n`,
+          `Further failures on this field will be silent: ${printable(err)}\n`,
       );
     }
     return null;
