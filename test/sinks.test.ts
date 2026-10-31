@@ -417,8 +417,8 @@ describe("HttpSink", () => {
       await sink.write(makeEvent());
       const started = Date.now();
       await sink.flush();
-      // flush() spent the budget; a second flush() and aclose() do not wait
-      // behind the same drain.
+      // flush() spent the budget; a second flush() does not wait behind the
+      // same drain.
       const second = Date.now();
       await sink.flush();
       await sink.flush();

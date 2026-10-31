@@ -75,23 +75,31 @@ function shutdownBudgetMs(sink: Sink): number {
   return SHUTDOWN_FLUSH_TIMEOUT_MS;
 }
 
-/** Run a sink's `flush()` or `aclose()` for the vendor (or `work`, which ends
- * in one): never rejects, and returns within the sink's shutdown budget plus
- * `beforeMs` of work run ahead of the sink call. The budget gets a little
- * extra, so `HttpSink`, which enforces its own, is the one whose warning,
- * which counts what was left, is shown. */
+/** A sink's `flush()` or `aclose()`, telling Baton's own how much time is
+ * left. Any other, a subclass's override included, is called as it is. */
+export function callWithin(sink: Sink, method: "flush" | "aclose", ms: number): Promise<void> {
+  if (sink[method] === HttpSink.prototype[method]) return (sink as HttpSink)[`${method}Within`](ms);
+  if (sink[method] === MultiSink.prototype[method]) return (sink as MultiSink)[`${method}Within`](ms);
+  return sink[method]();
+}
+
+/** Run a sink's `flush()` or `aclose()` for the vendor (or `work`, which is
+ * handed the budget and ends in one): never rejects, and returns within the
+ * sink's shutdown budget. The budget gets a little extra, so `HttpSink`, which
+ * enforces its own, is the one whose warning, which counts what was left, is
+ * shown. */
 export async function boundedSinkCall(
   sink: Sink,
   method: "flush" | "aclose",
-  work: () => unknown = () => sink[method](),
-  beforeMs = 0,
+  work: (budgetMs: number) => unknown = () => sink[method](),
 ): Promise<void> {
   const what = `${method}()`;
-  const ms = beforeMs + shutdownBudgetMs(sink) + 250;
+  const budget = shutdownBudgetMs(sink);
+  const ms = budget + 250;
   // `Promise.resolve().then(work)` also catches a sync throw and a method
   // that returns no promise.
   const settled = Promise.resolve()
-    .then(work)
+    .then(() => work(budget))
     .then(
       () => undefined,
       (err: unknown) => warn(`baton: ${what} failed: ${printable(err)}`),
@@ -189,11 +197,19 @@ export class MultiSink implements Sink {
   }
 
   flush(): Promise<void> {
-    return this.fanOut((sink) => sink.flush());
+    return this.flushWithin(Infinity);
   }
 
   aclose(): Promise<void> {
-    return this.fanOut((sink) => sink.aclose());
+    return this.acloseWithin(Infinity);
+  }
+
+  private flushWithin(ms: number): Promise<void> {
+    return this.fanOut((sink) => callWithin(sink, "flush", ms));
+  }
+
+  private acloseWithin(ms: number): Promise<void> {
+    return this.fanOut((sink) => callWithin(sink, "aclose", ms));
   }
 
   private async fanOut(op: (sink: Sink) => Promise<void>): Promise<void> {
@@ -335,19 +351,27 @@ export class HttpSink implements Sink {
     this.ensureBeforeExitRegistered();
   }
 
-  async flush(): Promise<void> {
-    if (this.closed) return;
-    await this.drainWithinBudget("flush()");
+  flush(): Promise<void> {
+    return this.flushWithin(Infinity);
   }
 
   /** A second call waits for the first (SPEC §11.2 rule 7). */
   aclose(): Promise<void> {
-    this.closeOnce ??= this.close();
+    return this.acloseWithin(Infinity);
+  }
+
+  private async flushWithin(ms: number): Promise<void> {
+    if (this.closed) return;
+    await this.drainWithinBudget("flush()", Math.min(ms, this.shutdownFlushTimeoutMs));
+  }
+
+  private acloseWithin(ms: number): Promise<void> {
+    this.closeOnce ??= this.close(Math.min(ms, this.shutdownFlushTimeoutMs));
     return this.closeOnce;
   }
 
-  private async close(): Promise<void> {
-    await this.drainWithinBudget("aclose()");
+  private async close(ms: number): Promise<void> {
+    await this.drainWithinBudget("aclose()", ms);
     this.closing.abort();
     if (this.buffer.length > 0) {
       warn(`baton: the sink closed with ${this.buffer.length} event(s) unsent.`);
@@ -358,27 +382,35 @@ export class HttpSink implements Sink {
     }
   }
 
-  /** SPEC §11.2 rule 7: an explicit flush or close returns within
-   * `shutdownFlushTimeoutMs` and never rejects. While an earlier wait's drain
-   * is still stuck it returns at once, without queuing a pass. The drain is not
-   * cancelled here, so after `flush()` it goes on sending; `aclose()` stops it. */
-  private async drainWithinBudget(what: "flush()" | "aclose()"): Promise<void> {
+  /** SPEC §11.2 rule 7: an explicit flush or close returns within `ms` and
+   * never rejects. While an earlier wait's drain is still stuck, a flush
+   * returns at once, without queuing a pass, and a close gives it `ms`. The
+   * drain is not cancelled here, so after `flush()` it goes on sending;
+   * `aclose()` stops it. */
+  private async drainWithinBudget(what: "flush()" | "aclose()", ms: number): Promise<void> {
     if (this.stalledDrain) {
-      if (what === "flush()" && this.skipWarnedFor !== this.stalledDrain) {
+      if (what === "aclose()") {
+        await raceDeadline(this.stalledDrain, ms);
+        return;
+      }
+      if (this.skipWarnedFor !== this.stalledDrain) {
         this.skipWarnedFor = this.stalledDrain;
         warn(`baton: flush() skipped: an earlier drain is still stuck; ${this.buffer.length} event(s) wait to be sent.`);
       }
       return;
     }
     const settled = this.scheduleDrain().catch(() => undefined);
-    if ((await raceDeadline(settled, this.shutdownFlushTimeoutMs)) !== TIMED_OUT) return;
+    if ((await raceDeadline(settled, ms)) !== TIMED_OUT) return;
+    // A wait shorter than the budget, the time a caller had left, does not
+    // show that the drain is stuck.
+    if (ms < this.shutdownFlushTimeoutMs) return;
     const stalled = this.drainChain.catch(() => undefined);
     this.stalledDrain = stalled;
     void stalled.then(() => {
       if (this.stalledDrain === stalled) this.stalledDrain = null;
     });
     if (what === "flush()") {
-      warn(`baton: flush() took over ${this.shutdownFlushTimeoutMs} ms; it goes on in the background.`);
+      warn(`baton: flush() took over ${ms} ms; it goes on in the background.`);
     }
   }
 

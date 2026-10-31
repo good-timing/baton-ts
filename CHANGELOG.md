@@ -19,7 +19,12 @@
   never answered, or a sink of the vendor's own that hung, held the vendor's
   shutdown. The limit is `HttpSink`'s `shutdownFlushTimeoutMs` (default 3
   seconds), or 3 seconds for any other sink, plus a quarter second. The
-  library `Client` first gives in-flight events up to 1 second more. A
+  library `Client` waits for in-flight events within that same limit, then
+  hands `HttpSink` the time left, so its unsent count is still reported.
+  Time a sink of the vendor's takes on a write, alone or beside `HttpSink` in
+  a `MultiSink`, is taken from that budget; a write that never settles is
+  waited on once. `aclose()` after a `flush()` that gave up gives the stuck
+  drain the time left before stopping it. A
   `shutdownFlushTimeoutMs` that is not a number from 0 to 2^31 - 1 ms is
   replaced by 3000, with a warning. `flush()` leaves the drain running when
   time runs out; `aclose()` then stops it, aborting the request in progress

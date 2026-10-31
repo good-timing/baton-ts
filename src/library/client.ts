@@ -16,7 +16,7 @@
  * dropped. Only a bad config throws, and only from the constructor.
  */
 
-import { raceDeadline } from "../deadline.js";
+import { raceDeadline, TIMED_OUT } from "../deadline.js";
 import { nextClockSequence } from "../sequence.js";
 import type { Event } from "../events.js";
 import {
@@ -30,7 +30,7 @@ import {
 import { parseDsn, selectDsn } from "../dsn.js";
 import { captureDisabled, DisabledSink, logDisabled } from "../optout.js";
 import { Scrubber } from "../scrub.js";
-import { boundedSinkCall, HttpSink, type Sink } from "../sinks.js";
+import { boundedSinkCall, callWithin, HttpSink, type Sink } from "../sinks.js";
 import { printable } from "../warn.js";
 import { uuid7 } from "../uuid7.js";
 import { resolveTenantId } from "../integrations/mcp/config.js";
@@ -58,9 +58,6 @@ import { type ListToolsOptions, serveTools, snapshotPayload, type Surface } from
 import { pythonStrip, type Organization, type Principal } from "../identity.js";
 import type { HeaderInput } from "../integrations/mcp/clientObserved.js";
 import { isPlainObject } from "../_object.js";
-
-/** How long `flush()` and `aclose()` let in-flight events reach the sink before calling it. */
-const SETTLE_BUDGET_MS = 1000;
 
 export interface ClientOptions {
   /** The packed connection string from /account. Resolved explicit →
@@ -326,15 +323,18 @@ class Core {
     );
   }
 
-  /** Resolves once every pending event has reached the sink, including ones
-   * emitted while it waits. */
-  async settle(): Promise<void> {
-    while (this.pending.size > 0) await this.settleSoFar();
-  }
-
-  /** Resolves once the events emitted so far have reached the sink. */
-  async settleSoFar(): Promise<void> {
-    await Promise.allSettled([...this.pending]);
+  /** Waits up to `ms` for pending events to reach the sink; with `untilEmpty`,
+   * also for ones emitted while it waits. A write still pending when time runs
+   * out is not waited on again, so one stuck write costs one wait. */
+  async settleWithin(ms: number, untilEmpty: boolean): Promise<void> {
+    const deadline = performance.now() + ms;
+    do {
+      const waiting = [...this.pending];
+      if ((await raceDeadline(Promise.allSettled(waiting), deadline - performance.now())) === TIMED_OUT) {
+        for (const write of waiting) this.pending.delete(write);
+        return;
+      }
+    } while (untilEmpty && this.pending.size > 0);
   }
 
   scrub(value: unknown, field: ScrubbedField): unknown {
@@ -651,38 +651,25 @@ export class Client {
   }
 
   /** Wait for events so far to reach the sink, then flush it. Never rejects;
-   * returns within `SETTLE_BUDGET_MS` plus the sink's shutdown budget plus
-   * 250 ms (SPEC §11.2 rule 7). */
+   * returns within the sink's shutdown budget plus 250 ms (SPEC §11.2 rule 7). */
   async flush(): Promise<void> {
-    await boundedSinkCall(
-      this.#core.sink,
-      "flush",
-      async () => {
-        await raceDeadline(this.#core.settleSoFar(), SETTLE_BUDGET_MS);
-        await this.#core.sink.flush();
-      },
-      SETTLE_BUDGET_MS,
-    );
+    await this.#settleThen("flush");
   }
 
   /** Flush, then close the sink. Later events are dropped. */
   aclose(): Promise<void> {
-    this.#closing ??= this.#close();
+    this.#closing ??= this.#settleThen("aclose");
     return this.#closing;
   }
 
-  async #close(): Promise<void> {
-    await boundedSinkCall(
-      this.#core.sink,
-      "aclose",
-      async () => {
-        // Bounded on its own so the sink is always told to close: an HttpSink
-        // that is never closed keeps draining and holds the process open.
-        await raceDeadline(this.#core.settle(), SETTLE_BUDGET_MS);
-        this.#core.closed = true;
-        await this.#core.sink.aclose();
-      },
-      SETTLE_BUDGET_MS,
-    );
+  /** One budget: events in flight get until its end to reach the sink, then
+   * the sink gets the time left. */
+  async #settleThen(method: "flush" | "aclose"): Promise<void> {
+    await boundedSinkCall(this.#core.sink, method, async (budgetMs) => {
+      const deadline = performance.now() + budgetMs;
+      await this.#core.settleWithin(budgetMs, method === "aclose");
+      if (method === "aclose") this.#core.closed = true;
+      await callWithin(this.#core.sink, method, Math.max(0, deadline - performance.now()));
+    });
   }
 }
