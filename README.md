@@ -155,7 +155,7 @@ If you know only the company, for example from an org-wide API key, return `{ or
 
 ## Not capturing responses at all
 
-`resultCaptureMode: "off"` and nothing **derived from what your tool returns** leaves your process — not the result, and not the reason text on a failure your handler returns rather than throws. Requests are unaffected: `params` are captured either way.
+`resultCaptureMode: "off"` and nothing **derived from what your tool returns** leaves your process — not the result, and not the reason text on a failure, whether your handler returns it or throws it. Requests are unaffected: `params` are captured either way.
 
 ```ts
 withBaton(server, { dsn, resultCaptureMode: "off" });
@@ -163,7 +163,7 @@ withBaton(server, { dsn, resultCaptureMode: "off" });
 
 Each affected event says so, in its own field (`result_capture: "off"`), rather than leaving a reader to guess from what is missing. That is the difference between the two levers: a scrubber TRANSFORMS a value that still crosses the network, this DECLARES that nothing crosses.
 
-**What is still captured, and it is deliberate:** the tool name, the duration, and whether the call failed — so failure detection, pairing and timing all keep working. Also the message of an error your handler **throws**, which is your own code speaking about a call that never returned, and the most useful diagnostic the product has. ⚠ Thrown messages are a classic leak channel — a failed query echoed back, a record id in the message. If that is also a problem for you, say so and we will add a stricter setting.
+**What is still captured, and it is deliberate:** the tool name, the duration, and whether the call failed — so failure detection, pairing and timing all keep working. The message of an error your handler **throws** is withheld too: thrown messages often echo the data a call was handling.
 
 **What it costs you:** anything that needs to read a response body. A call that returns `200` with a useless body can no longer be detected, and those calls sit outside the denominator of body-level analysis rather than counting as passes or failures.
 
@@ -222,9 +222,8 @@ can carry paths, query strings and account identifiers.
 `resultCaptureMode: "off"` does not withhold it.** These twelve events never
 carry the `result_capture` marker — the rule is that nothing on them is derived
 from a result — so a failing read's `error_body` is kept in both modes and the
-wire says nothing either way. That is the same leak channel as a thrown tool
-error above, with one difference worth your attention: for a tool the marker
-tells a consumer what happened, and here there is no marker. If your read fails
+wire says nothing either way. A tool's thrown message is withheld under
+`"off"`; a resource or prompt read's is not, and no marker says so. If your read fails
 with `could not parse ${body.slice(0, 200)}`, that content leaves your process
 under a mode you set to stop exactly that. Throw a message that names the
 resource, not its contents.

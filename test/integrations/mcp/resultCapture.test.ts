@@ -142,23 +142,18 @@ describe.each(MAJORS)("resultCaptureMode — $label", (major) => {
     expect(event.payload.error_type).toBe("tool_error");
   });
 
-  it("off: the THROW shape is UNCHANGED, and carries NO marker", async () => {
-    // §11.4.3(1): a thrown error's message is the vendor's own code speaking
-    // about a call that returned nothing, so nothing here is result-derived
-    // and nothing is withheld — including the marker, which would otherwise
-    // claim a withholding that did not happen.
-    const off = await runThrow("off");
-    const full = await runThrow("full");
-    const a = terminal(off.sink, "tool_call_error");
-    const b = terminal(full.sink, "tool_call_error");
+  it("off: the THROW shape withholds the message and stays classified", async () => {
+    // §11.4.3(1): with no tool-error class to mark a message public, every
+    // raised message is withheld.
+    const off = terminal((await runThrow("off")).sink, "tool_call_error");
+    const full = terminal((await runThrow("full")).sink, "tool_call_error");
 
-    // EQUALITY across the two modes is the assertion, not a literal message:
-    // what §11.4.3 promises is that `"off"` changes this leg not at all.
-    expect(a.payload.error_body).toBe(b.payload.error_body);
-    expect(a.payload.error_type).toBe(b.payload.error_type);
-    // ...and the control for that: there has to be something to preserve.
-    expect(a.payload.error_body, "a blank body would satisfy equality vacuously").not.toBe("");
-    expect(a.payload.result_capture).toBeUndefined();
+    expect(full.payload.error_body, "control: full mode has a message to withhold").not.toBe("");
+    expect(full.payload.result_capture).toBeUndefined();
+    expect(off.payload.error_body).toBe("");
+    expect(off.payload.result_capture).toBe("off");
+    expect(off.payload.error_type).toBe(full.payload.error_type);
+    expect(typeof off.payload.duration_ms).toBe("number");
   });
 
   it("full: no marker reaches the wire at all", async () => {

@@ -205,8 +205,6 @@ interface WrapContext {
    * the config door, like `intentParamMode`, so nothing downstream re-checks
    * it. */
   resultCaptureMode: ResultCaptureMode;
-  /** Whether the probe on `validateToolInput` is still the server's. */
-  validationProbeLive: () => boolean;
   paramRegistry: Map<string, IntentParamDispositions>;
   /** Vendor-true JSON Schema for the surface snapshot, in whatever spelling
    * THIS server actually puts on the wire. */
@@ -667,13 +665,15 @@ function batonWrap(nameRef: { current: string }, original: AnyHandler, ctx: Wrap
           payload: {
             tool_name: toolName,
             error_type: errorTypeOf(err),
-            // ⚠ KEPT under `resultCaptureMode: "off"`, and that is the rule's
-            // shape rather than an exception to it: the rule is keyed on
-            // PROVENANCE, and a thrown error's message is the vendor's own
-            // code speaking about a call that returned nothing (SPEC
-            // §11.4.3(1)). A switch written as "drop `error_body`" would
-            // delete the highest-value diagnostic the product has.
-            error_body: errorBody(ctx, messageOf(err)),
+            // SPEC §11.4.3(1): the MCP SDK has no tool-error class to mark a
+            // raised message public, so under "off" every one is withheld.
+            ...resultDerivedFields(
+              ctx.resultCaptureMode,
+              () => messageOf(err),
+              null,
+              (text) => errorBody(ctx, text),
+              ctx.scrubber,
+            ),
             duration_ms: durationMs,
             // Explicit, though the field is `.optional()` and this is its
             // absent value. The schema is deliberately not an emitter (see
@@ -1509,7 +1509,7 @@ function installToolsCallSeam(
           innerFired: false,
           flushTerminal: null,
           retired: stripRetiredParams(request?.params, ctx),
-          validation: ctx.validationProbeLive() ? "unseen" : "unprobed",
+          validation: "unseen",
         };
         // Reassigned by both the try and the catch before `finally` reads it;
         // the initializer is for definite assignment, not a live default.
@@ -1543,17 +1543,16 @@ const VALIDATION_PROBE = Symbol("baton.validationProbe");
  * Record on the call's slot what the SDK's `validateToolInput` did, so the
  * `tools/call` seam can tell a rejected argument from a refusal above the
  * executor without reading the message. Both majors call it on the instance,
- * right before `executeToolHandler`. Returns whether the probe is still the
- * server's method: a later replacement that does not call through would leave
- * every slot `"unseen"`, and every rejected argument would read as refused.
+ * right before `executeToolHandler`. A later replacement that does not call
+ * through leaves every slot `"unseen"`, and a rejected argument reads as
+ * `refused` (SPEC §11.4.3: the producer cannot tell why).
  */
-function installValidationProbe(server: SupportedMcpServer): () => boolean {
+function installValidationProbe(server: SupportedMcpServer): void {
   const target = server as unknown as {
     validateToolInput?: ((...args: unknown[]) => Promise<unknown>) & { [VALIDATION_PROBE]?: true };
   };
   const original = target.validateToolInput;
-  if (typeof original !== "function") return () => false;
-  if (original[VALIDATION_PROBE]) return () => target.validateToolInput === original;
+  if (typeof original !== "function" || original[VALIDATION_PROBE]) return;
   const probe = async function (this: unknown, ...args: unknown[]): Promise<unknown> {
     const slot = callSlots.getStore();
     try {
@@ -1567,7 +1566,6 @@ function installValidationProbe(server: SupportedMcpServer): () => boolean {
   };
   Object.assign(probe, { [VALIDATION_PROBE]: true as const });
   target.validateToolInput = probe;
-  return () => target.validateToolInput === probe;
 }
 
 /**
@@ -2120,6 +2118,7 @@ function install(
     }
   };
 
+  installValidationProbe(server);
   const ctx: WrapContext = {
     sink,
     counter,
@@ -2132,7 +2131,6 @@ function install(
     annotationToolName,
     intentParamMode,
     resultCaptureMode: config.resultCaptureMode ?? "full",
-    validationProbeLive: installValidationProbe(server),
     paramRegistry: new Map(),
     resolvePrincipal: config.resolvePrincipal,
     vendorToolJsonSchema,

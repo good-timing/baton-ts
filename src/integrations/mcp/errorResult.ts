@@ -85,10 +85,10 @@ export const OUTPUT_SCHEMA_MISMATCH = "output_schema_mismatch" satisfies Failure
  * `executeToolHandler`. Its message is the vendor's, so `"off"` withholds it. */
 export const REFUSED = "refused" satisfies FailureKind;
 
-/** What the SDK's own `validateToolInput` did with this call: never reached,
- * accepted the arguments, or rejected them; `"unprobed"` when no probe on it
- * is live, so a rejected argument cannot be told from a refusal. */
-export type InputValidation = "unprobed" | "unseen" | "passed" | "rejected";
+/** What the SDK's own `validateToolInput` did with this call: never reached
+ * (or replaced by something that skips the probe), accepted the arguments, or
+ * rejected them. */
+export type InputValidation = "unseen" | "passed" | "rejected";
 
 /**
  * Which request-side kind a failure above the handler was, from the tool
@@ -172,7 +172,7 @@ const TASK_MODES: ReadonlySet<unknown> = new Set(["required", "optional"]);
 export interface ToolEntryFacts {
   enabled?: unknown;
   /** 1.x rejects a mis-declared task tool BEFORE argument validation, so this
-   * member's VALUE is what withdraws the `invalid_argument` claim. */
+   * member's VALUE is what withdraws the `failure_kind` claim. */
   execution?: { taskSupport?: unknown } | null;
 }
 
@@ -189,7 +189,7 @@ export function requestSideFailureKind(
   if (entry.enabled === false) return "tool_disabled";
   if (validation === "rejected") return "invalid_argument";
   if (TASK_MODES.has(entry.execution?.taskSupport)) return undefined;
-  return validation === "unprobed" ? "invalid_argument" : REFUSED;
+  return REFUSED;
 }
 
 /** The `error_body` cap, in CODE POINTS, shared by both failure legs (SPEC

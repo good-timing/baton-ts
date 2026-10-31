@@ -73,31 +73,30 @@ describe("the registered failure_kind vocabulary", () => {
     // arguments were the problem there. SPEC permits omitting the member;
     // naming `invalid_argument` would tell the operator the agent sent bad
     // arguments when the remedy is the vendor's own registration.
-    expect(requestSideFailureKind(undefined, "unprobed")).toBe("unknown_tool");
-    expect(requestSideFailureKind(null, "unprobed")).toBe("unknown_tool");
-    expect(requestSideFailureKind({ enabled: false }, "unprobed")).toBe("tool_disabled");
-    expect(requestSideFailureKind({ enabled: true }, "unprobed")).toBe("invalid_argument");
-    expect(requestSideFailureKind({ enabled: true, execution: {} }, "unprobed")).toBe("invalid_argument");
-    // ⚠ **`"forbidden"` must stay `invalid_argument`, and this is the
-    // assertion that matters most here.** 1.x's `registerTool` sets exactly
-    // this on EVERY ordinary tool it builds (`mcp.js:694,704`), so a
-    // predicate asking "is `taskSupport` set" withdraws the claim for the
-    // whole pinned peer — which is what the first version did, caught by the
-    // 1.x leg of the `invalid_argument` case below.
-    expect(requestSideFailureKind({ enabled: true, execution: { taskSupport: "forbidden" } }, "unprobed")).toBe(
-      "invalid_argument",
+    expect(requestSideFailureKind(undefined, "unseen")).toBe("unknown_tool");
+    expect(requestSideFailureKind(null, "unseen")).toBe("unknown_tool");
+    expect(requestSideFailureKind({ enabled: false }, "unseen")).toBe("tool_disabled");
+    // Unseen, the producer knows the handler never ran but not why: `refused`
+    // (SPEC §11.4.3), never a guessed `invalid_argument`.
+    expect(requestSideFailureKind({ enabled: true }, "unseen")).toBe("refused");
+    expect(requestSideFailureKind({ enabled: true, execution: {} }, "unseen")).toBe("refused");
+    // ⚠ 1.x's `registerTool` sets `"forbidden"` on EVERY ordinary tool
+    // (`mcp.js:694,704`), so it must not withdraw the claim the way the two
+    // task modes do.
+    expect(requestSideFailureKind({ enabled: true, execution: { taskSupport: "forbidden" } }, "unseen")).toBe(
+      "refused",
     );
     expect(
-      requestSideFailureKind({ enabled: true, execution: { taskSupport: "required" } }, "unprobed"),
+      requestSideFailureKind({ enabled: true, execution: { taskSupport: "required" } }, "unseen"),
     ).toBeUndefined();
     expect(
-      requestSideFailureKind({ enabled: true, execution: { taskSupport: "optional" } }, "unprobed"),
+      requestSideFailureKind({ enabled: true, execution: { taskSupport: "optional" } }, "unseen"),
     ).toBeUndefined();
     // ⚠ A DISABLED task tool is still `tool_disabled`: the vendor switched it
     // off and that is why it did not run, regardless of what else it
     // declares. Order matters, so it is asserted.
     expect(
-      requestSideFailureKind({ enabled: false, execution: { taskSupport: "required" } }, "unprobed"),
+      requestSideFailureKind({ enabled: false, execution: { taskSupport: "required" } }, "unseen"),
     ).toBe("tool_disabled");
   });
 });
@@ -426,7 +425,7 @@ describe.each(MAJORS)("calls refused above the executor — $label", (major) => 
     expect(terminal(sink, "tool_call_error").payload.failure_kind).toBe("invalid_argument");
   });
 
-  it("falls back to `invalid_argument` when the probe is replaced after install", async () => {
+  it("sends `refused`, not a guess, when the probe is replaced after install", async () => {
     const sink = new CapturingSink();
     const server = major.make();
     major.tool(server, "works", { name: z.string() }, () => ({
@@ -443,7 +442,7 @@ describe.each(MAJORS)("calls refused above the executor — $label", (major) => 
     const client = await major.connect(server);
     await client.callTool({ name: "works", arguments: { name: 7 } }).catch(() => {});
 
-    expect(terminal(sink, "tool_call_error").payload.failure_kind).toBe("invalid_argument");
+    expect(terminal(sink, "tool_call_error").payload.failure_kind).toBe("refused");
   });
 
   it("lets a call the gate allows through as an ordinary success", async () => {

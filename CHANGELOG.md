@@ -32,6 +32,15 @@
   events were left unsent. Before, it retried with no limit and could hold the
   process open. This matches `baton-sdk`'s `shutdown_flush_timeout_seconds`.
   (SPEC §11.2.)
+- **Under `resultCaptureMode: "off"`, a message thrown by a tool is
+  withheld.** `error_body` is `""` and `result_capture` is `"off"`;
+  `error_type` and `duration_ms` are still sent. Before, every thrown message
+  was sent. SPEC §11.4.3(1) keeps a raised message only when the vendor marked
+  it public, and the MCP SDK has no class to mark it with.
+- **A call refused above the tool, when the SDK could not check the
+  arguments, is labelled `failure_kind: "refused"`.** Before, it guessed
+  `invalid_argument`. SPEC §11.4.3: a producer that knows the handler never
+  ran, but not why, sends `refused`.
 
 ## 0.6.1: organization; a call refused above the tool is labelled "refused"
 

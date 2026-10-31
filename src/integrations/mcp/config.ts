@@ -157,10 +157,8 @@ export interface BatonConfig {
    *
    * **Requests are unaffected**: `params` are captured in both modes.
    *
-   * ⚠ The message of an error your handler THROWS is KEPT — it is your own code
-   * speaking about a call that never returned, so it is not result-derived
-   * (SPEC §11.4.3). Thrown messages are a classic leak channel; if that is also
-   * a problem for you, say so and the mode grows a stricter value.
+   * The message of an error your handler THROWS is withheld too (SPEC
+   * §11.4.3): the MCP SDK has no tool-error class to mark one public.
    *
    * Not a scrubber rule, deliberately (SPEC §7): a scrubber TRANSFORMS a value
    * that still crosses the network, this DECLARES that nothing crosses. Under
