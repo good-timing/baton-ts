@@ -16,7 +16,7 @@ import {
 import { roundMetaCoordinates } from "../metaCoordinates.js";
 import { scrubOrNull } from "../integrations/mcp/safeScrub.js";
 import { uuid7 } from "../uuid7.js";
-import { isRecord } from "./surface.js";
+import { isRecord } from "../_object.js";
 
 const TRANSPORT_LIBRARY = "library";
 const TURN_ID_META_KEY = "baton/turn_id";

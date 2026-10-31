@@ -11,6 +11,7 @@ import {
 import { DEFAULT_INTENT_PARAM_MODE } from "../integrations/mcp/schemaCompat.js";
 import { assembleSurface, buildSeamAugmentations, surfaceHash, type ServerMeta } from "../integrations/mcp/surface.js";
 import { printable } from "../warn.js";
+import { isRecord } from "../_object.js";
 
 /** The vendor's own `initialize` values, as it serves them. */
 export interface ListToolsOptions {
@@ -23,9 +24,6 @@ export interface Surface {
   surface: Record<string, unknown>;
   digest: string;
 }
-
-export const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === "object" && value !== null && !Array.isArray(value);
 
 /** `tools` with `user_goal` added, and the surface of `tools` as passed with
  * its hash. Never throws: a list it cannot read is served as it

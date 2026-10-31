@@ -57,6 +57,7 @@ import {
 import { type ListToolsOptions, serveTools, snapshotPayload, type Surface } from "./surface.js";
 import { pythonStrip, type Organization, type Principal } from "../identity.js";
 import type { HeaderInput } from "../integrations/mcp/clientObserved.js";
+import { isPlainObject } from "../_object.js";
 
 /** How long `flush()` and `aclose()` let in-flight events reach the sink before calling it. */
 const SETTLE_BUDGET_MS = 1000;
@@ -219,12 +220,6 @@ function describeError(err: unknown): [string, string] {
     // unreadable
   }
   return [type, body];
-}
-
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  if (typeof value !== "object" || value === null) return false;
-  const proto = Object.getPrototypeOf(value) as unknown;
-  return proto === Object.prototype || proto === null;
 }
 
 /** A wrapped function's arguments as `params`: one plain-object argument is

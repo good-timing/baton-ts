@@ -46,6 +46,7 @@
  */
 
 import { warn } from "./warn.js";
+import { isPlainObject } from "./_object.js";
 
 /** Cap on recursive walk depth. Matches LangSmith's default; protects
  * against pathological inputs without truncating realistic MCP payloads. */
@@ -118,17 +119,6 @@ function luhnValid(digits: string): boolean {
     total += n;
   }
   return total % 10 === 0;
-}
-
-/** True only for `{...}` literals and `Object.create(null)` — the TS
- * analogue of Python's `isinstance(value, dict)`. Deliberately excludes
- * class instances, `Date`, `Map`, etc.: walking those would rebuild them as
- * bare objects and silently destroy the payload, whereas Python leaves them
- * alone because they aren't dicts. */
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  if (typeof value !== "object" || value === null) return false;
-  const proto = Object.getPrototypeOf(value) as object | null;
-  return proto === Object.prototype || proto === null;
 }
 
 /**

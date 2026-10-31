@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **`createBaton` remembers the last 256 surfaces sent across its servers,
+  and `withBaton` the last 256 of its server, as the library `Client` and
+  `baton-sdk` do.** One seen again counts as recent, and the least recent is
+  forgotten first. Before, they remembered 1,024 and forgot all of them at
+  once when full, so every surface was sent again.
 - **The scrubber's whitespace is SPEC §7's fixed set: space, tab, LF, CR, FF
   and U+00A0.** A phone number or `Bearer` token split by one of these is
   still redacted. One split by other whitespace, such as U+2003, U+3000 or a

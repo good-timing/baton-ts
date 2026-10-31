@@ -97,6 +97,21 @@ describe("Client.listTools", () => {
     expect(served!.inputSchema.properties).toHaveProperty("user_goal");
   });
 
+  it("adds user_goal to a tool entry a class built", async () => {
+    class ToolEntry {
+      constructor(
+        readonly name: string,
+        readonly inputSchema: Record<string, unknown>,
+      ) {}
+    }
+    const { client } = setup();
+    const [served] = (await client.listTools([new ToolEntry("ping", { type: "object" })])) as Array<
+      Record<string, any>
+    >;
+
+    expect(served!.inputSchema.required).toEqual(["user_goal"]);
+  });
+
   it("leaves a tool that declares user_goal its own", async () => {
     const own = { type: "string", description: "the vendor's own field" };
     const { client } = setup();

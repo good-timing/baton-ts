@@ -18,6 +18,7 @@
  */
 
 import { DEPTH_LIMIT } from "./scrub.js";
+import { isPlainObject } from "./_object.js";
 
 // Case-insensitive exact match, like the Scrubber's REDACT_FIELD_NAMES, so
 // `lat` / `lng` are not matched.
@@ -27,15 +28,6 @@ const COORD_FIELD_NAMES: ReadonlySet<string> = new Set(["latitude", "longitude"]
 // string, no trimming, no exponent, `Infinity` or `NaN`, the same grammar as
 // the Python SDK's `_DECIMAL.fullmatch`. No `g` flag, so `.test()` is safe.
 const DECIMAL_STRING = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$/;
-
-/** `{...}` literals and `Object.create(null)` only, as in `scrub.ts`: a
- * `Date` or class instance passes through rather than being rebuilt as a
- * bare object. */
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  if (typeof value !== "object" || value === null) return false;
-  const proto = Object.getPrototypeOf(value) as object | null;
-  return proto === Object.prototype || proto === null;
-}
 
 /** `value` to 1 decimal, written the way Python's `f"{value:.1f}"` writes
  * it. `toFixed` rounds from the exact binary value like Python does, with

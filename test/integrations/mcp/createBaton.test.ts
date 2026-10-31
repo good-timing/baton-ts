@@ -6,6 +6,7 @@ import { z } from "zod";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { createBaton, withBaton } from "../../../src/index.js";
+import { SENT_SURFACES_CAP } from "../../../src/integrations/mcp/surface.js";
 import { CapturingSink, CFG, MAJORS, type Major } from "./_majors.js";
 
 const DSN = `https://baton_pk_${"a".repeat(43)}@ingest.example.com/ten_655b084e118b43f88992ee6357fcc23c/echo-server`;
@@ -18,6 +19,7 @@ async function serveOneRequest(
   major: Major,
   instrument: (server: never) => void,
   toolName = "echo",
+  calls = 1,
 ): Promise<string[]> {
   const server = major.make();
   major.tool(server, toolName, { text: z.string() }, (args: { text: string }) => ({
@@ -26,9 +28,23 @@ async function serveOneRequest(
   instrument(server as never);
   const client = await major.connect(server);
   const { tools } = (await client.listTools()) as { tools: { name: string }[] };
-  await client.callTool({ name: toolName, arguments: { text: "hi" } });
+  for (let i = 0; i < calls; i++) await client.callTool({ name: toolName, arguments: { text: "hi" } });
   await client.close();
   return tools.map((tool) => tool.name);
+}
+
+/** A sink whose first `surface_snapshot` write throws; `failed()` says it did.
+ * Mutes stderr, where that failure is reported. */
+function failFirstSurfaceWrite(): { sink: CapturingSink; failed: () => boolean } {
+  vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+  const sink = new CapturingSink();
+  const write = sink.write.bind(sink);
+  let failures = 1;
+  sink.write = async (event) => {
+    if (event.event_type === "surface_snapshot" && failures-- > 0) throw new Error("sink down");
+    await write(event);
+  };
+  return { sink, failed: () => failures < 1 };
 }
 
 const count = (sink: CapturingSink, type: string): number =>
@@ -119,16 +135,19 @@ describe.each(MAJORS)("createBaton on $label", (major) => {
   });
 
   it("sends the surface again after a failed write", async () => {
-    const sink = new CapturingSink();
-    const write = sink.write.bind(sink);
-    let failures = 1;
-    sink.write = async (event) => {
-      if (event.event_type === "surface_snapshot" && failures-- > 0) throw new Error("sink down");
-      await write(event);
-    };
+    const { sink, failed } = failFirstSurfaceWrite();
     const baton = createBaton({ ...CFG, sink });
     for (let i = 0; i < 2; i++) await serveOneRequest(major, (server) => baton.wrap(server));
 
+    expect(failed()).toBe(true);
+    expect(count(sink, "surface_snapshot")).toBe(1);
+  });
+
+  it("sends the surface again on the same server after a failed write", async () => {
+    const { sink, failed } = failFirstSurfaceWrite();
+    await serveOneRequest(major, (server) => withBaton(server, { ...CFG, sink }), "echo", 2);
+
+    expect(failed()).toBe(true);
     expect(count(sink, "surface_snapshot")).toBe(1);
   });
 
@@ -171,23 +190,32 @@ describe.each(MAJORS)("createBaton on $label", (major) => {
 describe("createBaton", () => {
   const major = MAJORS[0]!;
 
-  // Serves more requests than the surface cap; a busy machine outlasts the 5 s default.
-  it("forgets old surfaces when every request brings a new one", async () => {
+  it("forgets the least recently seen surface once newer ones fill it", async () => {
     const sink = new CapturingSink();
     const baton = createBaton({ ...CFG, sink });
     const wrap = (server: never): void => baton.wrap(server);
-    await serveOneRequest(major, wrap, "tool_first");
-    for (let i = 0; i < 1024; i++) await serveOneRequest(major, wrap, `tool_${i}`);
-    await serveOneRequest(major, wrap, "tool_first");
+    let fresh = 0;
+    const serveNew = async (n: number) => {
+      for (let i = 0; i < n; i++) await serveOneRequest(major, wrap, `tool_${fresh++}`);
+    };
+    const firstSent = () =>
+      sink.events.filter(
+        (event) => event.event_type === "surface_snapshot" && event.payload.surface_hash === firstHash,
+      ).length;
 
-    const firstSurface = sink.events.find((event) => event.event_type === "surface_snapshot")!;
-    const sameSurface = sink.events.filter(
-      (event) =>
-        event.event_type === "surface_snapshot" &&
-        event.payload.surface_hash === firstSurface.payload.surface_hash,
-    );
-    expect(sameSurface).toHaveLength(2);
-  }, 30_000);
+    await serveOneRequest(major, wrap, "tool_first");
+    const firstHash = sink.events.find((event) => event.event_type === "surface_snapshot")!.payload.surface_hash;
+    await serveNew(SENT_SURFACES_CAP / 2);
+    await serveOneRequest(major, wrap, "tool_first");
+    await serveNew(SENT_SURFACES_CAP / 2);
+    await serveOneRequest(major, wrap, "tool_first");
+    // Seen again halfway, so still remembered.
+    expect(firstSent()).toBe(1);
+
+    await serveNew(SENT_SURFACES_CAP);
+    await serveOneRequest(major, wrap, "tool_first");
+    expect(firstSent()).toBe(2);
+  });
 
   it("warns about an ignored BATON_DSN once, not once per request", async () => {
     const warning = vi.spyOn(process, "emitWarning").mockImplementation(() => {});

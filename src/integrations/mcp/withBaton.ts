@@ -181,7 +181,7 @@ import {
   type IntentParamMode,
   DEFAULT_INTENT_PARAM_MODE,
 } from "./schemaCompat.js";
-import { assembleSurface, buildServerMeta, buildSeamAugmentations, surfaceHash } from "./surface.js";
+import { assembleSurface, buildServerMeta, buildSeamAugmentations, SentSurfaces, surfaceHash } from "./surface.js";
 
 type AnyArgs = unknown[];
 type AnyHandler = (...args: AnyArgs) => unknown;
@@ -359,7 +359,7 @@ class SurfaceState {
 
   constructor(
     private readonly serverMeta: ReturnType<typeof buildServerMeta>,
-    readonly emittedHashes: Set<string>,
+    readonly sentSurfaces: SentSurfaces,
   ) {}
 
   /** `inputSchemaJson` is already converted — by `ctx.vendorToolJsonSchema`,
@@ -865,19 +865,16 @@ function stripRetiredParams(
   return retired;
 }
 
-/** A server whose surface differs on every request would otherwise grow the
- * shared set for the life of the process. */
-const MAX_REMEMBERED_SURFACES = 1024;
-
 /** Lazy, fail-open surface_snapshot capture — the first tool call after any
- * registration change re-hashes the surface and emits iff the hash hasn't
- * been seen before. `dirty` is cleared FIRST so a hashing/serialization
- * error (deterministic — would just re-throw identically every call) costs
- * one attempt per surface change, not a retry storm. A WRITE failure is
- * different (sink health can recover), so that path re-sets `dirty = true`
- * to retry on the next call, and takes the digest back out of
- * `emittedHashes`, so a transient failure can't permanently drop a
- * surface the way a genuine dedup skip would. */
+ * registration change re-hashes the surface and emits iff the hash is not
+ * among the last `SENT_SURFACES_CAP` that `sentSurfaces` has seen. `dirty`
+ * is cleared FIRST so a hashing/serialization error (deterministic — would
+ * just re-throw identically every call) costs one attempt per surface
+ * change, not a retry storm. A WRITE failure is different (sink health can recover),
+ * so that path re-sets `dirty = true` to retry on this server's next call,
+ * and takes the digest back out of `sentSurfaces` so a later server sends it:
+ * `createBaton.test.ts`, "sends the surface again after a failed write" and
+ * "sends the surface again on the same server after a failed write". */
 async function maybeEmitSurfaceSnapshot(ctx: WrapContext): Promise<void> {
   if (!ctx.surfaceState.dirty) return;
   ctx.surfaceState.dirty = false;
@@ -890,12 +887,11 @@ async function maybeEmitSurfaceSnapshot(ctx: WrapContext): Promise<void> {
     process.stderr.write(`baton: surface snapshot capture failed: ${String(err)}\n`);
     return;
   }
-  const emitted = ctx.surfaceState.emittedHashes;
-  if (emitted.has(digest)) return;
-  if (emitted.size >= MAX_REMEMBERED_SURFACES) emitted.clear();
-  // Reserved before the write, so two servers sharing this set cannot both
+  const sent = ctx.surfaceState.sentSurfaces;
+  if (sent.wasSent(digest)) return;
+  // Reserved before the write, so two servers sharing `sentSurfaces` cannot both
   // send it: `createBaton.test.ts`, "when the first requests arrive together".
-  emitted.add(digest);
+  sent.mark(digest);
   const seam = buildSeamAugmentations({
     injectedToolNames: ctx.annotationToolName ? [ctx.annotationToolName] : [],
     intentParamNames: [USER_GOAL_PARAM_NAME],
@@ -907,7 +903,7 @@ async function maybeEmitSurfaceSnapshot(ctx: WrapContext): Promise<void> {
     await ctx.emitSurface(ctx.fallbackSessionId, digest, { ...snapshot, seam_augmentations: seam });
   } catch (err) {
     process.stderr.write(`baton: surface snapshot capture failed: ${String(err)}\n`);
-    emitted.delete(digest);
+    sent.unmark(digest);
     ctx.surfaceState.dirty = true;
   }
 }
@@ -1906,7 +1902,7 @@ export function withBaton(server: SupportedMcpServer, supplied: BatonConfig = {}
   }
   const resolved = resolveBatonConfig(supplied);
   warnUnusedReportSettings(resolved);
-  return install(server, supplied, resolved, new Set(), new Set());
+  return install(server, supplied, resolved, new SentSurfaces(), new Set());
 }
 
 /** One Baton for a process that builds a new `McpServer` for every request.
@@ -1943,11 +1939,11 @@ export function createBaton(supplied: BatonConfig = {}): Baton {
     sink,
     tenantId: resolveTenantId(resolved.tenantId, resolved.vendorId),
   };
-  const emittedSurfaceHashes = new Set<string>();
+  const sentSurfaces = new SentSurfaces();
   const warned = new Set<string>();
   return {
     wrap: (server) => {
-      install(server, supplied, config, emittedSurfaceHashes, warned);
+      install(server, supplied, config, sentSurfaces, warned);
     },
     flush: () => boundedSinkCall(sink, "flush"),
     aclose: () => boundedSinkCall(sink, "aclose"),
@@ -1958,7 +1954,7 @@ function install(
   server: SupportedMcpServer,
   supplied: BatonConfig,
   resolved: ResolvedBatonConfig,
-  emittedSurfaceHashes: Set<string>,
+  sentSurfaces: SentSurfaces,
   /** Kinds of warning already written, so `createBaton` writes each once and not per request. */
   warned: Set<string>,
 ): BatonHandle {
@@ -2014,7 +2010,7 @@ function install(
   // MUST run before the instructions assignment, or the snapshot would
   // capture Baton's own text instead of the vendor's. See module docstring.
   const serverMeta = buildServerMeta(server.server);
-  const surfaceState = new SurfaceState(serverMeta, emittedSurfaceHashes);
+  const surfaceState = new SurfaceState(serverMeta, sentSurfaces);
 
   const emitSurface = async (
     sessionId: string,
