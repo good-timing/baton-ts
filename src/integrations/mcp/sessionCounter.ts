@@ -1,3 +1,5 @@
+import { nextClockSequence } from "../../sequence.js";
+
 /**
  * Per-session monotonic sequence-number counter — mirrors `baton` (Python)'s
  * `_state.py::SessionCounter`. First call for a session returns 1.
@@ -11,6 +13,12 @@
  */
 export class SessionCounter {
   private readonly counters = new Map<string, number>();
+
+  /** A per-call session is numbered by the clock: a counter would keep an
+   * entry for every request the process serves. */
+  nextFor(session: { sessionId: string; perCall: boolean }): number {
+    return session.perCall ? nextClockSequence() : this.next(session.sessionId);
+  }
 
   next(sessionId: string): number {
     const current = this.counters.get(sessionId) ?? 0;

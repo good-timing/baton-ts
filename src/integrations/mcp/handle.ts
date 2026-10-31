@@ -9,9 +9,9 @@ import type { Sink } from "../../sinks.js";
 export class BatonHandle {
   readonly sink: Sink;
   readonly vendorId: string;
-  /** Process-lifetime fallback session id — the value events fall back to
-   * when no real per-call session id resolves. Not every event necessarily
-   * carries this id; see `withBaton`'s session-resolution order. */
+  /** The install's own session id: what stdio and in-memory calls, and the
+   * surface snapshot, carry when no session id resolves. A call over HTTP
+   * with no session to read gets a per-request id instead (SPEC §3.4 rung 5). */
   readonly sessionId: string;
   /** The resolved annotation tool name: `BatonConfig.annotationToolName` if
    * set, else derived from the server's own name (`{slug}_annotate`), else

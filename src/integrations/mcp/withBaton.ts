@@ -481,10 +481,10 @@ async function openCall(
    * `tools/call` seam's `unknown_tool` path, and it suppresses one warning
    * whose diagnosis would be wrong there — see `extractGoalParam`. */
   registered = true,
-): Promise<{ common: Record<string, unknown>; sessionId: string }> {
+): Promise<{ common: Record<string, unknown>; session: ResolvedSession }> {
   // Snapshot BEFORE tool_call_start, from inside openCall so every caller inherits the order.
   await maybeEmitSurfaceSnapshot(ctx);
-  const { sessionId, origin, scrubbedMeta } = await resolveEnvelopeParts(ctx, extra);
+  const { scrubbedMeta, ...session } = await resolveEnvelopeParts(ctx, extra);
 
   // Strip the injected goal params IN PLACE, before snapshotting params —
   // `params` is the SAME object forwarded to the vendor handler, so the
@@ -512,7 +512,7 @@ async function openCall(
   const common = {
     tenant_id: ctx.tenantId,
     vendor_id: ctx.vendorId,
-    session_id: sessionId,
+    session_id: session.sessionId,
     consent_token: ctx.consentToken,
     // Every `...common` site is an event of this call, so `call_id` rides in
     // it. `surface_snapshot` is deliberately not among them: it describes the
@@ -521,7 +521,7 @@ async function openCall(
     principal: caller.principal,
     organization: caller.organization,
     transport_observed: observeTransport(extra),
-    session_id_origin: origin,
+    session_id_origin: session.origin,
     client_observed: observeClient(extra, ctx),
     runtime_meta: scrubbedMeta,
     call_id: uuid7(),
@@ -530,7 +530,7 @@ async function openCall(
   await emit(ctx.sink, () =>
     ToolCallStartEventSchema.parse({
       ...common,
-      sequence_number: ctx.counter.next(sessionId),
+      sequence_number: ctx.counter.nextFor(session),
       captured_at: new Date().toISOString(),
       payload: {
         tool_name: toolName,
@@ -543,7 +543,7 @@ async function openCall(
       },
     }),
   );
-  return { common, sessionId };
+  return { common, session };
 }
 
 /** `nameRef` is read on every call, not captured: v2's `update({name})`
@@ -580,7 +580,7 @@ function batonWrap(nameRef: { current: string }, original: AnyHandler, ctx: Wrap
     // Handed over once: a tool this handler calls in-process shares the slot.
     const retired = slot?.retired ?? {};
     if (slot) slot.retired = {};
-    const { common, sessionId } = await openCall(ctx, toolName, extra, params, retired);
+    const { common, session } = await openCall(ctx, toolName, extra, params, retired);
 
     /** Emit this call's terminal event, or PARK it for the outer `tools/call`
      * seam when one is running (see `CallSlot`). `replacement` is passed by
@@ -662,7 +662,7 @@ function batonWrap(nameRef: { current: string }, original: AnyHandler, ctx: Wrap
       await parkFailure(() =>
         ToolCallErrorEventSchema.parse({
           ...common,
-          sequence_number: ctx.counter.next(sessionId),
+          sequence_number: ctx.counter.nextFor(session),
           captured_at: new Date().toISOString(),
           payload: {
             tool_name: toolName,
@@ -703,7 +703,7 @@ function batonWrap(nameRef: { current: string }, original: AnyHandler, ctx: Wrap
       await parkFailure(() =>
         ToolCallErrorEventSchema.parse({
           ...common,
-          sequence_number: ctx.counter.next(sessionId),
+          sequence_number: ctx.counter.nextFor(session),
           captured_at: new Date().toISOString(),
           payload: {
             tool_name: toolName,
@@ -737,7 +737,7 @@ function batonWrap(nameRef: { current: string }, original: AnyHandler, ctx: Wrap
       () =>
         ToolCallEndEventSchema.parse({
           ...common,
-          sequence_number: ctx.counter.next(sessionId),
+          sequence_number: ctx.counter.nextFor(session),
           captured_at: new Date().toISOString(),
           payload: {
             tool_name: toolName,
@@ -754,7 +754,7 @@ function batonWrap(nameRef: { current: string }, original: AnyHandler, ctx: Wrap
       (outcome) =>
         ToolCallErrorEventSchema.parse({
           ...common,
-          sequence_number: ctx.counter.next(sessionId),
+          sequence_number: ctx.counter.nextFor(session),
           captured_at: new Date().toISOString(),
           payload: {
             tool_name: toolName,
@@ -1162,7 +1162,7 @@ function installLifecycleSeam(
 
     /** Every leg is the same envelope with a different schema and payload, so
      * one builder owns the parts that must not drift: the stamp, the clock and
-     * the sequence number — which `counter.next` must allocate at EMIT time,
+     * the sequence number — which `counter.nextFor` must allocate at EMIT time,
      * not before. */
     const fire = async (
       schema: { parse(value: unknown): Event },
@@ -1172,7 +1172,7 @@ function installLifecycleSeam(
       await emit(ctx.sink, () =>
         schema.parse({
           ...opened.common,
-          sequence_number: ctx.counter.next(opened.sessionId),
+          sequence_number: ctx.counter.nextFor(opened.session),
           captured_at: new Date().toISOString(),
           payload: scrubLifecyclePayload(ctx, { ...opened.subject, ...payload }),
         }),
@@ -1219,18 +1219,18 @@ async function openLifecycleCall(
   extra: Extra,
 ): Promise<{
   common: Record<string, unknown>;
-  sessionId: string;
+  session: ResolvedSession;
   subject: Record<string, unknown>;
 } | null> {
   try {
-    const parts = await resolveEnvelopeParts(ctx, extra);
+    const { scrubbedMeta, ...session } = await resolveEnvelopeParts(ctx, extra);
     const caller = await resolveCaller(ctx.resolvePrincipal, {
       extra,
       toolName: null,
       arguments: {},
     });
     return {
-      sessionId: parts.sessionId,
+      session,
       subject:
         spec.subjectKey === undefined
           ? {}
@@ -1238,14 +1238,14 @@ async function openLifecycleCall(
       common: {
         tenant_id: ctx.tenantId,
         vendor_id: ctx.vendorId,
-        session_id: parts.sessionId,
+        session_id: session.sessionId,
         consent_token: ctx.consentToken,
         principal: caller.principal,
         organization: caller.organization,
         transport_observed: observeTransport(extra),
-        session_id_origin: parts.origin,
+        session_id_origin: session.origin,
         client_observed: observeClient(extra, ctx),
-        runtime_meta: parts.scrubbedMeta,
+        runtime_meta: scrubbedMeta,
       },
     };
   } catch (err) {
@@ -1679,7 +1679,7 @@ async function emitRequestSideFailure(
   // Baton's own params would land in `tool_call_start.params`, which SPEC
   // says equals the vendor-visible arguments.
   const params = { ...((request?.params?.arguments as Record<string, unknown>) ?? {}) };
-  const { common, sessionId } = await openCall(
+  const { common, session } = await openCall(
     ctx,
     toolName,
     args[1] as Extra,
@@ -1697,7 +1697,7 @@ async function emitRequestSideFailure(
   await emit(ctx.sink, () =>
     ToolCallErrorEventSchema.parse({
       ...common,
-      sequence_number: ctx.counter.next(sessionId),
+      sequence_number: ctx.counter.nextFor(session),
       captured_at: new Date().toISOString(),
       payload: {
         tool_name: toolName,

@@ -16,6 +16,16 @@
 - **`requestTimeoutMs` is applied.** It was accepted and never read, so a
   collector that never answered held the sink forever. Each request now
   aborts after it (default 1000 ms) and is retried like a network error.
+- **On HTTP with no session to read, each request is its own session (SPEC
+  §3.4 rung 5).** When neither the transport nor the `mcp-session-id` header
+  names a session and an HTTP request is behind the call, the SDK mints a new
+  `sdk-<uuid7>` id for that request, with `session_id_origin: "minted"` and a
+  `sequence_number` from the clock (§5.6 rule 3). A tool call's start and its
+  end or error share the id. Before, `withBaton` used the install's id, so a
+  long-lived server that took a new stateless transport per request put every
+  caller in one session; `createBaton` already split requests, but numbered
+  each from 1. stdio and in-memory are unchanged. This matches `baton-sdk`
+  0.8.21.
 - **The flush at process exit stops after 3 seconds.** When the process
   exits without `aclose()`, `HttpSink` gives each buffered event one attempt
   within `shutdownFlushTimeoutMs` (default 3000) in total, then warns how many

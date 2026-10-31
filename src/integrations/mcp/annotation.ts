@@ -128,7 +128,7 @@ export function registerAnnotationTool(
         meta ? roundMetaCoordinates(meta) : null,
         "_meta",
       );
-      const { sessionId, origin } = await resolveSessionId(options.fallbackSessionId, extra);
+      const session = await resolveSessionId(options.fallbackSessionId, extra);
 
       // Same hook, same context factory as the tool wrapper — and the
       // `toolName` handed over is THIS tool's own name, so a hook keyed on it
@@ -144,14 +144,14 @@ export function registerAnnotationTool(
         AnnotationEventSchema.parse({
           tenant_id: options.tenantId,
           vendor_id: options.vendorId,
-          session_id: sessionId,
-          sequence_number: options.counter.next(sessionId),
+          session_id: session.sessionId,
+          sequence_number: options.counter.nextFor(session),
           captured_at: new Date().toISOString(),
           consent_token: options.consentToken,
           principal: caller.principal,
           organization: caller.organization,
           transport_observed: observeTransport(extra),
-          session_id_origin: origin,
+          session_id_origin: session.origin,
           client_observed: observeClient(extra, { server, scrubber: options.scrubber }),
           runtime_meta: scrubbedMeta,
           payload: {

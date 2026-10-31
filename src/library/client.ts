@@ -16,6 +16,7 @@
  * dropped. Only a bad config throws, and only from the constructor.
  */
 
+import { nextClockSequence } from "../sequence.js";
 import type { Event } from "../events.js";
 import {
   AnnotationEventSchema,
@@ -45,7 +46,6 @@ import { scrubOrNull, type ScrubbedField } from "../integrations/mcp/safeScrub.j
 import {
   type LibrarySession,
   newSession,
-  nextSequence,
   runInSession,
   sessionEnvelope,
   sessionForCall,
@@ -288,7 +288,7 @@ class Core {
 
   annotate(session: LibrarySession, consentToken: string, options: AnnotateOptions): Promise<void> {
     if (!this.live()) return Promise.resolve();
-    const sequence = nextSequence();
+    const sequence = nextClockSequence();
     // The text fields are scrubbed bare inside the thunk: an annotation is one
     // report, so a scrubber throw drops it whole, as on the MCP path.
     /* eslint-disable no-restricted-syntax -- inside the emit() build thunk */
@@ -402,7 +402,7 @@ export class Trace {
   #start(): void {
     this.#startedAt = performance.now();
     if (!this.#core.live()) return;
-    const sequence = nextSequence();
+    const sequence = nextClockSequence();
     const o = this.#options;
     // Fail-open per field, outside the thunk: a scrubber throw here must not
     // drop the start event and leave the call's end unpaired.
@@ -434,7 +434,7 @@ export class Trace {
     const durationMs = this.#durationMs();
     if (!this.#core.live()) return;
     if (this.#result === UNSET && this.#error === null) this.observed(value);
-    const sequence = nextSequence();
+    const sequence = nextClockSequence();
     const error = this.#error;
     if (error !== null) {
       this.#emitError(sequence, error.type, error.body, durationMs);
@@ -459,7 +459,7 @@ export class Trace {
   #fail(err: unknown): void {
     const durationMs = this.#durationMs();
     if (!this.#core.live()) return;
-    this.#emitError(nextSequence(), ...describeError(err), durationMs);
+    this.#emitError(nextClockSequence(), ...describeError(err), durationMs);
   }
 
   #emitError(sequence: number, type: string, body: string, durationMs: number): void {

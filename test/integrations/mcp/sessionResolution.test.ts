@@ -1,14 +1,7 @@
 /**
- * The session-id ladder, after rung 0 was removed.
+ * The session-id ladder (SPEC §3.4).
  *
- * **Why this file exists.** `BatonConfig.resolveSessionId` was removed
- * 2026-09-12 and the suite did not move: 290 tests before, 290 after. Probing
- * further, deleting the SURVIVING `extra.sessionId` rung outright also passed
- * all 290 — so the whole of `resolveSessionId` was untested, not merely the
- * hook. A removal verified by a suite that cannot see the function is not
- * verified, so the residue gets the coverage the hook never had.
- *
- * Asserted at the function, not through a server: the two rungs are a total
+ * Asserted at the function, not through a server: the rungs are a total
  * function of `(fallbackSessionId, extra)` and driving a transport to reach
  * them would test the transport's id, not the ladder's choice between them.
  */
@@ -18,13 +11,14 @@ import { resolveSessionId } from "../../../src/integrations/mcp/sessionResolutio
 import type { Extra } from "../../../src/integrations/mcp/mcpTypes.js";
 
 const extra = (sessionId?: unknown): Extra => ({ sessionId }) as unknown as Extra;
-const MINTED = { sessionId: "install-fallback", origin: "minted" };
+const MINTED = { sessionId: "install-fallback", origin: "minted", perCall: false };
 
 describe("resolveSessionId", () => {
   it("prefers the transport session id over the process-wide fallback", async () => {
     expect(await resolveSessionId("install-fallback", extra("from-transport"))).toEqual({
       sessionId: "from-transport",
       origin: "observed",
+      perCall: false,
     });
   });
 
@@ -57,6 +51,7 @@ describe("resolveSessionId", () => {
       expect(await resolveSessionId("install-fallback", e)).toEqual({
         sessionId: "from-header",
         origin: "observed",
+        perCall: false,
       });
     }
   });
@@ -69,18 +64,41 @@ describe("resolveSessionId", () => {
     expect(await resolveSessionId("install-fallback", e)).toEqual({
       sessionId: "from-transport",
       origin: "observed",
+      perCall: false,
     });
   });
 
-  it("falls back on a blank header or a request that cannot be read", async () => {
+  it("treats a blank header as no header", async () => {
     const blank = { requestInfo: { headers: { "mcp-session-id": "  " } } } as Extra;
+    const resolved = await resolveSessionId("install-fallback", blank);
+    expect(resolved.sessionId).not.toBe("  ");
+    expect(resolved).toMatchObject({ origin: "minted", perCall: true });
+  });
+
+  it("falls back on a request that cannot be read", async () => {
     const throwing = {
       get http(): never {
         throw new TypeError("unexpected context shape");
       },
     } as unknown as Extra;
-    expect(await resolveSessionId("install-fallback", blank)).toEqual(MINTED);
     expect(await resolveSessionId("install-fallback", throwing)).toEqual(MINTED);
+  });
+
+  it("mints a new id per request on HTTP with no session to read (rung 5)", async () => {
+    const v1 = { requestInfo: { headers: {} } } as Extra;
+    const v2 = { http: { req: { headers: new Headers() } } } as unknown as Extra;
+    const seen = new Set<string>();
+    for (const e of [v1, v1, v2, v2]) {
+      const resolved = await resolveSessionId("install-fallback", e);
+      expect(resolved).toMatchObject({ origin: "minted", perCall: true });
+      expect(resolved.sessionId).toMatch(/^sdk-[0-9a-f-]{36}$/);
+      seen.add(resolved.sessionId);
+    }
+    expect(seen.size).toBe(4);
+  });
+
+  it("keeps the process-wide id when no HTTP request is behind the call", async () => {
+    expect(await resolveSessionId("install-fallback", {})).toEqual(MINTED);
   });
 
   it("does not consult any vendor hook — rung 0 is gone", async () => {
