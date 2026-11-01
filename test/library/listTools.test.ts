@@ -11,6 +11,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { Client, withBaton, type Event, type Sink } from "../../src/index.js";
 import { SENT_SURFACES_CAP } from "../../src/integrations/mcp/surface.js";
+import { PROCESS_DROPS } from "../../src/drops.js";
 
 class CollectingSink implements Sink {
   readonly events: Event[] = [];
@@ -275,6 +276,7 @@ describe("Client.listTools", () => {
     await client.listTools(TOOLS, options);
     await client.listTools(TOOLS, options);
     expect(await snapshots(client, sink)).toHaveLength(0);
+    expect(PROCESS_DROPS.total()).toEqual({ encode_failed: 1 });
     expect(stderr.mock.calls.filter(([c]) => String(c).includes("does not fit the schema"))).toHaveLength(1);
   });
 

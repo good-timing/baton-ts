@@ -31,6 +31,7 @@ import { parseDsn, selectDsn } from "../dsn.js";
 import { captureDisabled, DisabledSink, logDisabled } from "../optout.js";
 import { Scrubber } from "../scrub.js";
 import { boundedSinkCall, callWithin, HttpSink, type Sink } from "../sinks.js";
+import { PROCESS_DROPS } from "../drops.js";
 import { printable } from "../warn.js";
 import { uuid7 } from "../uuid7.js";
 import { resolveTenantId } from "../integrations/mcp/config.js";
@@ -271,6 +272,7 @@ class Core {
   live(): boolean {
     if (this.disabled) return false;
     if (!this.closed) return true;
+    PROCESS_DROPS.add("after_close");
     if (!this.closedWarned) {
       this.closedWarned = true;
       process.stderr.write("baton: Client is closed; further events are dropped.\n");
@@ -293,7 +295,7 @@ class Core {
    * write unmarks it, so the next `listTools` tries again. A surface that does
    * not fit the schema stays marked: it would fail the same way every time. */
   sendSurface(surface: Surface): Promise<void> {
-    if (this.sentSurfaces.wasSent(surface.digest)) return Promise.resolve();
+    if (this.sentSurfaces.wasSent(surface.digest) || !this.live()) return Promise.resolve();
     this.sentSurfaces.mark(surface.digest);
     let event: Event;
     try {
@@ -308,6 +310,7 @@ class Core {
         payload: snapshotPayload(surface),
       });
     } catch (err) {
+      PROCESS_DROPS.add("encode_failed");
       process.stderr.write(`baton: surface snapshot dropped; it does not fit the schema: ${printable(err)}\n`);
       return Promise.resolve();
     }
@@ -331,7 +334,9 @@ class Core {
     do {
       const waiting = [...this.pending];
       if ((await raceDeadline(Promise.allSettled(waiting), deadline - performance.now())) === TIMED_OUT) {
-        for (const write of waiting) this.pending.delete(write);
+        const left = waiting.filter((write) => this.pending.delete(write));
+        // Lost only for close: after a flush the write may still finish.
+        if (untilEmpty) PROCESS_DROPS.add("unsent_at_close", left.length);
         return;
       }
     } while (untilEmpty && this.pending.size > 0);
@@ -646,7 +651,7 @@ export class Client {
   async listTools<T>(tools: readonly T[], options: ListToolsOptions = {}): Promise<T[]> {
     if (this.#core.disabled) return tools as T[];
     const { served, surface } = serveTools(tools, options);
-    if (surface !== null && this.#core.live()) void this.#core.sendSurface(surface);
+    if (surface !== null) void this.#core.sendSurface(surface);
     return served;
   }
 

@@ -33,12 +33,15 @@
  * shape a missing clear can have: green, and testing nothing.
  */
 import { beforeEach } from "vitest";
+import { PROCESS_DROPS } from "../src/drops.js";
 
 delete process.env.BATON_TENANT_ID;
 delete process.env.BATON_DSN;
 delete process.env.BATON_DISABLED;
 
 beforeEach(() => {
+  // One per process, so each test starts from zero.
+  PROCESS_DROPS.clear();
   delete process.env.BATON_TENANT_ID;
   delete process.env.BATON_DSN;
   delete process.env.BATON_DISABLED;

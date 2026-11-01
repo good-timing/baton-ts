@@ -181,6 +181,7 @@ import {
   type IntentParamMode,
   DEFAULT_INTENT_PARAM_MODE,
 } from "./schemaCompat.js";
+import { PROCESS_DROPS } from "../../drops.js";
 import { assembleSurface, buildServerMeta, buildSeamAugmentations, SentSurfaces, surfaceHash } from "./surface.js";
 
 type AnyArgs = unknown[];
@@ -1609,6 +1610,7 @@ async function settleCall(
     if (!outcome.failed) return;
     await emitRequestSideFailure(outcome, args, slot, toolEntry, ctx);
   } catch (err) {
+    PROCESS_DROPS.add("encode_failed");
     process.stderr.write(`baton: settling a tool call failed; events dropped: ${String(err)}\n`);
   }
 }

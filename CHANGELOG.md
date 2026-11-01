@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **The SDK counts every event it does not deliver, by reason:**
+  `buffer_full`, `refused`, `encode_failed`, `write_failed`, `after_close`
+  and `unsent_at_close`. The counts are internal for now. After a loss, the
+  first event `HttpSink` delivers warns with what was lost, at most once a
+  minute, such as "delivering again; 3 event(s) lost before this:
+  buffer_full 1, refused 2." A run that loses nothing warns about nothing new.
 - **`createBaton` remembers the last 256 surfaces sent across its servers,
   and `withBaton` the last 256 of its server, as the library `Client` and
   `baton-sdk` do.** One seen again counts as recent, and the least recent is

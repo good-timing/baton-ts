@@ -2,6 +2,7 @@ import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
+import { PROCESS_DROPS } from "../src/drops.js";
 import { FileSink, HttpSink, MultiSink, StdoutSink, safeWrite, type Sink } from "../src/sinks.js";
 import { ToolCallStartEventSchema, type Event } from "../src/events.js";
 
@@ -342,6 +343,7 @@ describe("HttpSink", () => {
     }
 
     expect(sent).toEqual([1]);
+    expect(PROCESS_DROPS.total()).toEqual({ encode_failed: 1 });
     expect(warnings.some((w) => w.includes("could not be encoded"))).toBe(true);
     expect(warnings.join("\n")).not.toContain("jane@x.co");
   });

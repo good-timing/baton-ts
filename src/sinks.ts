@@ -19,6 +19,7 @@
 import { closeSync, openSync, writeSync } from "node:fs";
 import { capCodePoints } from "./_text.js";
 import { MAX_TIMER_MS, raceDeadline, SHUTDOWN_FLUSH_TIMEOUT_MS, TIMED_OUT } from "./deadline.js";
+import { PROCESS_DROPS } from "./drops.js";
 import { printable, warn } from "./warn.js";
 import type { Event } from "./events.js";
 
@@ -47,6 +48,7 @@ export async function safeWrite(sink: Sink, event: Event): Promise<void> {
   try {
     await sink.write(event);
   } catch (err) {
+    PROCESS_DROPS.add("write_failed");
     process.stderr.write(`baton: sink.write failed; event dropped, tool call continues: ${printable(err)}\n`);
   }
 }
@@ -374,6 +376,7 @@ export class HttpSink implements Sink {
     await this.drainWithinBudget("aclose()", ms);
     this.closing.abort();
     if (this.buffer.length > 0) {
+      PROCESS_DROPS.add("unsent_at_close", this.buffer.length);
       warn(`baton: the sink closed with ${this.buffer.length} event(s) unsent.`);
     }
     if (this.beforeExitHandler) {
@@ -414,8 +417,14 @@ export class HttpSink implements Sink {
     }
   }
 
+  /** A full buffer may already have pushed `event` out while it was being sent. */
+  private dequeue(event: Event): void {
+    if (this.buffer[0] === event) this.buffer.shift();
+  }
+
   private enqueue(event: Event): void {
     if (this.buffer.length >= this.bufferSize) {
+      PROCESS_DROPS.add("buffer_full");
       if (!this.overflowWarned) {
         warn(
           `Baton HTTP sink buffer full (${this.bufferSize}); oldest events dropped. Further overflows will be silent.`,
@@ -464,7 +473,8 @@ export class HttpSink implements Sink {
     while (this.buffer.length > 0 && this.circuit.canRequest()) {
       const timeLeft = deadline - Date.now();
       if (timeLeft <= 0) break;
-      const body = this.encode(this.buffer[0]!);
+      const event = this.buffer[0]!;
+      const body = this.encode(event);
       if (body !== null) {
         const outcome = await this.postOnce(body, Math.min(this.requestTimeoutMs, timeLeft));
         if (outcome === "transient_failure") {
@@ -473,7 +483,7 @@ export class HttpSink implements Sink {
         }
         this.circuit.recordSuccess();
       }
-      this.buffer.shift();
+      this.dequeue(event);
     }
     this.exitPassRan = true;
     if (this.buffer.length > 0) {
@@ -506,6 +516,7 @@ export class HttpSink implements Sink {
       (text) => capCodePoints(text, REFUSAL_BODY_MAX_LEN),
       () => "<unreadable>",
     );
+    PROCESS_DROPS.add("refused");
     warn(
       `baton: collector REFUSED an event and it has been dropped ` +
         `(HTTP ${response.status}): ${detail} — the event is gone; nothing retries a 4xx.`,
@@ -538,11 +549,12 @@ export class HttpSink implements Sink {
       const event = this.buffer[0]!;
       const outcome = await this.sendWithRetry(event);
       if (outcome === "success" || outcome === "permanent_failure") {
-        this.buffer.shift();
+        this.dequeue(event);
         this.circuit.recordSuccess();
+        if (outcome === "success") PROCESS_DROPS.logRecovery();
       } else if (outcome === "unencodable") {
         // Nothing was sent, so the circuit learns nothing about the endpoint.
-        this.buffer.shift();
+        this.dequeue(event);
       } else {
         this.circuit.recordFailure();
         return;
@@ -571,6 +583,7 @@ export class HttpSink implements Sink {
     try {
       return JSON.stringify(event);
     } catch (err) {
+      PROCESS_DROPS.add("encode_failed");
       // Only the error's name: its message can quote the event's own text.
       warn(
         `baton: a ${event.event_type} event could not be encoded and has been dropped (${(err as Error)?.name ?? "Error"}) — the event is gone; the events after it are still sent.`,
