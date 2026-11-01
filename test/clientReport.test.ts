@@ -144,8 +144,10 @@ describe("client_report (SPEC §11.4.7)", () => {
     await send(sink, 4);
     expect(state.reports).toHaveLength(1);
     expect(PROCESS_DROPS.total()).toEqual({ refused: 2 });
-    expect(warnings.filter((w) => w.includes("REFUSED"))).toHaveLength(2);
     await sink.aclose();
+    // The second event refusal is counted, not logged; the refused report is neither.
+    expect(warnings.filter((w) => w.includes("REFUSED"))).toHaveLength(1);
+    expect(warnings).toContain("baton: the sink closed; 1 more event(s) refused since the last such warning.");
   });
 
   it("a report that cannot reach the collector costs nothing", async () => {

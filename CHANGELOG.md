@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **`HttpSink` warns about refused events at most once a minute per HTTP
+  status, and escapes the collector's text.** The first refusal with a status
+  warns as before. Later ones with that status within a minute are only
+  counted, and the next warning says how many there were, such as "3 more
+  refused since the last such warning". `aclose()`, or the exit hook when the
+  vendor never calls it, warns with the count still unreported. A refusal
+  with a new status, such as a 401 after a 422, warns at once. Before, every
+  refused event warned, so a collector refusing every event flooded the log.
+  Backslashes and control, format, and line- and paragraph-separator
+  characters in the collector's message, such as a newline or a terminal
+  colour code, are logged as `\u{hex}`.
 - **The SDK counts every event it does not deliver, by reason:**
   `buffer_full`, `refused`, `encode_failed`, `write_failed`, `after_close`
   and `unsent_at_close`. The counts are internal for now. After a loss, the

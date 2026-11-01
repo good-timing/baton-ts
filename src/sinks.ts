@@ -17,7 +17,7 @@
  */
 
 import { closeSync, openSync, writeSync } from "node:fs";
-import { capCodePoints } from "./_text.js";
+import { capCodePoints, escapeForLog } from "./_text.js";
 import { MAX_TIMER_MS, raceDeadline, SHUTDOWN_FLUSH_TIMEOUT_MS, TIMED_OUT } from "./deadline.js";
 import { type DropReason, PROCESS_DROPS } from "./drops.js";
 import { ClientReportEventSchema, type Event } from "./events.js";
@@ -25,6 +25,9 @@ import { nextClockSequence } from "./sequence.js";
 import { printable, warn } from "./warn.js";
 
 const REFUSAL_BODY_MAX_LEN = 500;
+/** The least time between two refusal warnings with the same status, so a
+ * collector refusing every event is not one warning per event. */
+const REFUSAL_LOG_MS = 60_000;
 
 export interface Sink {
   /** Hand one event to the sink. Resolves once the sink has accepted it
@@ -298,6 +301,8 @@ export class HttpSink implements Sink {
   private readonly circuit: CircuitBreaker;
   private readonly fetchImpl: typeof fetch;
   private overflowWarned = false;
+  /** Per status, so a new kind of refusal, such as a 401 after a 422, still warns. */
+  private readonly refusals = new Map<number, { loggedAt: number; unlogged: number }>();
   /** Aborted once `aclose()` returns: nothing Baton started may keep the
    * process alive after the vendor closed it. */
   private readonly closing = new AbortController();
@@ -388,6 +393,7 @@ export class HttpSink implements Sink {
       PROCESS_DROPS.add("unsent_at_close", this.buffer.length);
       warn(`baton: the sink closed with ${this.buffer.length} event(s) unsent.`);
     }
+    this.warnUnloggedRefusals("the sink closed");
     if (this.beforeExitHandler) {
       process.off("beforeExit", this.beforeExitHandler);
       this.beforeExitHandler = null;
@@ -466,7 +472,10 @@ export class HttpSink implements Sink {
     if (this.beforeExitHandler) return;
     this.beforeExitHandler = () => {
       // Node re-fires `beforeExit` once the pass's work is done; one pass only.
-      if (this.buffer.length === 0 || this.exitPassRan) return;
+      if (this.buffer.length === 0 || this.exitPassRan) {
+        this.warnUnloggedRefusals("process exiting");
+        return;
+      }
       this.drainChain = this.drainChain.then(
         () => this.exitPass(),
         () => this.exitPass(),
@@ -498,6 +507,7 @@ export class HttpSink implements Sink {
     if (this.buffer.length > 0) {
       warn(`baton: process exiting with ${this.buffer.length} unsent event(s).`);
     }
+    this.warnUnloggedRefusals("process exiting");
   }
 
   private events_url(): string {
@@ -516,20 +526,42 @@ export class HttpSink implements Sink {
 
   /** A refused event is otherwise dropped silently, which looks the same from
    * the vendor's process as an accepted one. The collector's own message is
-   * logged because it names the field at fault; it is capped because it is a
-   * remote server's text landing in the vendor's log. */
-  private static async logRefusal(response: Response): Promise<void> {
+   * logged because it names the field at fault; it is capped and escaped
+   * because it is a remote server's text landing in the vendor's log. */
+  private static async logRefusal(response: Response, unlogged: number): Promise<void> {
     // The body read is under the request's timeout signal, so a stalled body
     // logs "<unreadable>" instead of holding the drain.
     const detail = await HttpSink.readHead(response).then(
-      (text) => capCodePoints(text, REFUSAL_BODY_MAX_LEN),
+      (text) => escapeForLog(capCodePoints(text, REFUSAL_BODY_MAX_LEN)),
       () => "<unreadable>",
     );
-    PROCESS_DROPS.add("refused");
     warn(
       `baton: collector REFUSED an event and it has been dropped ` +
-        `(HTTP ${response.status}): ${detail} — the event is gone; nothing retries a 4xx.`,
+        `(HTTP ${response.status}): ${detail} — the event is gone; nothing retries a 4xx.` +
+        (unlogged > 0 ? ` ${unlogged} more refused since the last such warning.` : ""),
     );
+  }
+
+  private warnUnloggedRefusals(when: string): void {
+    let total = 0;
+    for (const seen of this.refusals.values()) {
+      total += seen.unlogged;
+      seen.unlogged = 0;
+    }
+    if (total > 0) warn(`baton: ${when}; ${total} more event(s) refused since the last such warning.`);
+  }
+
+  /** How many refusals with `status` went unlogged before this one, or `null`
+   * when this one goes unlogged too. */
+  private refusalToLog(status: number): number | null {
+    const now = performance.now();
+    const seen = this.refusals.get(status);
+    if (seen !== undefined && now - seen.loggedAt < REFUSAL_LOG_MS) {
+      seen.unlogged++;
+      return null;
+    }
+    this.refusals.set(status, { loggedAt: now, unlogged: 0 });
+    return seen?.unlogged ?? 0;
   }
 
   /** Enough of the body for `REFUSAL_BODY_MAX_LEN` code points; the rest is
@@ -693,9 +725,16 @@ export class HttpSink implements Sink {
         signal: request.signal,
       });
       const outcome = HttpSink.classifyStatus(response.status);
-      if (outcome === "permanent_failure") await HttpSink.logRefusal(response);
+      if (outcome === "permanent_failure") {
+        PROCESS_DROPS.add("refused");
+        const unlogged = this.refusalToLog(response.status);
+        if (unlogged !== null) {
+          await HttpSink.logRefusal(response, unlogged);
+          return outcome;
+        }
+      }
       // An unread body holds its connection until GC.
-      else void response.body?.cancel().catch(() => undefined);
+      void response.body?.cancel().catch(() => undefined);
       return outcome;
     } catch {
       return "transient_failure";

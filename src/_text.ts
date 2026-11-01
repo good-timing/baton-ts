@@ -1,7 +1,4 @@
-/** String helpers shared by the capture paths.
- *
- * Small on purpose: this exists so the ONE rule below is written down once.
- */
+/** String helpers shared by the capture and log paths. */
 
 /** Truncate to `max` CODE POINTS, never splitting a surrogate pair.
  *
@@ -28,4 +25,10 @@ export function capCodePoints(value: string, max: number): string {
   // overwhelming majority of values are already under the cap.
   if (value.length <= max) return value;
   return [...value].slice(0, max).join("");
+}
+
+/** Backslashes and control, format and separator characters as `\u{hex}`, so
+ * text from outside cannot break or recolour a log line, or pass for an escape. */
+export function escapeForLog(value: string): string {
+  return value.replace(/[\\\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, (c) => `\\u{${c.codePointAt(0)!.toString(16)}}`);
 }

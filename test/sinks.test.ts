@@ -44,6 +44,10 @@ describe("StdoutSink", () => {
   });
 });
 
+function messages(warning: { mock: { calls: unknown[][] } }): string[] {
+  return warning.mock.calls.map(([message]) => String(message));
+}
+
 /** The sink's `beforeExit` handler and its drain chain, without firing the
  * test runner's own `beforeExit` listeners. */
 function exitHooks(sink: HttpSink): { atExit: () => void; drained: () => Promise<void> } {
@@ -187,11 +191,104 @@ describe("HttpSink", () => {
       await sink.flush();
       await sink.aclose();
 
-      const logged = warning.mock.calls.map(([message]) => String(message)).join("");
+      const logged = messages(warning).join("");
       expect(logged).toContain(`REFUSED an event and it has been dropped (HTTP 422): ${reason}`);
       const detail = logged.slice(logged.indexOf(reason), logged.indexOf(" — the event is gone"));
       expect([...detail]).toHaveLength(500);
       expect(detail.endsWith("😀")).toBe(true);
+    } finally {
+      warning.mockRestore();
+    }
+  });
+
+  it("logs a refusal with its control characters escaped", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(new Response("bad\nfield\u001b[31m\u202e\u2028😀 \\u{a}", { status: 422 }));
+    const warning = vi.spyOn(process, "emitWarning").mockImplementation(() => {});
+    try {
+      const sink = new HttpSink("https://collector.example", { apiKey: "k", fetchImpl });
+      await sink.write(makeEvent());
+      await sink.flush();
+      await sink.aclose();
+
+      const logged = messages(warning).join("");
+      expect(logged).toContain("bad\\u{a}field\\u{1b}[31m\\u{202e}\\u{2028}😀 \\u{5c}u{a} — the event is gone");
+    } finally {
+      warning.mockRestore();
+    }
+  });
+
+  it("logs the first refusal, then at most one a minute, counting those between", async () => {
+    const fetchImpl = vi.fn().mockImplementation(() => Promise.resolve(new Response("no", { status: 422 })));
+    const warning = vi.spyOn(process, "emitWarning").mockImplementation(() => {});
+    let now = 1_000_000;
+    const clock = vi.spyOn(performance, "now").mockImplementation(() => now);
+    try {
+      const sink = new HttpSink("https://collector.example", { apiKey: "k", fetchImpl });
+      const refusals = () => messages(warning).filter((m) => m.includes("REFUSED"));
+      for (let i = 0; i < 3; i++) await sink.write(makeEvent());
+      await sink.flush();
+      expect(refusals()).toHaveLength(1);
+
+      now += 59_999;
+      await sink.write(makeEvent());
+      await sink.flush();
+      expect(refusals()).toHaveLength(1);
+
+      now += 1;
+      await sink.write(makeEvent());
+      await sink.flush();
+      expect(refusals()).toHaveLength(2);
+      expect(refusals()[1]).toContain(" 3 more refused since the last such warning.");
+
+      await sink.write(makeEvent());
+      await sink.flush();
+      await sink.aclose();
+      expect(refusals()).toHaveLength(2);
+      expect(messages(warning)).toContain(
+        "baton: the sink closed; 1 more event(s) refused since the last such warning.",
+      );
+      expect(fetchImpl).toHaveBeenCalledTimes(6);
+    } finally {
+      clock.mockRestore();
+      warning.mockRestore();
+    }
+  });
+
+  it("logs a refusal with a new status at once, counting each status apart", async () => {
+    const statuses = [422, 422, 401];
+    const fetchImpl = vi.fn().mockImplementation(() => Promise.resolve(new Response("no", { status: statuses.shift()! })));
+    const warning = vi.spyOn(process, "emitWarning").mockImplementation(() => {});
+    try {
+      const sink = new HttpSink("https://collector.example", { apiKey: "k", fetchImpl });
+      for (let i = 0; i < 3; i++) await sink.write(makeEvent());
+      await sink.flush();
+      await sink.aclose();
+
+      const refusals = messages(warning).filter((m) => m.includes("REFUSED"));
+      expect(refusals.map((m) => /HTTP (\d+)/.exec(m)![1])).toEqual(["422", "401"]);
+      expect(refusals[1]).not.toContain("more refused");
+      expect(messages(warning)).toContain(
+        "baton: the sink closed; 1 more event(s) refused since the last such warning.",
+      );
+    } finally {
+      warning.mockRestore();
+    }
+  });
+
+  it("logs refusals still counted when the process exits without aclose()", async () => {
+    const fetchImpl = vi.fn().mockImplementation(() => Promise.resolve(new Response("no", { status: 422 })));
+    const warning = vi.spyOn(process, "emitWarning").mockImplementation(() => {});
+    try {
+      const sink = new HttpSink("https://collector.example", { apiKey: "k", fetchImpl });
+      const { atExit } = exitHooks(sink);
+      for (let i = 0; i < 3; i++) await sink.write(makeEvent());
+      await sink.flush();
+      atExit();
+      atExit();
+
+      const exiting = messages(warning).filter((m) => m.includes("process exiting"));
+      expect(exiting).toEqual(["baton: process exiting; 2 more event(s) refused since the last such warning."]);
+      await sink.aclose();
     } finally {
       warning.mockRestore();
     }
@@ -213,7 +310,7 @@ describe("HttpSink", () => {
       await sink.flush();
       await sink.aclose();
 
-      expect(warning.mock.calls.map(([message]) => String(message)).join("")).toContain(`(HTTP 413): ${reason}x`);
+      expect(messages(warning).join("")).toContain(`(HTTP 413): ${reason}x`);
       expect(pulls).toBeLessThan(20);
     } finally {
       warning.mockRestore();
@@ -246,7 +343,7 @@ describe("HttpSink", () => {
         ([, init]) => (JSON.parse((init as RequestInit).body as string) as { event_type: string }).event_type !== "client_report",
       );
       expect(events).toHaveLength(2);
-      expect(warning.mock.calls.map(([message]) => String(message)).join("")).toContain("(HTTP 413): <unreadable>");
+      expect(messages(warning).join("")).toContain("(HTTP 413): <unreadable>");
     } finally {
       warning.mockRestore();
     }
