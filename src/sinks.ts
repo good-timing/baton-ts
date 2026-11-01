@@ -19,9 +19,10 @@
 import { closeSync, openSync, writeSync } from "node:fs";
 import { capCodePoints } from "./_text.js";
 import { MAX_TIMER_MS, raceDeadline, SHUTDOWN_FLUSH_TIMEOUT_MS, TIMED_OUT } from "./deadline.js";
-import { PROCESS_DROPS } from "./drops.js";
+import { type DropReason, PROCESS_DROPS } from "./drops.js";
+import { ClientReportEventSchema, type Event } from "./events.js";
+import { nextClockSequence } from "./sequence.js";
 import { printable, warn } from "./warn.js";
-import type { Event } from "./events.js";
 
 const REFUSAL_BODY_MAX_LEN = 500;
 
@@ -306,6 +307,13 @@ export class HttpSink implements Sink {
   private closeOnce: Promise<void> | undefined;
   private drainChain: Promise<void> = Promise.resolve();
   private beforeExitHandler: (() => void) | null = null;
+  /** The least time between two of this sink's loss reports. */
+  private static reportIntervalMs = 60_000;
+  /** Totals only grow, so their sum tells whether they changed. */
+  private reportedSum = 0;
+  private lastReportAt = -Infinity;
+  private reportsStopped = false;
+  private reportInFlight: AbortController | null = null;
 
   constructor(url: string, options: HttpSinkOptions) {
     this.url = url.replace(/\/+$/, "");
@@ -373,6 +381,7 @@ export class HttpSink implements Sink {
   }
 
   private async close(ms: number): Promise<void> {
+    this.stopReports();
     await this.drainWithinBudget("aclose()", ms);
     this.closing.abort();
     if (this.buffer.length > 0) {
@@ -551,7 +560,10 @@ export class HttpSink implements Sink {
       if (outcome === "success" || outcome === "permanent_failure") {
         this.dequeue(event);
         this.circuit.recordSuccess();
-        if (outcome === "success") PROCESS_DROPS.logRecovery();
+        if (outcome === "success") {
+          PROCESS_DROPS.logRecovery();
+          this.maybeReport(event);
+        }
       } else if (outcome === "unencodable") {
         // Nothing was sent, so the circuit learns nothing about the endpoint.
         this.dequeue(event);
@@ -561,6 +573,66 @@ export class HttpSink implements Sink {
       }
     }
     this.exitPassRan = false;
+  }
+
+  /** Starts a report of this process's loss totals (SPEC §11.4.7) beside the
+   * drain and outside the buffer, so it never delays an event and is never
+   * counted as one. */
+  private maybeReport({ tenant_id, vendor_id, consent_token }: Event): void {
+    const now = performance.now();
+    if (
+      this.reportsStopped ||
+      this.reportInFlight !== null ||
+      now - this.lastReportAt < HttpSink.reportIntervalMs
+    ) {
+      return;
+    }
+    const totals = PROCESS_DROPS.total();
+    const sum = Object.values(totals).reduce((a, b) => a + b, 0);
+    if (sum === this.reportedSum) return;
+    this.lastReportAt = now;
+    const abort = new AbortController();
+    this.reportInFlight = abort;
+    const envelope = { tenant_id, vendor_id, consent_token };
+    void this.sendReport(envelope, totals, sum, abort).finally(() => {
+      this.reportInFlight = null;
+    });
+  }
+
+  private stopReports(): void {
+    this.reportsStopped = true;
+    this.reportInFlight?.abort();
+  }
+
+  private async sendReport(
+    envelope: Pick<Event, "tenant_id" | "vendor_id" | "consent_token">,
+    totals: Partial<Record<DropReason, number>>,
+    sum: number,
+    abort: AbortController,
+  ): Promise<void> {
+    const timer = setTimeout(() => abort.abort(), this.requestTimeoutMs);
+    try {
+      const report = ClientReportEventSchema.parse({
+        ...envelope,
+        session_id: PROCESS_DROPS.instanceId,
+        sequence_number: nextClockSequence(),
+        captured_at: new Date().toISOString(),
+        payload: { instance_id: PROCESS_DROPS.instanceId, dropped: totals },
+      });
+      const response = await this.fetchImpl(this.events_url(), {
+        method: "POST",
+        headers: this.authHeaders(),
+        body: JSON.stringify(report),
+        signal: abort.signal,
+      });
+      void response.body?.cancel().catch(() => undefined);
+      if (response.status === 400 || response.status === 422) this.reportsStopped = true;
+      else if (HttpSink.classifyStatus(response.status) === "success") this.reportedSum = sum;
+    } catch {
+      // A lost report is never counted (SPEC §11.4.7); the next delivery may resend it.
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   private async sendWithRetry(event: Event): Promise<SendOutcome> {

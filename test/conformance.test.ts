@@ -122,6 +122,10 @@ describe("baton-spec conformance", () => {
       context: { a: 1 },
       tool_name: "x",
     },
+    client_report: {
+      instance_id: "0193f2c1-7b6e-7c11-9a0e-3f5c2d4b8a10",
+      dropped: { refused: 3, buffer_full: 1 },
+    },
     surface_snapshot: {
       surface_hash: "sha256:abc",
       server_info: { name: "vendor", version: "1.0.0" },
@@ -216,6 +220,7 @@ describe("baton-spec conformance", () => {
     tool_call_error: { tool_name: "x", error_type: "Error", error_body: "boom" },
     annotation: {},
     surface_snapshot: { surface_hash: "sha256:abc" },
+    client_report: { instance_id: "0193f2c1-7b6e-7c11-9a0e-3f5c2d4b8a10", dropped: {} },
     // ⚠ The two `*_list_start` payloads are EMPTY in both tables, and that is
     // not a copy of the maximal arm going stale — those schemas declare no
     // members at all, so minimal and maximal genuinely coincide. The key-set

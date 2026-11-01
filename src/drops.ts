@@ -1,7 +1,8 @@
+import { uuid7 } from "./uuid7.js";
 import { warn } from "./warn.js";
 
-/** Why an event was not delivered. These names go on the wire in a later
- * release, so they change only with SPEC. */
+/** Why an event was not delivered. Wire values (SPEC §11.2 rule 8), so they
+ * change only with SPEC. */
 export const DROP_REASONS = [
   "buffer_full",
   "refused",
@@ -19,6 +20,7 @@ const RECOVERY_LOG_MS = 60_000;
 /** Events this process did not deliver, by reason: every event is either
  * delivered or counted here. One per process, like the sequence clock. */
 class DropCounts {
+  #instanceId = uuid7();
   readonly #total = new Map<DropReason, number>();
   readonly #sinceDelivery = new Map<DropReason, number>();
   #lastRecoveryLog = -RECOVERY_LOG_MS;
@@ -47,7 +49,13 @@ class DropCounts {
   }
 
   /** For tests: the counts are one per process. */
+  /** Names this process in its loss reports (SPEC §11.4.7). */
+  get instanceId(): string {
+    return this.#instanceId;
+  }
+
   clear(): void {
+    this.#instanceId = uuid7();
     this.#total.clear();
     this.#sinceDelivery.clear();
     this.#lastRecoveryLog = -RECOVERY_LOG_MS;

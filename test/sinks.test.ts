@@ -242,7 +242,10 @@ describe("HttpSink", () => {
       await sink.flush();
       await sink.aclose();
 
-      expect(fetchImpl).toHaveBeenCalledTimes(2);
+      const events = fetchImpl.mock.calls.filter(
+        ([, init]) => (JSON.parse((init as RequestInit).body as string) as { event_type: string }).event_type !== "client_report",
+      );
+      expect(events).toHaveLength(2);
       expect(warning.mock.calls.map(([message]) => String(message)).join("")).toContain("(HTTP 413): <unreadable>");
     } finally {
       warning.mockRestore();
@@ -323,7 +326,8 @@ describe("HttpSink", () => {
   it("drops an event that cannot be encoded and still sends the ones after it", async () => {
     const sent: number[] = [];
     const fetchImpl = vi.fn().mockImplementation((_url: string, init: RequestInit) => {
-      sent.push((JSON.parse(init.body as string) as { sequence_number: number }).sequence_number);
+      const body = JSON.parse(init.body as string) as { event_type: string; sequence_number: number };
+      if (body.event_type !== "client_report") sent.push(body.sequence_number);
       return Promise.resolve(new Response(null, { status: 202 }));
     });
     const warnings: string[] = [];

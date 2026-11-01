@@ -8,6 +8,13 @@
   first event `HttpSink` delivers warns with what was lost, at most once a
   minute, such as "delivering again; 3 event(s) lost before this:
   buffer_full 1, refused 2." A run that loses nothing warns about nothing new.
+- **`HttpSink` sends a `client_report` event (SPEC §11.4.7) with this
+  process's lost-event counts by reason.** It is sent only after a delivery,
+  only when the counts changed, at most once a minute, and never at close or
+  exit. A healthy run sends none. It goes beside the event queue, so it never
+  delays an event or a close, and a lost report is not counted. A collector
+  that answers it with 400 or 422 gets no more reports from that sink.
+  `ClientReportEventSchema` and `ClientReportPayloadSchema` are exported.
 - **`createBaton` remembers the last 256 surfaces sent across its servers,
   and `withBaton` the last 256 of its server, as the library `Client` and
   `baton-sdk` do.** One seen again counts as recent, and the least recent is

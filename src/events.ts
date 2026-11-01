@@ -189,6 +189,15 @@ export const SurfaceSnapshotPayloadSchema = z
   .strict();
 export type SurfaceSnapshotPayload = z.infer<typeof SurfaceSnapshotPayloadSchema>;
 
+/** This process's lost-event counts by reason, as running totals (SPEC §11.4.7). */
+export const ClientReportPayloadSchema = z
+  .object({
+    instance_id: z.uuid(),
+    dropped: z.record(z.string(), z.number().int().nonnegative()),
+  })
+  .strict();
+export type ClientReportPayload = z.infer<typeof ClientReportPayloadSchema>;
+
 // =============================================================================
 // Envelope shared by all event types
 // =============================================================================
@@ -324,6 +333,7 @@ export const EventTypeSchema = z.enum([
   "tool_call_error",
   "annotation",
   "surface_snapshot",
+  "client_report",
   // The RESOURCE and PROMPT lifecycles (SPEC §11.4.4). Twelve types whose
   // shapes were set by `baton-proxy`, which has been emitting all of them in
   // production — see the payload schemas below.
@@ -612,6 +622,15 @@ export const SurfaceSnapshotEventSchema = z
   .strict();
 export type SurfaceSnapshotEvent = z.infer<typeof SurfaceSnapshotEventSchema>;
 
+export const ClientReportEventSchema = z
+  .object({
+    ...envelopeShape,
+    event_type: z.literal("client_report").default("client_report"),
+    payload: ClientReportPayloadSchema,
+  })
+  .strict();
+export type ClientReportEvent = z.infer<typeof ClientReportEventSchema>;
+
 // ⚠ The lifecycle events carry the SAME `envelopeShape` as the five
 // above, which is what lets one collector endpoint accept every type and
 // one worker order them on `(session_id, sequence_number)`. `call_id` stays
@@ -763,6 +782,7 @@ export const EventSchema = z.discriminatedUnion("event_type", [
   ToolCallErrorEventSchema,
   AnnotationEventSchema,
   SurfaceSnapshotEventSchema,
+  ClientReportEventSchema,
   ResourceListStartEventSchema,
   ResourceListEndEventSchema,
   ResourceListErrorEventSchema,

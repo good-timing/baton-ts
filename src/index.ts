@@ -41,6 +41,8 @@ export type {
   AnnotationPayload,
   SurfaceSnapshotEvent,
   SurfaceSnapshotPayload,
+  ClientReportEvent,
+  ClientReportPayload,
   // The twelve resource/prompt lifecycle types (SPEC §11.4.4). Exported for
   // the reason `f1b7ab2` exported `ResultCaptureMode`: the rolled-up
   // `dist/index.d.ts` carries them transitively, because `Event` references
@@ -93,6 +95,8 @@ export {
   AnnotationPayloadSchema,
   SurfaceSnapshotEventSchema,
   SurfaceSnapshotPayloadSchema,
+  ClientReportEventSchema,
+  ClientReportPayloadSchema,
   PrincipalWireSchema,
   ResourceListStartEventSchema,
   ResourceListStartPayloadSchema,

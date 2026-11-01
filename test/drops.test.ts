@@ -158,7 +158,9 @@ describe("every event is delivered or counted (SPEC §11.2)", () => {
     let answer: (response: Response) => void = () => {};
     const posted: number[] = [];
     const fetchImpl = (_url: string | URL | Request, init?: RequestInit) => {
-      posted.push((JSON.parse(init!.body as string) as { sequence_number: number }).sequence_number);
+      const body = JSON.parse(init!.body as string) as { event_type: string; sequence_number: number };
+      if (body.event_type === "client_report") return Promise.resolve(new Response(null, { status: 202 }));
+      posted.push(body.sequence_number);
       return new Promise<Response>((resolve) => (answer = resolve));
     };
     const sink = httpSink(fetchImpl, { bufferSize: 2 });
