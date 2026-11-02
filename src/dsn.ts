@@ -52,6 +52,7 @@
  * Every throw below goes through `redact`.
  */
 
+import { stripWhiteSpace } from "./_text.js";
 import { warn } from "./warn.js";
 
 /**
@@ -415,11 +416,8 @@ export function selectDsn(
  * looking, not at the first tool call in production.
  */
 export function parseDsn(raw: string): Dsn {
-  if (typeof raw !== "string" || raw.trim() === "") {
-    fail("dsn must be a non-empty string");
-  }
-
-  const dsn = raw.trim();
+  const dsn = typeof raw === "string" ? stripWhiteSpace(raw) : "";
+  if (dsn === "") fail("dsn must be a non-empty string");
 
   if (looksLikeAKey(dsn)) {
     // No redact() — a bare key has no structure to show, and echoing it is the

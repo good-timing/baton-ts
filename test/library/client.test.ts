@@ -131,7 +131,7 @@ describe("Client.trace", () => {
 
   it("matches Python on blank text and empty failures", async () => {
     const { sink, client } = setup({ scrubber: identityScrub });
-    client.trace({ toolName: "a", intent: "\x1c" }, () => null);
+    client.trace({ toolName: "a", intent: "\u0085" }, () => null);
     client.trace({ toolName: "b" }, (trace) => trace.observed("kept", {}));
     client.trace({ toolName: "c" }, (trace) => trace.observed(undefined, { errorType: "", errorBody: "x" }));
     try {
@@ -141,7 +141,7 @@ describe("Client.trace", () => {
     } catch {
       // expected
     }
-    await client.annotate({ whatHappened: "\x1f", toolName: "", context: {} });
+    await client.annotate({ whatHappened: "\u0085", toolName: "", context: {} });
     await client.flush();
     const byTool = (name: string) => sink.events.filter((e) => payloadOf(e).tool_name === name);
     expect(payloadOf(byTool("a")[0]!).intent_source).toBeNull();

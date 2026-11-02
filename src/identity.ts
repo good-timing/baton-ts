@@ -9,7 +9,7 @@
  * on as stated.
  */
 
-import { capCodePoints, exceedsCodePoints } from "./_text.js";
+import { capCodePoints, exceedsCodePoints, isBlank } from "./_text.js";
 
 /** Where a principal came from. `"asserted"` is a vendor's own resolver,
  * which nothing in the protocol checks, and is the only value this SDK
@@ -31,11 +31,6 @@ export const PRINCIPAL_ID_MAX_LEN = 128;
  * the same bytes for one resolver output. */
 export const DISPLAY_NAME_MAX_LEN = 128;
 
-// Unicode `White_Space`, exactly (SPEC §11.4's blank rule). Not `.trim()`:
-// that also removes U+FEFF and keeps U+0085, which Python's `strip()` does the
-// other way round, so the two SDKs would disagree on what is blank.
-const ALL_WHITE_SPACE = /^\p{White_Space}*$/u;
-
 /** The resolver's `displayName` as it goes on the wire, or `null`. Verbatim
  * when usable. A non-string, a blank (only Unicode `White_Space`), an
  * over-long value or one holding a lone surrogate or U+0000 is dropped ALONE — the rest
@@ -44,22 +39,13 @@ const ALL_WHITE_SPACE = /^\p{White_Space}*$/u;
 export function wireDisplayName(value: unknown): string | null {
   if (typeof value !== "string" || exceedsCodePoints(value, DISPLAY_NAME_MAX_LEN)) return null;
   // U+0000: Postgres text refuses it, costing a collector the whole event.
-  if (LONE_SURROGATE.test(value) || value.includes("\u0000") || ALL_WHITE_SPACE.test(value)) return null;
+  if (LONE_SURROGATE.test(value) || value.includes("\u0000") || isBlank(value)) return null;
   return value;
 }
 
 export type PrincipalForm = typeof PRINCIPAL_FORM_HASHED | typeof PRINCIPAL_FORM_RAW;
 
 const PRINCIPAL_FORMS: ReadonlySet<unknown> = new Set([PRINCIPAL_FORM_RAW, PRINCIPAL_FORM_HASHED]);
-
-/** Codepoints Python's `str.strip()` removes, measured against CPython rather
- * than assumed — `\s` in JavaScript is the WRONG set in BOTH directions.
- *
- * JS `\s` omits `\x1c`-`\x1f` and `\x85`, which Python strips; and JS `\s`
- * INCLUDES `U+FEFF`, which Python does not, so `.trim()` is never correct
- * where the two SDKs must agree on what is blank. */
-const PYTHON_WHITESPACE = "\\t\\n\\v\\f\\r\\x1c-\\x1f \\x85\\xa0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000";
-const PYTHON_STRIP = new RegExp(`^[${PYTHON_WHITESPACE}]+|[${PYTHON_WHITESPACE}]+$`, "gu");
 
 /** Matches a string containing an UNPAIRED surrogate.
  *
@@ -70,13 +56,6 @@ const PYTHON_STRIP = new RegExp(`^[${PYTHON_WHITESPACE}]+|[${PYTHON_WHITESPACE}]
  * single code point and does NOT match, while a lone half does; verified to
  * agree with `isWellFormed()` on both. */
 const LONE_SURROGATE = /\p{Surrogate}/u;
-
-/** Python's `str.strip()`, over exactly the set above. Exported for the
- * server-name rule in `integrations/mcp/annotationName.ts`, which has to agree
- * with Python's on what counts as a blank name. */
-export function pythonStrip(value: string): string {
-  return value.replace(PYTHON_STRIP, "");
-}
 
 /** A principal as a vendor's resolver produced it. */
 export interface Principal {
@@ -117,7 +96,7 @@ function usableId(id: unknown): id is string {
   // U+0000 is refused by Postgres text and would cost a collector the whole event.
   if (id.includes("\u0000")) return false;
   // A blank id names nobody, and every such caller would merge into one actor.
-  return pythonStrip(id) !== "";
+  return !isBlank(id);
 }
 
 function readIdentity(

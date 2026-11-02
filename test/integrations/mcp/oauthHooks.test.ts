@@ -176,13 +176,14 @@ describe("principalFromOAuthEmail", () => {
     expect(got?.principalId).toBe("alice@acme.com");
   });
 
-  it("decides blankness as Python's strip() does, so the twins agree under ??", () => {
-    // `\x1f` is stripped by Python and kept by `.trim()`; U+FEFF the reverse.
+  it("decides blankness by Unicode White_Space, so the SDKs agree under ??", () => {
+    // `.trim()` keeps U+0085 and removes U+FEFF; White_Space is the reverse.
     const hook: ResolvePrincipalHook = (c) => principalFromOAuthEmail(c) ?? principalFromOAuthSub(c);
-    expect(hook(ctx(authInfo({ email: "\x1f", sub: "opaque-123" }))) as unknown).toEqual({
+    expect(hook(ctx(authInfo({ email: "\u0085", sub: "opaque-123" }))) as unknown).toEqual({
       principalId: "opaque-123",
     });
     expect(principalFromOAuthEmail(ctx(authInfo({ email: "\uFEFF" })))?.principalId).toBe("\uFEFF");
+    expect(principalFromOAuthEmail(ctx(authInfo({ email: "\x1f" })))?.principalId).toBe("\x1f");
   });
 
   it("treats a blank or non-string email as a miss", () => {

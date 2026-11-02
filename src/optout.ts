@@ -45,6 +45,7 @@
  * vendor-facing wording may imply otherwise.
  */
 
+import { stripWhiteSpace } from "./_text.js";
 import type { Sink } from "./sinks.js";
 
 const SWITCH = "BATON_DISABLED";
@@ -69,7 +70,7 @@ const OFF_VALUES = new Set(["", "0", "false", "no", "off"]);
  */
 export function captureDisabled(): string | null {
   const value = typeof process !== "undefined" ? process.env?.[SWITCH] : undefined;
-  if (value !== undefined && !OFF_VALUES.has(value.trim().toLowerCase())) {
+  if (value !== undefined && !OFF_VALUES.has(stripWhiteSpace(value).toLowerCase())) {
     return SWITCH;
   }
   return null;

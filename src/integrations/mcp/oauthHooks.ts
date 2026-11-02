@@ -30,7 +30,8 @@
  * hooks return `null` there.
  */
 
-import { type Principal, pythonStrip } from "../../identity.js";
+import { type Principal } from "../../identity.js";
+import { isBlank } from "../../_text.js";
 import { type PrincipalResolutionContext } from "./principalResolution.js";
 
 /** The token's claim bag, or `null`. Never throws: it reads an object a
@@ -47,15 +48,10 @@ function claimsOf(
 }
 
 /** A non-blank string claim, or `null`. Blank is a miss: it names nobody, and
- * every such caller would merge into one actor.
- *
- * ⚠ `pythonStrip`, never `.trim()`: the two strip different codepoints
- * (`\x1f` survives `.trim()`, U+FEFF survives Python's `strip()`), and the
- * Python twins decide blankness with `strip()`. With `.trim()` one token gave a
- * principal on one SDK and none on the other under `email ?? sub`. */
+ * every such caller would merge into one actor. */
 function stringClaim(claims: Record<string, unknown>, name: string): string | null {
   const value = claims[name];
-  return typeof value === "string" && pythonStrip(value) !== "" ? value : null;
+  return typeof value === "string" && !isBlank(value) ? value : null;
 }
 
 /** The token's `sub`. A subject is unique only per issuer: a vendor running

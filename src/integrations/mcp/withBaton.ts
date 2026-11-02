@@ -120,7 +120,7 @@ import {
   type ResolvedBatonConfig,
 } from "./config.js";
 import { captureDisabled, DisabledSink, logDisabled } from "../../optout.js";
-import { capCodePoints } from "../../_text.js";
+import { capCodePoints, isBlank } from "../../_text.js";
 import { emit } from "./emit.js";
 import {
   ERROR_BODY_MAX_CODE_POINTS,
@@ -842,7 +842,7 @@ function popText(args: Record<string, unknown>, paramName: string): string | nul
   if (!(paramName in args)) return null;
   const raw = args[paramName];
   delete args[paramName];
-  return typeof raw === "string" && raw.trim() ? raw : null;
+  return typeof raw === "string" && !isBlank(raw) ? raw : null;
 }
 
 /** Take a stale client's retired names off a `tools/call` request, before

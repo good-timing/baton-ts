@@ -56,7 +56,8 @@ import {
   sessionForCall,
 } from "./session.js";
 import { type ListToolsOptions, serveTools, snapshotPayload, type Surface } from "./surface.js";
-import { pythonStrip, type Organization, type Principal } from "../identity.js";
+import { type Organization, type Principal } from "../identity.js";
+import { isBlank } from "../_text.js";
 import type { HeaderInput } from "../integrations/mcp/clientObserved.js";
 import { isPlainObject } from "../_object.js";
 
@@ -199,7 +200,7 @@ function resolveClientOptions(options: ClientOptions): Resolved {
 }
 
 const hasText = (value: string | null | undefined): boolean =>
-  typeof value === "string" && pythonStrip(value) !== "";
+  typeof value === "string" && !isBlank(value);
 
 /** `[error_type, error_body]` of a thrown value. Never throws: a vendor's
  * error can be any value, including one whose getters throw. */

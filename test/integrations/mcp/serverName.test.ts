@@ -267,6 +267,10 @@ describe("the guards", () => {
     ).toBeUndefined();
     expect(warnings.join("\n")).toMatch(/reading the server name failed/);
   });
+
+  it("reads a name of U+001C-U+001F alone as blank, as Python's str.strip() and the Console do", () => {
+    expect(usableServerName(() => ({ name: " \x1c\x1f ", className: "" }))).toBeUndefined();
+  });
 });
 
 describe("the instructions cap", () => {

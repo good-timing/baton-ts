@@ -23,7 +23,7 @@
  * the value this package sees is the vendor's own literal, camelCase.
  */
 
-import { capCodePoints } from "../../_text.js";
+import { capCodePoints, stripWhiteSpace } from "../../_text.js";
 
 /** `error_type` for a returned error, as opposed to a thrown exception whose
  * constructor name is used. Same literal as Python's `TOOL_ERROR_TYPE` and as
@@ -283,7 +283,7 @@ export function errorText(value: unknown): string {
     for (const part of content) {
       const text = (part as { text?: unknown })?.text;
       if (typeof text !== "string") continue;
-      const trimmed = text.trim();
+      const trimmed = stripWhiteSpace(text);
       if (trimmed) parts.push(trimmed);
     }
   } catch {

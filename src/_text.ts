@@ -1,5 +1,29 @@
 /** String helpers shared by the capture and log paths. */
 
+// Unicode `White_Space`, exactly (SPEC §11.4's blank rule). Not `.trim()`, which
+// also removes U+FEFF and keeps U+0085, nor `str.strip()`, which also removes U+001C-U+001F.
+const WHITE_SPACE = /^\p{White_Space}$/u;
+const ALL_WHITE_SPACE = /^\p{White_Space}*$/u;
+
+/** `value` without leading and trailing characters matching `space`, a
+ * one-character pattern. A scan, not `/^x+|x+$/`, which is quadratic on a long
+ * run of spaces inside the string. */
+export function stripEdges(value: string, space: RegExp): string {
+  let start = 0;
+  let end = value.length;
+  while (start < end && space.test(value[start]!)) start++;
+  while (end > start && space.test(value[end - 1]!)) end--;
+  return value.slice(start, end);
+}
+
+export function stripWhiteSpace(value: string): string {
+  return stripEdges(value, WHITE_SPACE);
+}
+
+export function isBlank(value: string): boolean {
+  return ALL_WHITE_SPACE.test(value);
+}
+
 /** Truncate to `max` CODE POINTS, never splitting a surrogate pair.
  *
  * ⚠ **Cut by code point, not by UTF-16 code unit, and the reason is a

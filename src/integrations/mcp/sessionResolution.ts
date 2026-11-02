@@ -1,3 +1,4 @@
+import { stripWhiteSpace } from "../../_text.js";
 import { uuid7 } from "../../uuid7.js";
 import { extraHeaders, observeTransport, type Extra } from "./mcpTypes.js";
 
@@ -33,8 +34,8 @@ export async function resolveSessionId(
  * every such call under one session. Never throws into the tool call. */
 function sessionIdFromHeader(extra: Extra): string | null {
   try {
-    const value = extraHeaders(extra)?.get("mcp-session-id")?.trim();
-    return value ? value : null;
+    const value = extraHeaders(extra)?.get("mcp-session-id");
+    return value ? stripWhiteSpace(value) || null : null;
   } catch {
     return null;
   }

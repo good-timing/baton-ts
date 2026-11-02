@@ -195,8 +195,8 @@ describe("display_name on the wire (SPEC §11.4)", () => {
     ["at cap", "a".repeat(DISPLAY_NAME_MAX_LEN)],
     ["astral at cap, counted in code points", "😀".repeat(DISPLAY_NAME_MAX_LEN)],
   ])("sends a usable name (%s) verbatim", (_label, value) => {
-    // Blank is Unicode White_Space exactly: `.trim()` would drop U+FEFF,
-    // Python's `strip()` would drop U+001C, and the two SDKs must agree.
+    // Blank is Unicode White_Space exactly: `.trim()` would drop U+FEFF and
+    // `str.strip()` U+001C, and the SDKs must agree.
     expect(named(value).display_name).toBe(value);
   });
 });

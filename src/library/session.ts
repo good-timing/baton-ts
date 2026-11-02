@@ -4,7 +4,6 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import {
   NO_CALLER,
   callerFor,
-  pythonStrip,
   type OrganizationWire,
   type PrincipalWire,
 } from "../identity.js";
@@ -17,6 +16,7 @@ import { roundMetaCoordinates } from "../metaCoordinates.js";
 import { scrubOrNull } from "../integrations/mcp/safeScrub.js";
 import { uuid7 } from "../uuid7.js";
 import { isRecord } from "../_object.js";
+import { stripWhiteSpace } from "../_text.js";
 
 const TRANSPORT_LIBRARY = "library";
 const TURN_ID_META_KEY = "baton/turn_id";
@@ -57,7 +57,7 @@ function warn(message: string): void {
 }
 
 function vendorId(name: string, value: unknown): string | null {
-  const cleaned = typeof value === "string" ? pythonStrip(value) : "";
+  const cleaned = typeof value === "string" ? stripWhiteSpace(value) : "";
   if (cleaned !== "") return cleaned;
   if (value !== undefined && value !== null) {
     warn(`${name} is not a non-blank string — ignoring it.`);

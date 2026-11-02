@@ -38,7 +38,7 @@
  * back.
  */
 
-import { pythonStrip } from "../../identity.js";
+import { stripEdges } from "../../_text.js";
 import { warn } from "../../warn.js";
 import { fitsInstructionsCap } from "./llmText.js";
 
@@ -71,6 +71,15 @@ const PLACEHOLDER_LITERALS = new Set(["fastmcp", "mcp-server"]);
  * server's OWN class name rather than a bare trailing `-[0-9a-f]{4}`, because
  * hex spells words: `toybox-cafe` is a real name. */
 const RANDOM_SUFFIX = /-[0-9a-f]{4}$/;
+
+/** What Python's `str.strip()` removes: Unicode `White_Space` plus
+ * U+001C-U+001F. The server-name rule keeps it, as the Console's slug rule does. */
+const SEPARATORS = "\\x1c-\\x1f";
+const PYTHON_SPACE = new RegExp(`^[\\p{White_Space}${SEPARATORS}]$`, "u");
+
+function pythonStrip(value: string): string {
+  return stripEdges(value, PYTHON_SPACE);
+}
 
 function isLibraryPlaceholder(serverName: string, className: string): boolean {
   const stripped = pythonStrip(serverName);

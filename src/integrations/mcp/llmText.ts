@@ -13,6 +13,8 @@
  * recovery rule and the fields, so each rule is written once.
  */
 
+import { isBlank } from "../../_text.js";
+
 // Holds no report rule: each is written once, in the report tool's description.
 const REPORT_POINTER_TEMPLATE = (vendorDisplayName: string, annotationToolName: string) =>
   `Use \`${annotationToolName}\` to report a ${vendorDisplayName} tool call ` +
@@ -197,7 +199,7 @@ interface InstructionsHolder {
 
 function endsInOurs(current: unknown, vendor: unknown): boolean {
   if (typeof current !== "string") return false;
-  const prefix = typeof vendor === "string" && vendor.trim() ? `${vendor}\n\n` : "";
+  const prefix = typeof vendor === "string" && !isBlank(vendor) ? `${vendor}\n\n` : "";
   if (!current.startsWith(prefix)) return false;
   const rest = current.slice(prefix.length);
   return OURS_STARTS.some((start) => start.test(rest));
@@ -221,7 +223,7 @@ export function withVendorInstructions(
     vendor = current;
     holder[VENDOR_INSTRUCTIONS] = vendor;
   }
-  if (typeof vendor !== "string" || !vendor.trim()) return ours;
+  if (typeof vendor !== "string" || isBlank(vendor)) return ours;
   const combined = `${vendor}\n\n${ours}`;
   if (combined.length > CLAUDE_CODE_TRUNCATION_CAP) {
     warn(

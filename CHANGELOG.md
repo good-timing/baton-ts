@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- **Blank means empty after removing Unicode `White_Space`, as SPEC §11.4
+  says, everywhere a wire value is checked or stripped:** a principal or
+  organization id, an OAuth `sub` or `email`, a session or turn id, the
+  `mcp-session-id` header, an intent, an annotation's account, the vendor's
+  instructions, an error result's text, a DSN and `BATON_DISABLED`. Before,
+  ids and claims also lost `U+001C`–`U+001F`, as Python's old `str.strip()`
+  did, and the rest used `.trim()`, which also removes `U+FEFF` and keeps
+  `U+0085`. So a value made of `U+001C`–`U+001F` or `U+FEFF` is no longer
+  blank, one made of `U+0085` is, and `BATON_DISABLED="0\uFEFF"` no longer
+  reads as `0`. A DSN that starts with a byte-order mark (`U+FEFF`), as one
+  read from a file saved with a BOM may, now fails to parse; remove the mark
+  before passing it in. This matches `baton-sdk` on `main` and the Go SDK. A
+  server name is still read the way the Console reads it.
 - **`HttpSink` warns about refused events at most once a minute per HTTP
   status, and escapes the collector's text.** The first refusal with a status
   warns as before. Later ones with that status within a minute are only

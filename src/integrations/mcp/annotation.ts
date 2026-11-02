@@ -13,6 +13,7 @@
  */
 
 import { z } from "zod";
+import { isBlank } from "../../_text.js";
 import { AnnotationEventSchema } from "../../events.js";
 import { roundMetaCoordinates } from "../../metaCoordinates.js";
 import type { Sink } from "../../sinks.js";
@@ -62,7 +63,7 @@ export const TOOL_NAME_PARAM_NAME = "tool_name";
 
 /** SPEC §11.4: an annotation is a report when its account is filled. */
 export function isReport(whatHappened: string | null | undefined): whatHappened is string {
-  return typeof whatHappened === "string" && whatHappened.trim() !== "";
+  return typeof whatHappened === "string" && !isBlank(whatHappened);
 }
 
 /** Register the annotation tool on `server`. Returns the resolved tool name. */
