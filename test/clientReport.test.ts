@@ -487,6 +487,35 @@ describe("what stops loss reports (SPEC §11.4.7)", () => {
     await sink.aclose();
   });
 
+  it("a report sent alone after a 404 on the batch path is dropped when it fails", async () => {
+    quiet();
+    const requests: string[][] = [];
+    const fetchImpl = (url: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      const types = (sentIn(init) as unknown as Body[]).map((e) => e.event_type);
+      requests.push(types);
+      const batchPath = (url instanceof Request ? url.url : url.toString()).endsWith("/batch");
+      const code = batchPath ? 404 : types.includes("client_report") ? 500 : 202;
+      return Promise.resolve(new Response(null, { status: code }));
+    };
+    const sink = httpSink(fetchImpl);
+    PROCESS_DROPS.add("refused");
+    internals(sink).maybeReport(makeEvent());
+    await sendEach(sink, 3);
+    expect(requests[0]).toEqual(["tool_call_start", "client_report"]);
+    expect(requests.slice(1).filter((r) => r[0] === "client_report")).toHaveLength(1);
+    await sink.aclose();
+  });
+
+  it("a report taken into a batch with no events is dropped when it fails", async () => {
+    quiet();
+    const { fetchImpl, requests } = scripted([refuseEach, acceptEach, status(500)]);
+    const sink = httpSink(fetchImpl);
+    await send(sink, 4);
+    expect(requests[2]!.types).toEqual(["client_report"]);
+    expect(requests.filter((r) => r.types.includes("client_report"))).toHaveLength(1);
+    await sink.aclose();
+  });
+
   it("a report that rode with events is kept when its batch is", async () => {
     quiet();
     const { fetchImpl, requests } = scripted([refuseEach, acceptEach, status(500)]);

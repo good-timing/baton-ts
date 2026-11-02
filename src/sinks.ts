@@ -281,7 +281,8 @@ interface Waiting {
   bytes: number;
   writtenAt: number;
   reportSum?: number;
-  /** A report taken with no event beside it: dropped, not kept, when its request fails (SPEC §11.4.7). */
+  /** A report taken into a batch with no events. It, or any report sent one
+   * event per request, is dropped, not kept, when its request fails (SPEC §11.4.7). */
   alone?: boolean;
 }
 
@@ -839,7 +840,10 @@ export class HttpSink implements Sink {
     this.buffer.splice(0, batch.length);
     this.bufferedBytes -= eventBytes;
     this.sendingEvents = batch.length;
-    if (report !== null && fits(report)) batch.push({ ...report, alone: this.batchless || batch.length === 0 });
+    if (report !== null && fits(report)) {
+      report.alone = batch.length === 0;
+      batch.push(report);
+    }
     return batch.length > 0 ? batch : null;
   }
 
@@ -852,7 +856,8 @@ export class HttpSink implements Sink {
     const events: Waiting[] = [];
     for (const waiting of kept) {
       if (waiting.reportSum !== undefined) {
-        if (waiting.alone) this.pendingReport = null;
+        // Read now, not at take time: a 404 during the send switches to one event per request.
+        if (waiting.alone || this.batchless) this.pendingReport = null;
         continue;
       }
       events.push(waiting);
