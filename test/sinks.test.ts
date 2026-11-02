@@ -9,7 +9,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { z } from "zod";
-import { ToolCallStartEventSchema, type Event } from "../src/events.js";
+import { ClientReportEventSchema, ToolCallStartEventSchema, type Event } from "../src/events.js";
 import { acceptAll, results, sentIn, sequences, sinkWith, type Sent } from "./_sink.js";
 
 function makeEvent(overrides: Partial<{ sequence_number: number }> = {}): Event {
@@ -856,7 +856,7 @@ describe("HttpSink batches (SPEC §2.5)", () => {
     vi.restoreAllMocks();
   });
 
-  type Answer = (events: Sent[], url: string, init: RequestInit) => Response;
+  type Answer = (events: Sent[], url: string, init: RequestInit) => Response | Promise<Response>;
   const accepted = (events: Sent[]) => results(events);
 
   /** A collector answering each request with `answer`, recording every request. */
@@ -1137,6 +1137,72 @@ describe("HttpSink batches (SPEC §2.5)", () => {
     } finally {
       await sink.aclose();
     }
+  });
+
+  it("never rejects in the background when a due report fails to build", async () => {
+    const statuses = ["refused", "accepted"];
+    const { fetchImpl } = collector((events) => results(events, () => statuses.shift() ?? "accepted"));
+    quiet();
+    const rejections: unknown[] = [];
+    const onRejection = (reason: unknown) => rejections.push(reason);
+    process.on("unhandledRejection", onRejection);
+    const sink = sinkWith(fetchImpl, { flushIntervalMs: 10 });
+    try {
+      for (let i = 0; i < 2; i += 1) {
+        await sink.write(makeEvent());
+        await sink.flush();
+      }
+      expect(sink["pendingReport"]).not.toBeNull();
+      vi.spyOn(ClientReportEventSchema, "parse").mockImplementation(() => {
+        throw new Error("schema");
+      });
+      await vi.waitFor(() => expect(sink["pendingReport"]).toBeNull());
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(rejections).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", onRejection);
+      await sink.aclose();
+    }
+  });
+
+  it("counts as unsent at close only the half of a split batch still being sent", async () => {
+    const { fetchImpl } = collector((events, _url, init) => {
+      if (events.length > 2) return new Response(null, { status: 413 });
+      if (events[0]!.sequence_number === 1) return accepted(events);
+      return new Promise<Response>((_resolve, reject) => {
+        init.signal?.addEventListener("abort", () => reject(new Error("aborted")));
+      });
+    });
+    quiet();
+    const sink = sinkWith(fetchImpl, { requestTimeoutMs: 10_000, shutdownFlushTimeoutMs: 50 });
+    for (let i = 1; i <= 4; i += 1) await sink.write(makeEvent({ sequence_number: i }));
+    await sink.aclose();
+    expect(PROCESS_DROPS.total()).toEqual({ unsent_at_close: 2 });
+  });
+
+  it("after a 404 sends the whole due batch one event per request, and frees each answer's body", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    let cancelled = 0;
+    const body = () =>
+      new ReadableStream({
+        cancel() {
+          cancelled += 1;
+        },
+      });
+    const { fetchImpl, batches } = collector((_events, url) =>
+      url.endsWith("/batch") ? new Response(null, { status: 404 }) : new Response(body(), { status: 202 }),
+    );
+    quiet();
+    const sink = sinkWith(fetchImpl, { flushIntervalMs: 100 });
+    await sink.write(makeEvent({ sequence_number: 0 }));
+    await sink.flush();
+    await sink.write(makeEvent({ sequence_number: 1 }));
+    await vi.advanceTimersByTimeAsync(50);
+    await sink.write(makeEvent({ sequence_number: 2 }));
+    await vi.advanceTimersByTimeAsync(50);
+    expect(batches()).toEqual([[0], [0], [1], [2]]);
+    expect(cancelled).toBe(3);
+    await sink.aclose();
   });
 
   /** The number of requests sent by `atMs` after a 429 answered with `retryAfter`. */
