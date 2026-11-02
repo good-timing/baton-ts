@@ -27,6 +27,7 @@
     "test": "vitest run",
     "prepublishOnly": "npm run ci",
     "check:cjs": "node scripts/check-cjs.mjs",
+    "bench": "scripts/bench.sh",
     "ci": "npm run lint && npm run typecheck && npm run test && npm run build && npm run check:cjs"
   },
   "dependencies": {
