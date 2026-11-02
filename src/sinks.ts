@@ -795,17 +795,20 @@ export class HttpSink implements Sink {
     if (next !== Infinity) this.armTimer(next + this.flushIntervalMs - Date.now());
   }
 
+  /** A due report makes a batch due, so the timer it set never fires on a pass that sends nothing. */
   private isDue(force: boolean, reportDue: boolean): boolean {
     const now = Date.now();
-    if (this.buffer.length > 0) {
-      return force || this.batchIsFull() || this.buffer[0]!.writtenAt + this.flushIntervalMs <= now;
+    if (force || (reportDue && this.pendingReport !== null && this.reportSetAt + this.flushIntervalMs <= now)) {
+      return this.buffer.length > 0 || (reportDue && this.pendingReport !== null);
     }
-    return reportDue && this.pendingReport !== null && (force || this.reportSetAt + this.flushIntervalMs <= now);
+    return this.buffer.length > 0 && (this.batchIsFull() || this.buffer[0]!.writtenAt + this.flushIntervalMs <= now);
   }
 
   /** Takes the head of the buffer that fits one batch: one tenant and vendor
-   * (SPEC §2.5), at most 100 events and 1 MiB, a due report among them. Without a batch endpoint the
-   * same events go one per request. */
+   * (SPEC §2.5), at most 100 events and 1 MiB. A due report with the head
+   * event's tenant and vendor takes one of those places; with others it waits
+   * for a batch of its own. Without a batch endpoint the same events go one
+   * per request. */
   private takeBatch(withReport: boolean): Waiting[] | null {
     const batch: Waiting[] = [];
     let bytes = BATCH_FRAME_BYTES - 1;

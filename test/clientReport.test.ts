@@ -387,6 +387,27 @@ describe("what stops loss reports (SPEC §11.4.7)", () => {
     await sink.aclose();
   });
 
+  it("goes at its due time with the events waiting, without spinning the timer", async () => {
+    quiet();
+    noInterval();
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    try {
+      const { fetchImpl, requests } = scripted([refuseEach, acceptEach]);
+      const sink = httpSink(fetchImpl, { flushIntervalMs: 5000 });
+      await sendEach(sink, 2);
+      await vi.advanceTimersByTimeAsync(3000);
+      await sink.write(makeEvent());
+      const timers = vi.spyOn(globalThis, "setTimeout");
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(requests.slice(2).map((r) => r.types)).toEqual([["tool_call_start", "client_report"]]);
+      await vi.advanceTimersByTimeAsync(3000);
+      expect(timers.mock.calls.length).toBeLessThan(5);
+      await sink.aclose();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("rides the first batch with room, not only the last in the queue", async () => {
     quiet();
     noInterval();
