@@ -833,6 +833,8 @@ export class HttpSink implements Sink {
    * there were none. */
   private putBack(kept: Waiting[]): boolean {
     this.sendingEvents = 0;
+    // close() has already counted these as unsent_at_close.
+    if (this.closed) return kept.length === 0;
     const events: Waiting[] = [];
     for (const waiting of kept) {
       if (waiting.reportSum !== undefined) continue;

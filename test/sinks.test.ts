@@ -1191,6 +1191,30 @@ describe("HttpSink batches (SPEC §2.5)", () => {
     expect(PROCESS_DROPS.total()).toEqual({ unsent_at_close: 2 });
   });
 
+  it("counts a batch that comes back after aclose() under unsent_at_close only, not also as buffer_full", async () => {
+    let aborted!: () => void;
+    const settled = new Promise<void>((resolve) => (aborted = resolve));
+    const { fetchImpl } = collector(
+      (_events, _url, init) =>
+        new Promise<Response>((_resolve, reject) => {
+          init.signal?.addEventListener("abort", () => {
+            reject(new Error("aborted"));
+            aborted();
+          });
+        }),
+    );
+    quiet();
+    const sink = sinkWith(fetchImpl, { bufferSize: 3, requestTimeoutMs: 10_000, shutdownFlushTimeoutMs: 50 });
+    for (let i = 1; i <= 3; i += 1) await sink.write(makeEvent({ sequence_number: i }));
+    void sink.flush();
+    await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalledTimes(1));
+    for (let i = 4; i <= 6; i += 1) await sink.write(makeEvent({ sequence_number: i }));
+    await sink.aclose();
+    await settled;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(PROCESS_DROPS.total()).toEqual({ unsent_at_close: 6 });
+  });
+
   it("after a 404 sends the whole due batch one event per request, and frees each answer's body", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
     let cancelled = 0;
