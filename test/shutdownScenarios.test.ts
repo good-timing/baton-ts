@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { PROCESS_DROPS } from "../src/drops.js";
 import { withBaton } from "../src/integrations/mcp/withBaton.js";
 import { HttpSink } from "../src/sinks.js";
+import { CFG } from "./integrations/mcp/_majors.js";
 import { connectInMemory, echoServer, hasPython, scenarioFile, startCollector, toolEvents } from "./_scenarios.js";
 
 type Step =
@@ -76,7 +77,7 @@ describe.skipIf(!hasPython)("withBaton's shutdown against the fake collector", (
         backoffBaseMs: settings.backoff_base_ms,
       });
       const server = echoServer();
-      const handle = withBaton(server, { vendorId: "acme", vendorDisplayName: "Acme", consentToken: "ct", sink });
+      const handle = withBaton(server, { ...CFG, sink });
       const client = await connectInMemory(server);
       const closeLimit = settings.shutdown_budget_ms + limits.close_margin_ms;
       const close = async () => {
@@ -98,8 +99,9 @@ describe.skipIf(!hasPython)("withBaton's shutdown against the fake collector", (
         } else if ("close" in step) {
           await close();
         } else if ("close_twice" in step) {
-          stillClosing.push(close());
-          await close();
+          const both = [close(), close()];
+          stillClosing.push(...both);
+          await Promise.race(both);
         } else {
           expect(await toolEvents(port)).toHaveLength(step.check.tool_events);
         }
