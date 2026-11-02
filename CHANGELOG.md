@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.6.3: a paused call is one call; a write after close is counted as after_close
 
 - **An event written to a closed sink is dropped and counted as
   `after_close`, with one warning per sink, as SPEC §11.2 rules 7 and 8 say.**
