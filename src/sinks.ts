@@ -498,7 +498,7 @@ export class HttpSink implements Sink {
     }
     this.enqueue({ event, json, bytes, writtenAt: Date.now() });
     this.unsentWarned = false;
-    if (this.batchIsFull() && !this.waitForTimer) this.drainInBackground();
+    if (this.batchIsFull() && !this.waitForTimer) void this.scheduleDrain(false);
     else this.armTimer(this.buffer[0]!.writtenAt + this.flushIntervalMs - Date.now());
     this.ensureExitHooksRegistered();
   }
@@ -606,7 +606,7 @@ export class HttpSink implements Sink {
       () => {
         this.flushTimer = null;
         this.waitForTimer = false;
-        this.drainInBackground();
+        void this.scheduleDrain(false);
       },
       Math.min(Math.max(delayMs, 0), MAX_TIMER_MS),
     );
@@ -618,11 +618,6 @@ export class HttpSink implements Sink {
     if (this.flushTimer === null) return;
     clearTimeout(this.flushTimer);
     this.flushTimer = null;
-  }
-
-  /** A rejection here would reach the vendor's process as an unhandled one. */
-  private drainInBackground(): void {
-    this.scheduleDrain(false).catch(() => undefined);
   }
 
   /** Runs `drainLocked` after the pass under way, one pass at a time, so two
@@ -639,6 +634,9 @@ export class HttpSink implements Sink {
       return this.drainLocked(forced);
     };
     this.queuedDrain = this.drainChain.then(run, run);
+    // One handler per pass, here, so a caller that drops the promise cannot
+    // leave an unhandled rejection, and a write adds nothing to a queued pass.
+    this.queuedDrain.catch(() => undefined);
     this.drainChain = this.queuedDrain;
     return this.queuedDrain;
   }

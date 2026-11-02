@@ -706,6 +706,30 @@ describe("HttpSink", () => {
     }
   });
 
+  it("adds nothing per write to the queued pass while a send is stuck", async () => {
+    const fetchImpl = vi.fn().mockImplementation(
+      (_url: string, init: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          init.signal?.addEventListener("abort", () => reject(new Error("aborted")));
+        }),
+    );
+    const sink = sinkWith(fetchImpl, { requestTimeoutMs: 60_000, shutdownFlushTimeoutMs: 50 });
+    try {
+      for (let i = 0; i < 100; i += 1) await sink.write(makeEvent());
+      await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalledTimes(1));
+      for (let i = 0; i < 100; i += 1) await sink.write(makeEvent());
+      const queued = sink["queuedDrain"] as Promise<void>;
+      expect(queued).not.toBeNull();
+      // `catch` and `finally` both go through `then`.
+      const handlers = vi.spyOn(queued, "then");
+      for (let i = 0; i < 500; i += 1) await sink.write(makeEvent());
+      expect(handlers).not.toHaveBeenCalled();
+    } finally {
+      vi.spyOn(process, "emitWarning").mockImplementation(() => {});
+      await sink.aclose();
+    }
+  });
+
   it("waits in flush() again once the stalled drain has finished", async () => {
     let release: (response: Response) => void = () => {};
     const fetchImpl = vi
