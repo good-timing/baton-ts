@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { raceDeadline, TIMED_OUT } from "../src/deadline.js";
 import { boundedSinkCall, callWithin, HttpSink, MultiSink } from "../src/sinks.js";
-import { results, sentIn } from "./_sink.js";
+import { results, sentIn, sinkWith } from "./_sink.js";
 import { Client, type Sink } from "../src/index.js";
 
 function collectWarnings(): { seen: string[]; restore: () => void } {
@@ -12,7 +12,7 @@ function collectWarnings(): { seen: string[]; restore: () => void } {
   return { seen, restore: () => spy.mockRestore() };
 }
 
-function sinkWith(overrides: Partial<Record<keyof Sink, unknown>>): Sink {
+function stubSink(overrides: Partial<Record<keyof Sink, unknown>>): Sink {
   return {
     write: () => Promise.resolve(),
     flush: () => Promise.resolve(),
@@ -27,7 +27,7 @@ describe("boundedSinkCall (SPEC §11.2 rule 7)", () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     try {
       let done = false;
-      const call = boundedSinkCall(sinkWith({ aclose: () => new Promise(() => {}) }), "aclose").then(() => {
+      const call = boundedSinkCall(stubSink({ aclose: () => new Promise(() => {}) }), "aclose").then(() => {
         done = true;
       });
       await vi.advanceTimersByTimeAsync(3249);
@@ -44,9 +44,9 @@ describe("boundedSinkCall (SPEC §11.2 rule 7)", () => {
   it("never rejects, whether the sink rejects, throws, or returns no promise", async () => {
     const warnings = collectWarnings();
     try {
-      await boundedSinkCall(sinkWith({ flush: () => Promise.reject(new Error("disk full")) }), "flush");
+      await boundedSinkCall(stubSink({ flush: () => Promise.reject(new Error("disk full")) }), "flush");
       await boundedSinkCall(
-        sinkWith({
+        stubSink({
           aclose: () => {
             throw new Error("sync throw");
           },
@@ -54,10 +54,10 @@ describe("boundedSinkCall (SPEC §11.2 rule 7)", () => {
         "aclose",
       );
       // A vendor's sink written with plain methods returns no promise.
-      await boundedSinkCall(sinkWith({ flush: () => undefined }), "flush");
+      await boundedSinkCall(stubSink({ flush: () => undefined }), "flush");
       // An object with no prototype has no `toString`, so `String()` throws on it.
       // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors
-      await boundedSinkCall(sinkWith({ flush: () => Promise.reject(Object.create(null)) }), "flush");
+      await boundedSinkCall(stubSink({ flush: () => Promise.reject(Object.create(null)) }), "flush");
       expect(warnings.seen.filter((w) => w.includes("failed"))).toHaveLength(3);
     } finally {
       warnings.restore();
@@ -93,7 +93,7 @@ describe("boundedSinkCall (SPEC §11.2 rule 7)", () => {
       let done = false;
       const http = new HttpSink("https://collector.example", { apiKey: "k", shutdownFlushTimeoutMs: 10_000 });
       vi.spyOn(http, "flush").mockImplementation(() => new Promise((resolve) => setTimeout(resolve, 5000)));
-      const call = boundedSinkCall(new MultiSink([sinkWith({}), http]), "flush").then(() => {
+      const call = boundedSinkCall(new MultiSink([stubSink({}), http]), "flush").then(() => {
         done = true;
       });
       await vi.advanceTimersByTimeAsync(4999);
@@ -159,7 +159,7 @@ describe("raceDeadline", () => {
 
 describe("Client.aclose() on a sink of the vendor's own (SPEC §11.2 rule 7)", () => {
   it("returns from a sink that never answers", async () => {
-    const stuck = sinkWith({ flush: () => new Promise(() => {}), aclose: () => new Promise(() => {}) });
+    const stuck = stubSink({ flush: () => new Promise(() => {}), aclose: () => new Promise(() => {}) });
     const warnings = collectWarnings();
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     try {
@@ -177,7 +177,7 @@ describe("Client.aclose() on a sink of the vendor's own (SPEC §11.2 rule 7)", (
     "%s() waits for stuck writes within the sink's budget, not on top of it",
     async (method) => {
       const called: string[] = [];
-      const stuck = sinkWith({
+      const stuck = stubSink({
         write: () => new Promise(() => {}),
         flush: () => (called.push("flush"), new Promise(() => {})),
         aclose: () => (called.push("aclose"), new Promise(() => {})),
@@ -205,7 +205,7 @@ describe("Client.aclose() on a sink of the vendor's own (SPEC §11.2 rule 7)", (
 
   it("closes the sink when a write fails with an error that cannot be printed", async () => {
     let closed = false;
-    const sink = sinkWith({
+    const sink = stubSink({
       // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors
       write: () => Promise.reject(Object.create(null)),
       aclose: () => {
@@ -226,7 +226,7 @@ describe("Client.aclose() on a sink of the vendor's own (SPEC §11.2 rule 7)", (
 
   it("closes the sink even when in-flight events never settle", async () => {
     let closed = false;
-    const sink = sinkWith({
+    const sink = stubSink({
       write: () => new Promise(() => {}),
       aclose: () => {
         closed = true;
@@ -312,7 +312,7 @@ describe("one shutdown deadline, handed down (SPEC §11.2 rule 7)", () => {
     const warnings = collectWarnings();
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
     try {
-      const sink = new MultiSink([sinkWith({ write: () => new Promise(() => {}) }), stalledHttpSink(3000, Kind)]);
+      const sink = new MultiSink([stubSink({ write: () => new Promise(() => {}) }), stalledHttpSink(3000, Kind)]);
       const client = new Client({ sink, vendorId: "acme" });
       void client.trace({ toolName: "t" }, () => "ok");
       void client[method]();
@@ -335,14 +335,14 @@ function slowHttpSink(answerMs: number, shutdownFlushTimeoutMs: number): { sink:
         resolve(results(sentIn(init)));
       }, answerMs),
     );
-  const sink = new HttpSink("https://collector.example", { apiKey: "k", fetchImpl, shutdownFlushTimeoutMs });
+  const sink = sinkWith(fetchImpl, { shutdownFlushTimeoutMs });
   return { sink, sent: () => sent };
 }
 
 describe("one shutdown deadline: what still gets delivered", () => {
   it("delivers both events when a vendor write is slow but finishes", async () => {
     const http = slowHttpSink(20, 1000);
-    const slow = sinkWith({ write: () => new Promise<void>((resolve) => setTimeout(resolve, 100)) });
+    const slow = stubSink({ write: () => new Promise<void>((resolve) => setTimeout(resolve, 100)) });
     const client = new Client({ sink: new MultiSink([slow, http.sink]), vendorId: "acme" });
     client.trace({ toolName: "t" }, () => "ok");
     await client.aclose();
@@ -383,7 +383,7 @@ describe("one shutdown deadline: what still gets delivered", () => {
     const warnings = collectWarnings();
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
     try {
-      const client = new Client({ sink: sinkWith({ write: () => new Promise(() => {}) }), vendorId: "acme" });
+      const client = new Client({ sink: stubSink({ write: () => new Promise(() => {}) }), vendorId: "acme" });
       void client.trace({ toolName: "t" }, () => "ok");
       void client.flush();
       await vi.advanceTimersByTimeAsync(3250);

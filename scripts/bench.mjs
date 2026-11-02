@@ -72,10 +72,10 @@ async function timedCalls(client, calls, concurrency) {
       left -= 1;
       const started = performance.now();
       const result = await client.callTool({ name: "echo", arguments: { text: "hello" } });
-      times.push(performance.now() - started);
       // A real server reads each call from a socket, so I/O runs between calls.
       // The in-memory transport only queues microtasks, which never let it run.
       await new Promise((resolve) => setImmediate(resolve));
+      times.push(performance.now() - started);
       if (result.isError) throw new Error(`echo failed: ${JSON.stringify(result.content)}`);
     }
   };

@@ -9,21 +9,9 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { z } from "zod";
-import { ClientReportEventSchema, ToolCallStartEventSchema, type Event } from "../src/events.js";
-import { acceptAll, results, sentIn, sequences, sinkWith, type Sent } from "./_sink.js";
+import { ClientReportEventSchema, type Event } from "../src/events.js";
+import { acceptAll, makeEvent, results, sentIn, sequences, sinkWith, type Sent } from "./_sink.js";
 
-function makeEvent(overrides: Partial<{ sequence_number: number }> = {}): Event {
-  return ToolCallStartEventSchema.parse({
-    tenant_id: "t",
-    vendor_id: "v",
-    session_id: "s",
-    sequence_number: overrides.sequence_number ?? 0,
-    captured_at: new Date().toISOString(),
-    consent_token: "ct",
-    call_id: "call-1",
-    payload: { tool_name: "lookup" },
-  });
-}
 
 describe("StdoutSink", () => {
   it("writes one JSONL line per event to the given stream", async () => {
@@ -881,10 +869,9 @@ describe("HttpSink batches (SPEC §2.5)", () => {
   });
 
   type Answer = (events: Sent[], url: string, init: RequestInit) => Response | Promise<Response>;
-  const accepted = (events: Sent[]) => results(events);
 
   /** A collector answering each request with `answer`, recording every request. */
-  function collector(answer: Answer = accepted) {
+  function collector(answer: Answer = (events) => results(events)) {
     const requests: { url: string; events: Sent[]; bytes: number }[] = [];
     const fetchImpl = vi.fn().mockImplementation((url: string, init: RequestInit) => {
       const events = sentIn(init);
@@ -983,7 +970,7 @@ describe("HttpSink batches (SPEC §2.5)", () => {
 
   it("splits a batch the collector answers 413 to, and sends each half", async () => {
     const { fetchImpl, batches } = collector((events) =>
-      events.length > 2 ? new Response(null, { status: 413 }) : accepted(events),
+      events.length > 2 ? new Response(null, { status: 413 }) : results(events),
     );
     const sink = sinkWith(fetchImpl);
     for (let i = 1; i <= 5; i += 1) await sink.write(makeEvent({ sequence_number: i }));
@@ -1032,7 +1019,7 @@ describe("HttpSink batches (SPEC §2.5)", () => {
 
   it("tries a failed batch again when the timer fires, with no further write", async () => {
     const answers = [new Response(null, { status: 503 })];
-    const { fetchImpl, batches } = collector((events) => answers.shift() ?? accepted(events));
+    const { fetchImpl, batches } = collector((events) => answers.shift() ?? results(events));
     const sink = sinkWith(fetchImpl, { maxRetries: 0, flushIntervalMs: 20 });
     await sink.write(makeEvent({ sequence_number: 1 }));
     await sink.flush();
@@ -1121,7 +1108,7 @@ describe("HttpSink batches (SPEC §2.5)", () => {
       );
     let first = true;
     const { fetchImpl, batches } = collector((events, _url, init) => {
-      if (!first) return accepted(events);
+      if (!first) return results(events);
       first = false;
       return stalled(init.signal!);
     });
@@ -1192,7 +1179,7 @@ describe("HttpSink batches (SPEC §2.5)", () => {
   it("counts as unsent at close only the half of a split batch still being sent", async () => {
     const { fetchImpl } = collector((events, _url, init) => {
       if (events.length > 2) return new Response(null, { status: 413 });
-      if (events[0]!.sequence_number === 1) return accepted(events);
+      if (events[0]!.sequence_number === 1) return results(events);
       return new Promise<Response>((_resolve, reject) => {
         init.signal?.addEventListener("abort", () => reject(new Error("aborted")));
       });
@@ -1229,12 +1216,46 @@ describe("HttpSink batches (SPEC §2.5)", () => {
     await sink.aclose();
   });
 
+  it("starts no request after aclose() returns, even in one-event mode", async () => {
+    const { fetchImpl } = collector((_events, url) =>
+      url.endsWith("/batch")
+        ? new Response(null, { status: 404 })
+        : new Promise<Response>((resolve) => setTimeout(() => resolve(new Response(null, { status: 202 })), 60)),
+    );
+    quiet();
+    const sink = sinkWith(fetchImpl, { shutdownFlushTimeoutMs: 20 });
+    for (let i = 1; i <= 3; i += 1) await sink.write(makeEvent({ sequence_number: i }));
+    await sink.aclose();
+    const atClose = fetchImpl.mock.calls.length;
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(fetchImpl.mock.calls.length).toBe(atClose);
+    expect(PROCESS_DROPS.total()).toEqual({ unsent_at_close: 3 });
+  });
+
+  it("refuses an event whose result is refused with no readable error, and skips a result with no string event_id", async () => {
+    const { fetchImpl } = collector((events) => {
+      const answers = [
+        { event_id: events[0]!.event_id, status: "refused" },
+        { event_id: 7, status: "refused" },
+        { event_id: events[1]!.event_id, status: "refused", error: "not an object" },
+      ];
+      return new Response(JSON.stringify({ results: answers }), { status: 200 });
+    });
+    const warning = quiet();
+    const sink = sinkWith(fetchImpl);
+    for (let i = 1; i <= 3; i += 1) await sink.write(makeEvent({ sequence_number: i }));
+    await sink.flush();
+    await sink.aclose();
+    expect(PROCESS_DROPS.total()).toEqual({ refused: 2 });
+    expect(messages(warning).join("")).toContain("REFUSED 2 events and they have been dropped (no code)");
+  });
+
   /** The number of requests sent by `atMs` after a 429 answered with `retryAfter`. */
   async function requestsAfter429(retryAfter: string | null, atMs: number, options: Partial<HttpSinkOptions> = {}) {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
     const headers: Record<string, string> = retryAfter === null ? {} : { "Retry-After": retryAfter };
     const answers = [new Response(null, { status: 429, headers })];
-    const { fetchImpl, batches } = collector((events) => answers.shift() ?? accepted(events));
+    const { fetchImpl, batches } = collector((events) => answers.shift() ?? results(events));
     const sink = sinkWith(fetchImpl, { flushIntervalMs: 10, maxRetries: 0, ...options });
     await sink.write(makeEvent({ sequence_number: 1 }));
     await sink.flush();

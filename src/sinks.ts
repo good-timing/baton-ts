@@ -256,13 +256,13 @@ export class MultiSink implements Sink {
   }
 }
 
-
 // =============================================================================
 // HttpSink — batches + bearer + bounded buffer + retry + circuit breaker
 // =============================================================================
 
 const BATCH_OPEN = '{"events":[';
 const BATCH_CLOSE = "]}";
+const BATCH_FRAME_BYTES = (BATCH_OPEN + BATCH_CLOSE).length;
 /** SPEC §2.5's caps on one batch. */
 const BATCH_MAX_EVENTS = 100;
 const BATCH_MAX_BYTES = 1_048_576;
@@ -300,8 +300,6 @@ const utf8 = new TextEncoder();
 function utf8Bytes(text: string): number {
   return typeof Buffer === "undefined" ? utf8.encode(text).length : Buffer.byteLength(text, "utf8");
 }
-
-const BATCH_FRAME_BYTES = utf8Bytes(BATCH_OPEN + BATCH_CLOSE);
 
 function sum(values: Iterable<number>): number {
   let total = 0;
@@ -680,7 +678,7 @@ export class HttpSink implements Sink {
   private async exitPass(): Promise<void> {
     const deadline = Date.now() + this.shutdownFlushTimeoutMs;
     while (this.circuit.canRequest() && Date.now() >= this.retryAt && Date.now() < deadline) {
-      const batch = this.takeBatch(true, false);
+      const batch = this.takeBatch(false);
       if (batch === null) break;
       if (!this.putBack(await this.sendBatch(batch, 0, deadline))) break;
     }
@@ -777,7 +775,7 @@ export class HttpSink implements Sink {
         failed = true;
         break;
       }
-      const batch = this.takeBatch(force, reportDue);
+      const batch = this.takeBatch(reportDue);
       if (batch === null) break;
       if (batch.some((w) => w.reportSum !== undefined)) reportDue = false;
       if (!this.putBack(await this.sendBatch(batch, this.maxRetries, Infinity))) {
@@ -793,8 +791,7 @@ export class HttpSink implements Sink {
       if (this.buffer.length > 0 || this.pendingReport !== null) this.armTimer(Math.max(...waits));
       return;
     }
-    const dueAt = [this.buffer[0]?.writtenAt, this.pendingReport === null ? undefined : this.reportSetAt];
-    const next = Math.min(...dueAt.filter((at) => at !== undefined));
+    const next = Math.min(this.buffer[0]?.writtenAt ?? Infinity, this.pendingReport ? this.reportSetAt : Infinity);
     if (next !== Infinity) this.armTimer(next + this.flushIntervalMs - Date.now());
   }
 
@@ -806,12 +803,13 @@ export class HttpSink implements Sink {
     return reportDue && this.pendingReport !== null && (force || this.reportSetAt + this.flushIntervalMs <= now);
   }
 
-  /** Takes out of the buffer the head that fits one request: one tenant and
-   * vendor (SPEC §2.5), at most 100 events and 1 MiB. */
-  private takeBatch(force: boolean, withReport: boolean): Waiting[] | null {
-    if (!this.isDue(force, withReport)) return null;
+  /** Takes the head of the buffer that fits one batch: one tenant and vendor
+   * (SPEC §2.5), at most 100 events and 1 MiB. Without a batch endpoint the
+   * same events go one per request. */
+  private takeBatch(withReport: boolean): Waiting[] | null {
     const batch: Waiting[] = [];
     let bytes = BATCH_FRAME_BYTES - 1;
+    let eventBytes = 0;
     const fits = (w: Waiting): boolean =>
       batch.length === 0 ||
       (batch.length < BATCH_MAX_EVENTS && sameBatch(w.event, batch[0]!.event) && bytes + 1 + w.bytes <= BATCH_MAX_BYTES);
@@ -819,9 +817,10 @@ export class HttpSink implements Sink {
       if (!fits(waiting)) break;
       batch.push(waiting);
       bytes += 1 + waiting.bytes;
+      eventBytes += waiting.bytes;
     }
     this.buffer.splice(0, batch.length);
-    this.bufferedBytes -= sum(batch.map((w) => w.bytes));
+    this.bufferedBytes -= eventBytes;
     this.sendingEvents = batch.length;
     if (withReport) {
       const report = this.buildReport();
@@ -834,9 +833,13 @@ export class HttpSink implements Sink {
    * there were none. */
   private putBack(kept: Waiting[]): boolean {
     this.sendingEvents = 0;
-    const events = kept.filter((w) => w.reportSum === undefined);
+    const events: Waiting[] = [];
+    for (const waiting of kept) {
+      if (waiting.reportSum !== undefined) continue;
+      events.push(waiting);
+      this.bufferedBytes += waiting.bytes;
+    }
     this.buffer.unshift(...events);
-    this.bufferedBytes += sum(events.map((w) => w.bytes));
     this.dropOverflow();
     return kept.length === 0;
   }
@@ -894,7 +897,7 @@ export class HttpSink implements Sink {
     for (let attempt = 0; ; attempt++) {
       const timeLeft = deadline - Date.now();
       if (timeLeft <= 0) return batch;
-      const answer = await this.post(body, batch, batchless, Math.min(this.requestTimeoutMs, timeLeft));
+      const answer = await this.post(body, batch.length, batchless, Math.min(this.requestTimeoutMs, timeLeft));
       if (answer.kind === "no_batch_endpoint") {
         this.batchless = true;
         warn("baton: the collector has no batch endpoint; sending one event per request.");
@@ -926,6 +929,7 @@ export class HttpSink implements Sink {
 
   private async sendEachAlone(batch: Waiting[], retries: number, deadline: number): Promise<Waiting[]> {
     for (const [i, waiting] of batch.entries()) {
+      if (this.closed) return batch.slice(i);
       const kept = await this.sendBatch([waiting], retries, deadline);
       if (kept.length > 0) return [...kept, ...batch.slice(i + 1)];
     }
@@ -933,10 +937,10 @@ export class HttpSink implements Sink {
   }
 
   private settle(batch: Waiting[], answer: Extract<Answer, { kind: "answered" | "refused" }>): void {
-    this.sendingEvents -= batch.filter((w) => w.reportSum === undefined).length;
     let lastDelivered: Event | null = null;
     const refused = new Map<string, { first: Refusal; n: number }>();
     for (const waiting of batch) {
+      if (waiting.reportSum === undefined) this.sendingEvents -= 1;
       const refusal = answer.kind === "refused" ? answer.refusal : answer.refused.get(waiting.event.event_id);
       if (waiting.reportSum !== undefined) {
         this.pendingReport = null;
@@ -989,7 +993,9 @@ export class HttpSink implements Sink {
    * is missing before Node 20.3, and on some later versions it keeps every
    * combined signal alive as long as the long-lived `closing` signal. Any body
    * read is under the same signal, so a stalled body cannot hold the drain. */
-  private async post(body: string, batch: Waiting[], batchless: boolean, timeoutMs: number): Promise<Answer> {
+  private async post(body: string, size: number, batchless: boolean, timeoutMs: number): Promise<Answer> {
+    // A listener added to an aborted signal never fires, so the request would run on.
+    if (this.closed) return { kind: "transient", retryAfterMs: null };
     const request = new AbortController();
     const abort = (): void => request.abort();
     const timer = setTimeout(abort, timeoutMs);
@@ -1000,7 +1006,7 @@ export class HttpSink implements Sink {
         headers: this.authHeaders(),
         body,
         signal: request.signal,
-        // A followed redirect turns the POST into a GET (SPEC §2.5).
+        // SPEC §2.5: a redirect is a failure, not followed.
         redirect: "manual",
       });
       const { status } = response;
@@ -1012,7 +1018,7 @@ export class HttpSink implements Sink {
         }
         return { kind: "answered", refused: HttpSink.refusedIn(await response.text()) };
       }
-      const other = HttpSink.otherAnswer(response, batch.length, batchless);
+      const other = HttpSink.otherAnswer(response, size, batchless);
       if (other !== null) {
         // An unread body holds its connection until GC.
         void response.body?.cancel().catch(() => undefined);

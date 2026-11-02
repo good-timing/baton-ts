@@ -1,21 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { PROCESS_DROPS } from "../src/drops.js";
-import { ToolCallStartEventSchema, type Event } from "../src/events.js";
+import type { Event } from "../src/events.js";
 import { HttpSink } from "../src/sinks.js";
-import { results, sentIn, sinkWith } from "./_sink.js";
+import { makeEvent, results, sentIn, sinkWith } from "./_sink.js";
 
-function makeEvent(): Event {
-  return ToolCallStartEventSchema.parse({
-    tenant_id: "t",
-    vendor_id: "v",
-    session_id: "s",
-    sequence_number: 0,
-    captured_at: new Date().toISOString(),
-    consent_token: "ct",
-    call_id: "call-1",
-    payload: { tool_name: "lookup" },
-  });
-}
 
 type Body = Record<string, unknown> & { event_type: string; payload: Record<string, unknown> };
 

@@ -1,4 +1,5 @@
-/** What the HttpSink tests share: a sink against a mock fetch, and readers for what it sent. */
+/** What the HttpSink tests share: an event, a sink against a mock fetch, and readers for what it sent. */
+import { ToolCallStartEventSchema, type Event } from "../src/events.js";
 import { HttpSink, type HttpSinkOptions } from "../src/sinks.js";
 
 export type Sent = { event_id?: string; event_type: string; sequence_number: number };
@@ -35,3 +36,16 @@ export function results<T extends object>(
 /** A fetch that accepts every event it is sent. */
 export const acceptAll = (_url: string | URL | Request, init?: RequestInit): Promise<Response> =>
   Promise.resolve(results(sentIn(init)));
+
+export function makeEvent(overrides: Partial<{ sequence_number: number }> = {}): Event {
+  return ToolCallStartEventSchema.parse({
+    tenant_id: "t",
+    vendor_id: "v",
+    session_id: "s",
+    sequence_number: overrides.sequence_number ?? 0,
+    captured_at: new Date().toISOString(),
+    consent_token: "ct",
+    call_id: "call-1",
+    payload: { tool_name: "lookup" },
+  });
+}

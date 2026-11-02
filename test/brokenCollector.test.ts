@@ -5,8 +5,8 @@
  */
 import { describe, expect, it, vi } from "vitest";
 import { PROCESS_DROPS } from "../src/drops.js";
-import { ToolCallStartEventSchema, type Event } from "../src/events.js";
 import { HttpSink } from "../src/sinks.js";
+import { makeEvent } from "./_sink.js";
 import { hasPython, received, scenarioFile, startCollector, type Received } from "./_scenarios.js";
 
 interface Scenario {
@@ -23,18 +23,6 @@ const spec = scenarioFile<{
   scenarios: Scenario[];
 }>("scenarios.json");
 
-function makeEvent(sequence: number): Event {
-  return ToolCallStartEventSchema.parse({
-    tenant_id: "t",
-    vendor_id: "v",
-    session_id: "s",
-    sequence_number: sequence,
-    captured_at: new Date().toISOString(),
-    consent_token: "ct",
-    call_id: "call-1",
-    payload: { tool_name: "lookup" },
-  });
-}
 
 /** Mode "down" starts no collector: the sink sends to port 1, where nothing listens. */
 const NOWHERE = 1;
@@ -63,7 +51,7 @@ describe.skipIf(!hasPython)("the HTTP sink against a broken collector", () => {
       const sent = Array.from({ length: scenario.events }, (_, i) => i + 1);
       for (const n of sent) {
         const started = performance.now();
-        await sink.write(makeEvent(n));
+        await sink.write(makeEvent({ sequence_number: n }));
         expect(performance.now() - started).toBeLessThanOrEqual(limits.write_ms);
       }
       const reports = scenario.expect?.reports;

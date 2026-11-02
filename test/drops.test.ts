@@ -1,23 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 import { DROP_REASONS, type DropReason, PROCESS_DROPS } from "../src/drops.js";
-import { ToolCallStartEventSchema, type Event } from "../src/events.js";
+import type { Event } from "../src/events.js";
 import { emit } from "../src/integrations/mcp/emit.js";
 import { Client } from "../src/index.js";
 import { safeWrite, type Sink } from "../src/sinks.js";
-import { acceptAll, results, sentIn, sequences, sinkWith } from "./_sink.js";
+import { acceptAll, makeEvent, results, sentIn, sequences, sinkWith } from "./_sink.js";
 
-function makeEvent(): Event {
-  return ToolCallStartEventSchema.parse({
-    tenant_id: "t",
-    vendor_id: "v",
-    session_id: "s",
-    sequence_number: 0,
-    captured_at: new Date().toISOString(),
-    consent_token: "ct",
-    call_id: "call-1",
-    payload: { tool_name: "lookup" },
-  });
-}
 
 const neverAnswers = (_url: string | URL | Request, init?: RequestInit) =>
   new Promise<Response>((_resolve, reject) => {
