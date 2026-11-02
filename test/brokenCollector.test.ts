@@ -3,15 +3,11 @@
  * `collector/scenarios.json`; what each checks is the file's `about`. Skipped
  * where `python3` is missing, which the collector needs.
  */
-import { type ChildProcess, spawn, spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
-import { createInterface } from "node:readline";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { PROCESS_DROPS } from "../src/drops.js";
 import { ToolCallStartEventSchema, type Event } from "../src/events.js";
 import { HttpSink } from "../src/sinks.js";
+import { hasPython, received, scenarioFile, startCollector, type Received } from "./_scenarios.js";
 
 interface Scenario {
   name: string;
@@ -21,13 +17,11 @@ interface Scenario {
   expect?: { accepted?: number; dropped?: number; reports?: number };
 }
 
-const collectorDir = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "baton-spec", "collector");
-const spec = JSON.parse(readFileSync(path.join(collectorDir, "scenarios.json"), "utf-8")) as {
+const spec = scenarioFile<{
   settings: { request_timeout_ms: number; shutdown_budget_ms: number; backoff_base_ms: number };
   limits: { write_ms: number; close_margin_ms: number; report_ms: number };
   scenarios: Scenario[];
-};
-const hasPython = spawnSync("python3", ["--version"]).status === 0;
+}>("scenarios.json");
 
 function makeEvent(sequence: number): Event {
   return ToolCallStartEventSchema.parse({
@@ -42,40 +36,12 @@ function makeEvent(sequence: number): Event {
   });
 }
 
-let running: ChildProcess | null = null;
-afterEach(() => {
-  running?.kill();
-  running = null;
-});
+/** Mode "down" starts no collector: the sink sends to port 1, where nothing listens. */
+const NOWHERE = 1;
 
-/** The port of a collector in the scenario's mode, or 1, where nothing
- * listens, for "down". */
-async function startCollector(scenario: Scenario): Promise<number> {
-  if (scenario.mode === "down") return 1;
-  const child = spawn(
-    "python3",
-    [path.join(collectorDir, "fake_collector.py"), "--mode", scenario.mode, "--delay-ms", String(scenario.delay_ms ?? 0)],
-    { stdio: ["ignore", "pipe", "inherit"] },
-  );
-  running = child;
-  const lines = createInterface({ input: child.stdout });
-  return new Promise((resolve, reject) => {
-    lines.once("line", (line) => resolve(Number(line)));
-    child.once("error", reject);
-    child.once("exit", (code) => reject(new Error(`the fake collector exited (${String(code)}) before printing its port`)));
-  });
-}
-
-interface Received {
-  accepted: number[];
-  requests: number;
-  reports: number;
-}
-
-async function received(port: number, mode: string, query = ""): Promise<Received> {
-  if (mode === "down") return { accepted: [], requests: 0, reports: 0 };
-  const response = await fetch(`http://127.0.0.1:${port}/_received${query}`, { signal: AbortSignal.timeout(5000) });
-  return (await response.json()) as Received;
+function receivedBy(port: number, mode: string, query = ""): Promise<Received> {
+  if (mode === "down") return Promise.resolve({ accepted: [], events: [], requests: 0, reports: 0 });
+  return received(port, query);
 }
 
 describe.skipIf(!hasPython)("the HTTP sink against a broken collector", () => {
@@ -85,7 +51,7 @@ describe.skipIf(!hasPython)("the HTTP sink against a broken collector", () => {
       seen.push(String(w));
     });
     try {
-      const port = await startCollector(scenario);
+      const port = scenario.mode === "down" ? NOWHERE : await startCollector(scenario.mode, scenario.delay_ms);
       const { settings, limits } = spec;
       const sink = new HttpSink(`http://127.0.0.1:${port}`, {
         apiKey: "k",
@@ -102,7 +68,7 @@ describe.skipIf(!hasPython)("the HTTP sink against a broken collector", () => {
       const reports = scenario.expect?.reports;
       if (reports !== undefined) {
         const accepted = scenario.expect?.accepted ?? 0;
-        await received(port, scenario.mode, `?accepted=${accepted}&reports=${reports}&wait_ms=${limits.report_ms}`);
+        await receivedBy(port, scenario.mode, `?accepted=${accepted}&reports=${reports}&wait_ms=${limits.report_ms}`);
       }
       const started = performance.now();
       await sink.aclose();
@@ -110,7 +76,7 @@ describe.skipIf(!hasPython)("the HTTP sink against a broken collector", () => {
 
       // A step that failed is one that raised somewhere unseen.
       expect(seen.filter((w) => w.includes(" failed"))).toEqual([]);
-      const { accepted: got, requests, reports: reported } = await received(port, scenario.mode);
+      const { accepted: got, requests, reports: reported } = await receivedBy(port, scenario.mode);
       if (scenario.mode !== "down") expect(requests).toBeGreaterThanOrEqual(1);
       const dropped = Object.values(PROCESS_DROPS.total()).reduce((sum, n) => sum + n, 0);
       expect(got.every((n) => sent.includes(n))).toBe(true);

@@ -39,10 +39,22 @@ export async function startCollector(mode: string, delayMs = 0): Promise<number>
   });
 }
 
+export interface Received {
+  accepted: number[];
+  events: Event[];
+  requests: number;
+  reports: number;
+}
+
+/** What the collector has received; `query` may ask it to wait first. */
+export async function received(port: number, query = ""): Promise<Received> {
+  const response = await fetch(`http://127.0.0.1:${port}/_received${query}`, { signal: AbortSignal.timeout(5000) });
+  return (await response.json()) as Received;
+}
+
 /** The tool_call_start and tool_call_end events the collector accepted, in the order it got them. */
 export async function toolEvents(port: number): Promise<Event[]> {
-  const response = await fetch(`http://127.0.0.1:${port}/_received`, { signal: AbortSignal.timeout(5000) });
-  const { events } = (await response.json()) as { events: Event[] };
+  const { events } = await received(port);
   return events.filter((e) => e.event_type === "tool_call_start" || e.event_type === "tool_call_end");
 }
 

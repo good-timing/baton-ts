@@ -6,6 +6,7 @@
 import { describe, expect, it } from "vitest";
 import { withBaton } from "../src/integrations/mcp/withBaton.js";
 import { HttpSink } from "../src/sinks.js";
+import { CFG } from "./integrations/mcp/_majors.js";
 import { connectInMemory, echoServer, hasPython, scenarioFile, startCollector, toolEvents } from "./_scenarios.js";
 
 const MEMBERS = ["call_intent", "call_expected", "call_workflow", "intent_source"] as const;
@@ -25,12 +26,7 @@ describe.skipIf(!hasPython)("the injected user_goal against the fake collector",
   it.each(spec.scenarios.filter((s) => !(s.name in NOT_RUN)))("keeps SPEC §5.1.2: $name", async (scenario) => {
     const port = await startCollector("ok");
     const server = echoServer();
-    const handle = withBaton(server, {
-      vendorId: "acme",
-      vendorDisplayName: "Acme",
-      consentToken: "ct",
-      sink: new HttpSink(`http://127.0.0.1:${port}`, { apiKey: "k" }),
-    });
+    const handle = withBaton(server, { ...CFG, sink: new HttpSink(`http://127.0.0.1:${port}`, { apiKey: "k" }) });
     const client = await connectInMemory(server);
 
     const { tools } = await client.listTools();
