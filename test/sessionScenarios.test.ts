@@ -6,16 +6,15 @@
  * collector needs.
  */
 import { randomUUID } from "node:crypto";
-import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import type { AddressInfo } from "node:net";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { describe, expect, it } from "vitest";
-import type { Event } from "../src/events.js";
 import { withBaton } from "../src/integrations/mcp/withBaton.js";
 import { HttpSink } from "../src/sinks.js";
+import { serveHttp } from "./_http.js";
+import { CFG } from "./integrations/mcp/_majors.js";
 import { connectInMemory, echoServer, hasPython, scenarioFile, startCollector, toolEvents } from "./_scenarios.js";
 
 /* eslint-disable @typescript-eslint/no-explicit-any -- the SDK's transport types differ by major */
@@ -33,29 +32,31 @@ const spec = scenarioFile<{ scenarios: Scenario[] }>("sessions.json");
 /** Scenarios this SDK does not run, with the reason. */
 const NOT_RUN: Record<string, string> = {};
 
-const CONFIG = { vendorId: "acme", vendorDisplayName: "Acme", consentToken: "ct" } as const;
-
-async function callEcho(client: Client, calls: number): Promise<void> {
+/** Calls echo `calls` times as client `c`, each with its own text, so the
+ * runner can find each call's events. Returns the texts in call order. */
+async function callEcho(client: Client, c: number, calls: number): Promise<string[]> {
+  const texts: string[] = [];
   for (let i = 0; i < calls; i += 1) {
-    const result = await client.callTool({ name: "echo", arguments: { text: `hi ${i}` } });
-    expect(result.content).toEqual([{ type: "text", text: `hi ${i}` }]);
+    const text = `client ${c} call ${i}`;
+    const result = await client.callTool({ name: "echo", arguments: { text } });
+    expect(result.content).toEqual([{ type: "text", text }]);
+    texts.push(text);
   }
-}
-
-async function readBody(req: IncomingMessage): Promise<unknown> {
-  const chunks: Buffer[] = [];
-  for await (const chunk of req) chunks.push(chunk as Buffer);
-  return chunks.length ? JSON.parse(Buffer.concat(chunks).toString()) : undefined;
+  return texts;
 }
 
 /** Serves streamable HTTP and runs each client in turn. The SDK connects a
  * server to one transport at a time, so a new session or, when stateless, a
  * new request reconnects it; the clients take turns, so this is safe.
- * Returns the session id each client was given, none when stateless. */
-async function overHttp(server: McpServer, stateful: boolean, clients: number, calls: number): Promise<string[]> {
+ * Returns each client's call texts, and the session id it was given, if any. */
+async function overHttp(
+  server: McpServer,
+  stateful: boolean,
+  clients: number,
+  calls: number,
+): Promise<{ texts: string[]; given?: string }[]> {
   const sessions = new Map<string, StreamableHTTPServerTransport>();
-  const handle = async (req: IncomingMessage, res: ServerResponse) => {
-    const body = await readBody(req);
+  const http = await serveHttp(async (req, res, body) => {
     const known = sessions.get(String(req.headers["mcp-session-id"]));
     if (known) return known.handleRequest(req, res, body);
     if (req.method !== "POST") return void res.writeHead(405).end();
@@ -65,25 +66,22 @@ async function overHttp(server: McpServer, stateful: boolean, clients: number, c
     );
     await server.connect(transport as any);
     await transport.handleRequest(req, res, body);
-  };
-  const http = createServer((req, res) => void handle(req, res));
-  await new Promise<void>((resolve) => http.listen(0, "127.0.0.1", resolve));
-  const { port } = http.address() as AddressInfo;
-  const given: string[] = [];
+  });
+  const ran: { texts: string[]; given?: string }[] = [];
   try {
     for (let c = 0; c < clients; c += 1) {
-      const transport = new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${String(port)}/mcp`));
+      const transport = new StreamableHTTPClientTransport(http.url);
       const client = new Client({ name: "scenario-runner", version: "1.0.0" });
       await client.connect(transport as any);
-      await callEcho(client, calls);
-      if (transport.sessionId) given.push(transport.sessionId);
+      const texts = await callEcho(client, c, calls);
+      ran.push(transport.sessionId ? { texts, given: transport.sessionId } : { texts });
       await client.close();
     }
   } finally {
     await server.close();
-    await new Promise((resolve) => http.close(resolve));
+    await http.close();
   }
-  return given;
+  return ran;
 }
 
 describe.skipIf(!hasPython)("session ids against the fake collector", () => {
@@ -93,40 +91,49 @@ describe.skipIf(!hasPython)("session ids against the fake collector", () => {
       const port = await startCollector("ok");
       const sink = new HttpSink(`http://127.0.0.1:${port}`, { apiKey: "k" });
       const server = echoServer();
-      const handle = withBaton(server, { ...CONFIG, sink });
-      let given: string[] = [];
+      const handle = withBaton(server, { ...CFG, sink });
+      let ran: { texts: string[]; given?: string }[] = [];
       if (scenario.transport === "memory") {
         for (let c = 0; c < scenario.clients; c += 1) {
           const client = await connectInMemory(server);
-          await callEcho(client, scenario.calls);
+          ran.push({ texts: await callEcho(client, c, scenario.calls) });
           await client.close();
         }
       } else {
-        given = await overHttp(server, scenario.transport === "stateful_http", scenario.clients, scenario.calls);
+        ran = await overHttp(server, scenario.transport === "stateful_http", scenario.clients, scenario.calls);
       }
       await handle.aclose();
 
       const events = await toolEvents(port);
-      const starts = events.filter((e) => e.event_type === "tool_call_start");
-      expect(starts).toHaveLength(scenario.clients * scenario.calls);
+      expect(events).toHaveLength(2 * scenario.clients * scenario.calls);
       for (const event of events) {
         expect(event.session_id_origin).toBe(scenario.expect.origin);
         expect(event.transport_observed).toBe(scenario.expect.transport);
       }
-      const end = (start: Event) => events.find((e) => e.event_type === "tool_call_end" && e.call_id === start.call_id);
-      for (const start of starts) expect(end(start)?.session_id).toBe(start.session_id);
+      // Each call's start and end, in the order the calls were made.
+      const calls = ran.map(({ texts }) =>
+        texts.map((text) => {
+          const start = events.find(
+            (e) => e.event_type === "tool_call_start" && (e.payload as { params?: { text?: string } }).params?.text === text,
+          )!;
+          const end = events.find((e) => e.event_type === "tool_call_end" && e.call_id === start.call_id)!;
+          expect(end.session_id).toBe(start.session_id);
+          return [start, end] as const;
+        }),
+      );
 
-      const ids = starts.map((e) => e.session_id);
+      const ids = calls.flat().map(([start]) => start.session_id);
       if (scenario.expect.sessions === "one") {
-        expect(new Set(events.map((e) => e.session_id)).size).toBe(1);
-        const numbers = events.map((e) => e.sequence_number);
-        expect(numbers).toEqual([...numbers].sort((a, b) => a - b));
-        expect(new Set(numbers).size).toBe(numbers.length);
+        expect(new Set(ids).size).toBe(1);
+        const numbers = calls.flat(2).map((e) => e.sequence_number);
+        numbers.slice(1).forEach((n, i) => expect(n).toBeGreaterThan(numbers[i]!));
       } else if (scenario.expect.sessions === "per_client") {
-        expect(given).toHaveLength(scenario.clients);
+        const given = ran.map((r) => r.given);
         expect(new Set(given).size).toBe(scenario.clients);
-        const perClient = given.flatMap((id) => Array.from({ length: scenario.calls }, () => id));
-        expect(ids).toEqual(perClient);
+        calls.forEach((client, c) => {
+          expect(given[c]).toBeDefined();
+          for (const [start] of client) expect(start.session_id).toBe(given[c]);
+        });
       } else {
         expect(new Set(ids).size).toBe(ids.length);
       }

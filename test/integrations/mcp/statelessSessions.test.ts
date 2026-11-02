@@ -3,9 +3,6 @@
  * request is its own session, numbered by the clock.
  */
 
-import { createServer } from "node:http";
-import type { AddressInfo } from "node:net";
-
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -16,6 +13,7 @@ import { describe, expect, it } from "vitest";
 import type { Event } from "../../../src/events.js";
 import { createBaton, withBaton } from "../../../src/integrations/mcp/withBaton.js";
 import { CapturingSink } from "./_majors.js";
+import { serveHttp } from "../../_http.js";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -33,30 +31,19 @@ async function serve(
   handle: (req: any, res: any, body: unknown) => Promise<void>,
   calls: number,
 ): Promise<void> {
-  const http = createServer((req, res) => {
-    void (async () => {
-      if (req.method !== "POST") {
-        res.writeHead(405).end();
-        return;
-      }
-      const chunks: Buffer[] = [];
-      for await (const chunk of req) chunks.push(chunk as Buffer);
-      await handle(req, res, JSON.parse(Buffer.concat(chunks).toString()));
-    })();
+  const http = await serveHttp(async (req, res, body) => {
+    if (req.method !== "POST") return void res.writeHead(405).end();
+    await handle(req, res, body);
   });
-  await new Promise<void>((resolve) => http.listen(0, "127.0.0.1", resolve));
-  const { port } = http.address() as AddressInfo;
   try {
     for (let i = 0; i < calls; i += 1) {
       const client = new Client({ name: "caller", version: "1.0.0" });
-      await client.connect(
-        new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${String(port)}/mcp`)) as any,
-      );
+      await client.connect(new StreamableHTTPClientTransport(http.url) as any);
       await client.callTool({ name: "lookup", arguments: { name: `user-${String(i)}` } });
       await client.close();
     }
   } finally {
-    await new Promise((resolve) => http.close(resolve));
+    await http.close();
   }
 }
 
