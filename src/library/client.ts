@@ -30,7 +30,7 @@ import {
 import { parseDsn, selectDsn } from "../dsn.js";
 import { captureDisabled, DisabledSink, logDisabled } from "../optout.js";
 import { Scrubber } from "../scrub.js";
-import { boundedSinkCall, callWithin, HttpSink, type Sink } from "../sinks.js";
+import { boundedSinkCall, callWithin, droppedAfterClose, HttpSink, isSinkClosed, type Sink } from "../sinks.js";
 import { PROCESS_DROPS } from "../drops.js";
 import { printable } from "../warn.js";
 import { uuid7 } from "../uuid7.js";
@@ -320,6 +320,7 @@ class Core {
         try {
           await this.sink.write(event);
         } catch (err) {
+          if (isSinkClosed(err)) return droppedAfterClose(this.sink);
           process.stderr.write(`baton: surface snapshot not sent; will retry: ${printable(err)}\n`);
           this.sentSurfaces.unmark(surface.digest);
         }

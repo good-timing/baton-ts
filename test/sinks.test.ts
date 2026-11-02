@@ -1,9 +1,14 @@
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { PROCESS_DROPS } from "../src/drops.js";
-import { FileSink, HttpSink, MultiSink, StdoutSink, safeWrite, type Sink } from "../src/sinks.js";
+import { FileSink, HttpSink, MultiSink, SinkClosedError, StdoutSink, safeWrite, type Sink } from "../src/sinks.js";
+import { withBaton } from "../src/integrations/mcp/withBaton.js";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { z } from "zod";
 import { ToolCallStartEventSchema, type Event } from "../src/events.js";
 
 function makeEvent(overrides: Partial<{ sequence_number: number }> = {}): Event {
@@ -138,6 +143,15 @@ describe("MultiSink", () => {
     const err = await sink.write(makeEvent()).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(AggregateError);
     expect((err as AggregateError).errors.map((e: Error) => e.message)).toEqual(["one", "two"]);
+  });
+
+  it("loses nothing to a closed sink while another takes the event", async () => {
+    const closed = new StdoutSink();
+    await closed.aclose();
+    const ok = recording();
+    const sink = new MultiSink([closed, ok.sink]);
+    await sink.write(makeEvent({ sequence_number: 1 }));
+    expect(ok.seen).toEqual(["write:1"]);
   });
 });
 
@@ -810,6 +824,82 @@ describe("HttpSink", () => {
       expect(init.signal?.aborted).toBe(true);
     }
     await sink.aclose();
+  });
+});
+
+describe("a write after close (SPEC §11.2 rules 7 and 8)", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  const sinks: Record<string, () => Sink> = {
+    StdoutSink: () => new StdoutSink({ stream: { write: () => true } as unknown as NodeJS.WritableStream }),
+    FileSink: () => new FileSink(join(mkdtempSync(join(tmpdir(), "baton-")), "events.jsonl")),
+    HttpSink: () => new HttpSink("https://collector.example", { apiKey: "k", fetchImpl: vi.fn() }),
+    "a vendor sink": () => ({
+      write: () => Promise.reject(new SinkClosedError("closed")),
+      flush: () => Promise.resolve(),
+      aclose: () => Promise.resolve(),
+    }),
+    "a vendor sink throwing the other build's SinkClosedError": () => ({
+      write: () => Promise.reject(Object.assign(new Error("closed"), { name: "SinkClosedError" })),
+      flush: () => Promise.resolve(),
+      aclose: () => Promise.resolve(),
+    }),
+  };
+
+  it.each(Object.keys(sinks))("%s: is counted as after_close with one warning", async (name) => {
+    const sink = sinks[name]!();
+    await sink.aclose();
+    await expect(sink.write(makeEvent())).rejects.toMatchObject({ name: "SinkClosedError" });
+    PROCESS_DROPS.clear();
+    const warning = vi.spyOn(process, "emitWarning").mockImplementation(() => {});
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    await safeWrite(sink, makeEvent());
+    await safeWrite(sink, makeEvent());
+
+    expect(PROCESS_DROPS.total()).toEqual({ after_close: 2 });
+    expect(messages(warning)).toEqual(["baton: the sink is closed; further events are dropped."]);
+    expect(stderr).not.toHaveBeenCalled();
+  });
+
+  it("MultiSink whose sinks are all closed rejects with SinkClosedError", async () => {
+    const sink = new MultiSink([new StdoutSink(), new StdoutSink()]);
+    await sink.aclose();
+    await expect(sink.write(makeEvent())).rejects.toBeInstanceOf(SinkClosedError);
+  });
+
+  it("covers the surface snapshot a call after close would send", async () => {
+    const written: Event[] = [];
+    let closed = false;
+    const sink: Sink = {
+      write: async (event) => {
+        if (closed) throw new SinkClosedError("closed");
+        written.push(event);
+      },
+      flush: () => Promise.resolve(),
+      aclose: async () => void (closed = true),
+    };
+    const server = new McpServer({ name: "vendor", version: "1.0.0" });
+    server.registerTool("echo", { inputSchema: { text: z.string() } }, async (args: { text: string }) => ({
+      content: [{ type: "text" as const, text: args.text }],
+    }));
+    const handle = withBaton(server, { vendorId: "acme", vendorDisplayName: "Acme", consentToken: "ct", sink });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    const client = new Client({ name: "caller", version: "1.0.0" });
+    await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+    await handle.aclose();
+    const warning = vi.spyOn(process, "emitWarning").mockImplementation(() => {});
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    await client.callTool({ name: "echo", arguments: { text: "hi" } });
+    await client.callTool({ name: "echo", arguments: { text: "hi" } });
+
+    expect(written).toEqual([]);
+    expect(PROCESS_DROPS.total()).toEqual({ after_close: 5 });
+    expect(messages(warning)).toEqual(["baton: the sink is closed; further events are dropped."]);
+    expect(stderr).not.toHaveBeenCalled();
   });
 });
 

@@ -107,7 +107,7 @@ import {
   ToolListErrorEventSchema,
   ToolListStartEventSchema,
 } from "../../events.js";
-import { boundedSinkCall, StdoutSink, type Sink } from "../../sinks.js";
+import { boundedSinkCall, droppedAfterClose, isSinkClosed, StdoutSink, type Sink } from "../../sinks.js";
 import { registerAnnotationTool, TOOL_NAME_PARAM_NAME } from "./annotation.js";
 import { Scrubber } from "../../scrub.js";
 import { scrubOrNull } from "./safeScrub.js";
@@ -2043,7 +2043,13 @@ function install(
         seam_augmentations: snapshot.seam_augmentations,
       },
     });
-    await sink.write(event);
+    try {
+      await sink.write(event);
+    } catch (err) {
+      // A closed sink stays closed, so this surface is not retried.
+      if (isSinkClosed(err)) return droppedAfterClose(sink);
+      throw err;
+    }
   };
 
   // v2 memoises each tool's converted JSON Schema at registration

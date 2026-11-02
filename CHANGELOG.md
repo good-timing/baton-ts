@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+- **An event written to a closed sink is dropped and counted as
+  `after_close`, with one warning per sink, as SPEC §11.2 rules 7 and 8 say.**
+  `StdoutSink`, `FileSink` and `HttpSink` now reject a write after `aclose()`
+  with the new exported `SinkClosedError`, and `safeWrite` and the surface
+  snapshot paths count it as `after_close`. A vendor's own sink can throw
+  `SinkClosedError` to get the same. A `MultiSink` whose sinks are all closed
+  rejects with it too. Before, a tool call after `handle.aclose()` counted each
+  event as `write_failed` and wrote a stderr line for each one, and on the
+  `withBaton` path each later call retried the surface snapshot and wrote
+  another line. The call itself was never affected. This matches `baton-sdk`
+  and the Go SDK.
+
 ## 0.6.2: every lost event counted and reported; blank is Unicode White_Space
 
 - **Blank means empty after removing Unicode `White_Space`, as SPEC §11.4

@@ -37,8 +37,31 @@ export interface Sink {
   /** Wait for any buffered events to reach their destination (or be
    * dropped per the sink's policy). No-op for synchronous sinks. */
   flush(): Promise<void>;
-  /** Flush + release resources. After `aclose`, `write` rejects. */
+  /** Flush + release resources. After `aclose`, `write` rejects with
+   * `SinkClosedError`. */
   aclose(): Promise<void>;
+}
+
+/** `write` was called after `aclose`. */
+export class SinkClosedError extends Error {
+  override name = "SinkClosedError";
+}
+
+/** By name, not `instanceof`: a vendor sink may throw the class from the
+ * other build (ESM or CommonJS) of this package. */
+export function isSinkClosed(err: unknown): boolean {
+  return err instanceof Error && err.name === "SinkClosedError";
+}
+
+const warnedClosed = new WeakSet<Sink>();
+
+/** SPEC §11.2 rules 7 and 8: dropped, counted under `after_close`, and
+ * warned about once per sink. */
+export function droppedAfterClose(sink: Sink): void {
+  PROCESS_DROPS.add("after_close");
+  if (warnedClosed.has(sink)) return;
+  warnedClosed.add(sink);
+  warn("baton: the sink is closed; further events are dropped.");
 }
 
 /** Fail-open wrapper around `sink.write`.
@@ -52,6 +75,7 @@ export async function safeWrite(sink: Sink, event: Event): Promise<void> {
   try {
     await sink.write(event);
   } catch (err) {
+    if (isSinkClosed(err)) return droppedAfterClose(sink);
     PROCESS_DROPS.add("write_failed");
     process.stderr.write(`baton: sink.write failed; event dropped, tool call continues: ${printable(err)}\n`);
   }
@@ -139,7 +163,7 @@ export class StdoutSink implements Sink {
   }
 
   async write(event: Event): Promise<void> {
-    if (this.closed) throw new Error("StdoutSink is closed");
+    if (this.closed) throw new SinkClosedError("StdoutSink is closed");
     this.stream.write(JSON.stringify(event) + "\n");
   }
 
@@ -168,7 +192,7 @@ export class FileSink implements Sink {
   constructor(private readonly path: string) {}
 
   async write(event: Event): Promise<void> {
-    if (this.closed) throw new Error("FileSink is closed");
+    if (this.closed) throw new SinkClosedError("FileSink is closed");
     // Synchronous so concurrent writes land in call order: async writes on
     // one fd go through the libuv thread pool and can interleave.
     this.fd ??= openSync(this.path, "a");
@@ -225,9 +249,12 @@ export class MultiSink implements Sink {
   private async fanOut(op: (sink: Sink) => Promise<void>): Promise<void> {
     // The async wrapper turns a sink that throws synchronously into a rejection.
     const results = await Promise.allSettled(this.sinks.map(async (sink) => op(sink)));
-    const errors = results.flatMap((r): unknown[] => (r.status === "rejected" ? [r.reason] : []));
-    if (errors.length === 1) throw errors[0];
-    if (errors.length > 1) throw new AggregateError(errors, "MultiSink fan-out failures");
+    let errors = results.flatMap((r): unknown[] => (r.status === "rejected" ? [r.reason] : []));
+    // Another sink took the event, so it was not lost.
+    if (errors.length < results.length) errors = errors.filter((e) => !isSinkClosed(e));
+    if (errors.length === 0) return;
+    if (errors.length === 1 || errors.every(isSinkClosed)) throw errors[0];
+    throw new AggregateError(errors, "MultiSink fan-out failures");
   }
 }
 
@@ -366,7 +393,7 @@ export class HttpSink implements Sink {
   }
 
   async write(event: Event): Promise<void> {
-    if (this.closed) throw new Error("HttpSink is closed");
+    if (this.closed) throw new SinkClosedError("HttpSink is closed");
     this.enqueue(event);
     this.unsentWarned = false;
     void this.scheduleDrain();

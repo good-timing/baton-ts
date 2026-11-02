@@ -9,7 +9,7 @@ import Ajv2020 from "ajv/dist/2020.js";
 import addFormats from "ajv-formats";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
-import { Client, withBaton, type Event, type Sink } from "../../src/index.js";
+import { Client, SinkClosedError, withBaton, type Event, type Sink } from "../../src/index.js";
 import { SENT_SURFACES_CAP } from "../../src/integrations/mcp/surface.js";
 import { PROCESS_DROPS } from "../../src/drops.js";
 
@@ -156,6 +156,23 @@ describe("Client.listTools", () => {
     await client.listTools([...TOOLS].reverse());
     expect(await snapshots(client, sink)).toHaveLength(1);
     expect(TOOLS).toEqual(before);
+  });
+
+  it("counts a snapshot to a sink closed under it as after_close, warning once", async () => {
+    const sink: Sink = {
+      write: () => Promise.reject(new SinkClosedError("closed")),
+      flush: () => Promise.resolve(),
+      aclose: () => Promise.resolve(),
+    };
+    const client = new Client({ sink, vendorId: "srv-1", tenantId: "ten_abc" });
+    const warning = vi.spyOn(process, "emitWarning").mockImplementation(() => {});
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    await client.listTools(TOOLS);
+    await client.listTools(TOOLS, { instructions: "new" });
+    await client.flush();
+    expect(PROCESS_DROPS.total()).toEqual({ after_close: 2 });
+    expect(warning.mock.calls.map(([w]) => String(w))).toEqual(["baton: the sink is closed; further events are dropped."]);
+    expect(stderr).not.toHaveBeenCalled();
   });
 
   it("sends another snapshot when the surface changes", async () => {
