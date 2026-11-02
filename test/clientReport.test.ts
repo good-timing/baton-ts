@@ -352,6 +352,41 @@ describe("what stops loss reports (SPEC §11.4.7)", () => {
     await sink.aclose();
   });
 
+  it("takes one of a full batch's places, so batches full of events still carry it", async () => {
+    quiet();
+    noInterval();
+    const { fetchImpl, requests } = scripted([refuseEach, acceptEach]);
+    const sink = httpSink(fetchImpl);
+    await sendEach(sink, 2);
+    for (let i = 0; i < 200; i += 1) await sink.write(makeEvent());
+    await vi.waitFor(() => expect(requests.length).toBeGreaterThanOrEqual(4));
+    const sizes = requests.slice(2, 4).map((r) => [r.types.length, r.types.includes("client_report")]);
+    expect(sizes).toEqual([[100, true], [100, false]]);
+    await sink.aclose();
+  });
+
+  it("keeps room for itself in a batch full by bytes", async () => {
+    quiet();
+    noInterval();
+    const bodies: number[] = [];
+    const { fetchImpl: inner, requests } = scripted([refuseEach, acceptEach]);
+    const fetchImpl = (url: string | URL | Request, init?: RequestInit) => {
+      bodies.push(Buffer.byteLength(init!.body as string));
+      return inner(url, init);
+    };
+    const sink = httpSink(fetchImpl);
+    await sendEach(sink, 2);
+    const padded = (pad: number) =>
+      ({ ...makeEvent(), payload: { tool_name: "lookup", params: { pad: "x".repeat(pad) } } }) as unknown as Event;
+    // Four events leave 8 bytes under 1 MiB in a batch: '{"events":[' + 4 events + 3 commas + ']}'.
+    const big = padded(262_138 - JSON.stringify(padded(0)).length);
+    for (let i = 0; i < 12; i += 1) await sink.write(big);
+    await vi.waitFor(() => expect(requests.length).toBeGreaterThanOrEqual(4));
+    expect(requests[2]!.types).toContain("client_report");
+    expect(Math.max(...bodies)).toBeLessThanOrEqual(1_048_576);
+    await sink.aclose();
+  });
+
   it("rides the first batch with room, not only the last in the queue", async () => {
     quiet();
     noInterval();

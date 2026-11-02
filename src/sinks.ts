@@ -804,17 +804,23 @@ export class HttpSink implements Sink {
   }
 
   /** Takes the head of the buffer that fits one batch: one tenant and vendor
-   * (SPEC §2.5), at most 100 events and 1 MiB. Without a batch endpoint the
+   * (SPEC §2.5), at most 100 events and 1 MiB, a due report among them. Without a batch endpoint the
    * same events go one per request. */
   private takeBatch(withReport: boolean): Waiting[] | null {
     const batch: Waiting[] = [];
     let bytes = BATCH_FRAME_BYTES - 1;
     let eventBytes = 0;
-    const fits = (w: Waiting): boolean =>
+    const fits = (w: Waiting, maxEvents = BATCH_MAX_EVENTS, maxBytes = BATCH_MAX_BYTES): boolean =>
       batch.length === 0 ||
-      (batch.length < BATCH_MAX_EVENTS && sameBatch(w.event, batch[0]!.event) && bytes + 1 + w.bytes <= BATCH_MAX_BYTES);
+      (batch.length < maxEvents && sameBatch(w.event, batch[0]!.event) && bytes + 1 + w.bytes <= maxBytes);
+    const report = withReport ? this.buildReport() : null;
+    const head = this.buffer[0];
+    // A due report keeps its place, or a run of full batches never carries it (SPEC §11.4.7).
+    const held = report !== null && (head === undefined || sameBatch(report.event, head.event)) ? report : null;
+    const maxEvents = BATCH_MAX_EVENTS - (held ? 1 : 0);
+    const maxBytes = BATCH_MAX_BYTES - (held ? 1 + held.bytes : 0);
     for (const waiting of this.buffer) {
-      if (!fits(waiting)) break;
+      if (!fits(waiting, maxEvents, maxBytes)) break;
       batch.push(waiting);
       bytes += 1 + waiting.bytes;
       eventBytes += waiting.bytes;
@@ -822,10 +828,7 @@ export class HttpSink implements Sink {
     this.buffer.splice(0, batch.length);
     this.bufferedBytes -= eventBytes;
     this.sendingEvents = batch.length;
-    if (withReport) {
-      const report = this.buildReport();
-      if (report !== null && fits(report)) batch.push(report);
-    }
+    if (report !== null && fits(report)) batch.push(report);
     return batch.length > 0 ? batch : null;
   }
 
