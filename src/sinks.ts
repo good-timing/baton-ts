@@ -314,7 +314,9 @@ function retryAfterMs(header: string | null): number | null {
   return Math.min(Math.max(Number(value), RETRY_AFTER_MIN_S), RETRY_AFTER_MAX_S) * 1000;
 }
 
-function sameBatch(a: Event, b: Event): boolean {
+type BatchKey = Pick<Event, "tenant_id" | "vendor_id">;
+
+function sameBatch(a: BatchKey, b: BatchKey): boolean {
   return a.tenant_id === b.tenant_id && a.vendor_id === b.vendor_id;
 }
 
@@ -791,23 +793,29 @@ export class HttpSink implements Sink {
       if (this.buffer.length > 0 || this.pendingReport !== null) this.armTimer(Math.max(...waits));
       return;
     }
-    const next = Math.min(this.buffer[0]?.writtenAt ?? Infinity, this.pendingReport ? this.reportSetAt : Infinity);
+    const next = Math.min(this.buffer[0]?.writtenAt ?? Infinity, this.reportRidesHead() ? this.reportSetAt : Infinity);
     if (next !== Infinity) this.armTimer(next + this.flushIntervalMs - Date.now());
   }
 
-  /** A due report makes a batch due, so the timer it set never fires on a pass that sends nothing. */
+  /** A due report makes the next batch due only when it can ride it; the
+   * timer is armed the same way, so a pass that sends nothing never re-arms
+   * it at a time already past. */
   private isDue(force: boolean, reportDue: boolean): boolean {
     const now = Date.now();
-    if (force || (reportDue && this.pendingReport !== null && this.reportSetAt + this.flushIntervalMs <= now)) {
-      return this.buffer.length > 0 || (reportDue && this.pendingReport !== null);
-    }
-    return this.buffer.length > 0 && (this.batchIsFull() || this.buffer[0]!.writtenAt + this.flushIntervalMs <= now);
+    if (reportDue && this.reportRidesHead() && (force || this.reportSetAt + this.flushIntervalMs <= now)) return true;
+    return this.buffer.length > 0 && (force || this.batchIsFull() || this.buffer[0]!.writtenAt + this.flushIntervalMs <= now);
+  }
+
+  /** A pending report can go in the next batch: alone, or with the head event's tenant and vendor. */
+  private reportRidesHead(): boolean {
+    const head = this.buffer[0];
+    return this.pendingReport !== null && (head === undefined || sameBatch(this.pendingReport, head.event));
   }
 
   /** Takes the head of the buffer that fits one batch: one tenant and vendor
    * (SPEC §2.5), at most 100 events and 1 MiB. A due report with the head
-   * event's tenant and vendor takes one of those places; with others it waits
-   * for a batch of its own. Without a batch endpoint the same events go one
+   * event's tenant and vendor takes one of those places; otherwise it is not
+   * built, and waits for a batch it can ride. Without a batch endpoint the same events go one
    * per request. */
   private takeBatch(withReport: boolean): Waiting[] | null {
     const batch: Waiting[] = [];
@@ -816,12 +824,10 @@ export class HttpSink implements Sink {
     const fits = (w: Waiting, maxEvents = BATCH_MAX_EVENTS, maxBytes = BATCH_MAX_BYTES): boolean =>
       batch.length === 0 ||
       (batch.length < maxEvents && sameBatch(w.event, batch[0]!.event) && bytes + 1 + w.bytes <= maxBytes);
-    const report = withReport ? this.buildReport() : null;
-    const head = this.buffer[0];
+    const report = withReport && this.reportRidesHead() ? this.buildReport() : null;
     // A due report keeps its place, or a run of full batches never carries it (SPEC §11.4.7).
-    const held = report !== null && (head === undefined || sameBatch(report.event, head.event)) ? report : null;
-    const maxEvents = BATCH_MAX_EVENTS - (held ? 1 : 0);
-    const maxBytes = BATCH_MAX_BYTES - (held ? 1 + held.bytes : 0);
+    const maxEvents = BATCH_MAX_EVENTS - (report ? 1 : 0);
+    const maxBytes = BATCH_MAX_BYTES - (report ? 1 + report.bytes : 0);
     for (const waiting of this.buffer) {
       if (!fits(waiting, maxEvents, maxBytes)) break;
       batch.push(waiting);

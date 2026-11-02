@@ -402,6 +402,32 @@ describe("what stops loss reports (SPEC §11.4.7)", () => {
       expect(requests.slice(2).map((r) => r.types)).toEqual([["tool_call_start", "client_report"]]);
       await vi.advanceTimersByTimeAsync(3000);
       expect(timers.mock.calls.length).toBeLessThan(5);
+      timers.mockRestore();
+      await sink.aclose();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not send another tenant's events early, nor build a report it cannot send", async () => {
+    quiet();
+    noInterval();
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    try {
+      const builds = vi.spyOn(HttpSink.prototype as unknown as { buildReport: () => unknown }, "buildReport");
+      const { fetchImpl, requests } = scripted([refuseEach, acceptEach]);
+      const sink = httpSink(fetchImpl, { flushIntervalMs: 5000 });
+      await sendEach(sink, 2);
+      await vi.advanceTimersByTimeAsync(3000);
+      await sink.write({ ...makeEvent(), vendor_id: "w" });
+      const timers = vi.spyOn(globalThis, "setTimeout");
+      await vi.advanceTimersByTimeAsync(4900);
+      expect(requests).toHaveLength(2);
+      expect(timers.mock.calls.length).toBeLessThan(5);
+      timers.mockRestore();
+      await vi.advanceTimersByTimeAsync(100);
+      expect(requests.slice(2).map((r) => r.types)).toEqual([["tool_call_start"], ["client_report"]]);
+      expect(builds).toHaveBeenCalledTimes(1);
       await sink.aclose();
     } finally {
       vi.useRealTimers();
