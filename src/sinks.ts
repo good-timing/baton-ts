@@ -89,20 +89,10 @@ function isTimerMs(value: unknown): value is number {
   return typeof value === "number" && value >= 0 && value <= MAX_TIMER_MS;
 }
 
-function shutdownFlushTimeoutOption(given: unknown): number {
+function timerMsOption(given: unknown, name: string, fallback: number): number {
   if (isTimerMs(given)) return given;
-  if (given !== undefined) {
-    warn(`baton: shutdownFlushTimeoutMs must be from 0 to ${MAX_TIMER_MS} ms; using ${SHUTDOWN_FLUSH_TIMEOUT_MS}.`);
-  }
-  return SHUTDOWN_FLUSH_TIMEOUT_MS;
-}
-
-function flushIntervalOption(given: unknown): number {
-  if (isTimerMs(given)) return given;
-  if (given !== undefined) {
-    warn(`baton: flushIntervalMs must be from 0 to ${MAX_TIMER_MS} ms; using ${FLUSH_INTERVAL_MS}.`);
-  }
-  return FLUSH_INTERVAL_MS;
+  if (given !== undefined) warn(`baton: ${name} must be from 0 to ${MAX_TIMER_MS} ms; using ${fallback}.`);
+  return fallback;
 }
 
 function shutdownBudgetMs(sink: Sink): number {
@@ -266,20 +256,24 @@ export class MultiSink implements Sink {
   }
 }
 
+
 // =============================================================================
 // HttpSink — batches + bearer + bounded buffer + retry + circuit breaker
 // =============================================================================
 
+const BATCH_OPEN = '{"events":[';
+const BATCH_CLOSE = "]}";
 /** SPEC §2.5's caps on one batch. */
 const BATCH_MAX_EVENTS = 100;
 const BATCH_MAX_BYTES = 1_048_576;
-/** `{"events":[` and `]}`. */
-const BATCH_FRAME_BYTES = 13;
 const FLUSH_INTERVAL_MS = 5000;
+/** SPEC §2.5: `Retry-After` is honoured from 1 to 60 seconds. */
+const RETRY_AFTER_MIN_S = 1;
+const RETRY_AFTER_MAX_S = 60;
 
 type SendOutcome = "success" | "permanent_failure" | "transient_failure";
 
-/** An encoded event waiting in the buffer, or the loss report riding a batch
+/** An event waiting to be sent, or the loss report riding a batch
  * (`reportSum` set), which is never in the buffer. */
 interface Waiting {
   event: Event;
@@ -289,9 +283,14 @@ interface Waiting {
   reportSum?: number;
 }
 
+interface Refusal {
+  kind: string;
+  detail: string;
+}
+
 type Answer =
-  | { kind: "answered"; refused: Set<number> }
-  | { kind: "refused"; status: number }
+  | { kind: "answered"; refused: Map<string, Refusal> }
+  | { kind: "refused"; refusal: Refusal; status: number }
   | { kind: "too_large" }
   | { kind: "no_batch_endpoint" }
   | { kind: "transient"; retryAfterMs: number | null };
@@ -302,17 +301,23 @@ function utf8Bytes(text: string): number {
   return typeof Buffer === "undefined" ? utf8.encode(text).length : Buffer.byteLength(text, "utf8");
 }
 
-function batchKey(event: Event): string {
-  return `${event.tenant_id}\u0000${event.vendor_id}`;
+const BATCH_FRAME_BYTES = utf8Bytes(BATCH_OPEN + BATCH_CLOSE);
+
+function sum(values: Iterable<number>): number {
+  let total = 0;
+  for (const value of values) total += value;
+  return total;
 }
 
-/** Seconds or an HTTP date; `null` when absent or unreadable. */
+/** A whole number of seconds, clamped; `null` for anything else (SPEC §2.5). */
 function retryAfterMs(header: string | null): number | null {
-  if (header === null) return null;
-  const value = header.trim();
-  const ms = /^\d+$/.test(value) ? Number(value) * 1000 : Date.parse(value) - Date.now();
-  if (Number.isNaN(ms)) return null;
-  return Math.min(Math.max(ms, 0), MAX_TIMER_MS);
+  const value = header?.trim() ?? "";
+  if (!/^\d+$/.test(value)) return null;
+  return Math.min(Math.max(Number(value), RETRY_AFTER_MIN_S), RETRY_AFTER_MAX_S) * 1000;
+}
+
+function sameBatch(a: Event, b: Event): boolean {
+  return a.tenant_id === b.tenant_id && a.vendor_id === b.vendor_id;
 }
 
 class CircuitBreaker {
@@ -380,14 +385,17 @@ export interface HttpSinkOptions {
 export class HttpSink implements Sink {
   private readonly url: string;
   private readonly apiKey: string;
+  /** Waiting events only: a batch being sent is out of it, so the bound
+   * never pushes out an event in flight (SPEC §11.2 rule 4). */
   private readonly buffer: Waiting[] = [];
   private bufferedBytes = 0;
+  private sendingEvents = 0;
   private readonly bufferSize: number;
   private readonly requestTimeoutMs: number;
   private readonly shutdownFlushTimeoutMs: number;
   private readonly flushIntervalMs: number;
-  /** Set when an exit pass ends; cleared once a normal drain empties the
-   * buffer, which means the process went on. */
+  /** Set when an exit pass ends; cleared once a normal drain sends
+   * everything, which means the process went on. */
   private exitPassRan = false;
   /** Whether the exit pass warned about every event now buffered. */
   private unsentWarned = false;
@@ -403,15 +411,18 @@ export class HttpSink implements Sink {
   /** Aborted once `aclose()` returns: nothing Baton started may keep the
    * process alive after the vendor closed it. */
   private readonly closing = new AbortController();
-  private closeStarted = false;
   /** The drain chain's tail when a flush() or aclose() gave up waiting, until it settles. */
   private stalledDrain: Promise<unknown> | null = null;
   private skipWarnedFor: Promise<unknown> | null = null;
   private closeOnce: Promise<void> | undefined;
   private drainChain: Promise<void> = Promise.resolve();
   private queuedDrain: Promise<void> | null = null;
+  /** Whether the queued pass sends everything waiting, not only what is due. */
+  private forceNext = false;
   private flushTimer: ReturnType<typeof setTimeout> | null = null;
-  /** No batch before this `Date.now()`, from a 429's `Retry-After`. */
+  /** Set by a failed batch: only the timer, a flush or a close tries again. */
+  private waitForTimer = false;
+  /** Nothing is sent before this `Date.now()`, from a 429's `Retry-After`. */
   private retryAt = 0;
   /** Set for the life of the sink by a 404 or 405 on the batch path. */
   private batchless = false;
@@ -422,16 +433,21 @@ export class HttpSink implements Sink {
   private reportedSum = 0;
   private lastReportAt = -Infinity;
   private reportsStopped = false;
-  /** The envelope of a report due to ride the next batch. */
+  /** The envelope of a report due to ride the next batch, and when it was set up. */
   private pendingReport: Pick<Event, "tenant_id" | "vendor_id" | "consent_token"> | null = null;
+  private reportSetAt = 0;
 
   constructor(url: string, options: HttpSinkOptions) {
     this.url = url.replace(/\/+$/, "");
     this.apiKey = options.apiKey;
     this.bufferSize = options.bufferSize ?? 1000;
     this.requestTimeoutMs = options.requestTimeoutMs ?? 1000;
-    this.shutdownFlushTimeoutMs = shutdownFlushTimeoutOption(options.shutdownFlushTimeoutMs);
-    this.flushIntervalMs = flushIntervalOption(options.flushIntervalMs);
+    this.shutdownFlushTimeoutMs = timerMsOption(
+      options.shutdownFlushTimeoutMs,
+      "shutdownFlushTimeoutMs",
+      SHUTDOWN_FLUSH_TIMEOUT_MS,
+    );
+    this.flushIntervalMs = timerMsOption(options.flushIntervalMs, "flushIntervalMs", FLUSH_INTERVAL_MS);
     this.maxRetries = options.maxRetries ?? 3;
     this.backoffBaseMs = options.backoffBaseMs ?? 100;
     this.backoffMaxMs = options.backoffMaxMs ?? 5000;
@@ -465,13 +481,24 @@ export class HttpSink implements Sink {
     return this.closing.signal.aborted;
   }
 
+  private get unsent(): number {
+    return this.buffer.length + this.sendingEvents;
+  }
+
+  /** Encodes at once, not when the batch is cut, because the byte cap
+   * decides when a batch goes. */
   async write(event: Event): Promise<void> {
     if (this.closed) throw new SinkClosedError("HttpSink is closed");
     const json = this.encode(event);
     if (json === null) return;
-    this.enqueue({ event, json, bytes: utf8Bytes(json), writtenAt: Date.now() });
+    const bytes = utf8Bytes(json);
+    if (BATCH_FRAME_BYTES + bytes > BATCH_MAX_BYTES) {
+      this.refuse(1, { kind: "over 1 MiB", detail: `${bytes} bytes` }, false);
+      return;
+    }
+    this.enqueue({ event, json, bytes, writtenAt: Date.now() });
     this.unsentWarned = false;
-    if (this.batchIsFull()) void this.scheduleDrain();
+    if (this.batchIsFull() && !this.waitForTimer) void this.scheduleDrain(false);
     else this.armTimer(this.buffer[0]!.writtenAt + this.flushIntervalMs - Date.now());
     this.ensureExitHooksRegistered();
   }
@@ -496,14 +523,14 @@ export class HttpSink implements Sink {
   }
 
   private async close(ms: number): Promise<void> {
-    this.closeStarted = true;
     this.stopReports();
     await this.drainWithinBudget("aclose()", ms);
     this.closing.abort();
     this.clearTimer();
-    if (this.buffer.length > 0) {
-      PROCESS_DROPS.add("unsent_at_close", this.buffer.length);
-      warn(`baton: the sink closed with ${this.buffer.length} event(s) unsent.`);
+    const unsent = this.unsent;
+    if (unsent > 0) {
+      PROCESS_DROPS.add("unsent_at_close", unsent);
+      warn(`baton: the sink closed with ${unsent} event(s) unsent.`);
     }
     this.warnUnloggedRefusals("the sink closed");
     if (this.exitHooks) {
@@ -526,11 +553,11 @@ export class HttpSink implements Sink {
       }
       if (this.skipWarnedFor !== this.stalledDrain) {
         this.skipWarnedFor = this.stalledDrain;
-        warn(`baton: flush() skipped: an earlier drain is still stuck; ${this.buffer.length} event(s) wait to be sent.`);
+        warn(`baton: flush() skipped: an earlier drain is still stuck; ${this.unsent} event(s) wait to be sent.`);
       }
       return;
     }
-    const settled = this.scheduleDrain().catch(() => undefined);
+    const settled = this.scheduleDrain(true).catch(() => undefined);
     if ((await raceDeadline(settled, ms)) !== TIMED_OUT) return;
     // A wait shorter than the budget, the time a caller had left, does not
     // show that the drain is stuck.
@@ -546,7 +573,13 @@ export class HttpSink implements Sink {
   }
 
   private enqueue(waiting: Waiting): void {
-    if (this.buffer.length >= this.bufferSize) {
+    this.buffer.push(waiting);
+    this.bufferedBytes += waiting.bytes;
+    this.dropOverflow();
+  }
+
+  private dropOverflow(): void {
+    while (this.buffer.length > this.bufferSize) {
       PROCESS_DROPS.add("buffer_full");
       if (!this.overflowWarned) {
         warn(
@@ -555,19 +588,6 @@ export class HttpSink implements Sink {
         this.overflowWarned = true;
       }
       this.bufferedBytes -= this.buffer.shift()!.bytes;
-    }
-    this.buffer.push(waiting);
-    this.bufferedBytes += waiting.bytes;
-  }
-
-  /** Takes the sent entries out of the buffer. A full buffer may already have
-   * pushed some out while they were being sent; the rest are still its head. */
-  private release(batch: readonly Waiting[]): void {
-    for (const waiting of batch) {
-      if (this.buffer[0] === waiting) {
-        this.buffer.shift();
-        this.bufferedBytes -= waiting.bytes;
-      }
     }
   }
 
@@ -585,7 +605,8 @@ export class HttpSink implements Sink {
     const timer = setTimeout(
       () => {
         this.flushTimer = null;
-        void this.scheduleDrain();
+        this.waitForTimer = false;
+        void this.scheduleDrain(false);
       },
       Math.min(Math.max(delayMs, 0), MAX_TIMER_MS),
     );
@@ -600,14 +621,17 @@ export class HttpSink implements Sink {
   }
 
   /** Runs `drainLocked` after the pass under way, one pass at a time, so two
-   * never send at once or race on the buffer. A pass not yet started sends
-   * everything in the buffer when it starts, so callers share it: one per
-   * write would grow without bound while a slow collector holds a pass. */
-  private scheduleDrain(): Promise<void> {
+   * never send at once or race on the buffer. A pass not yet started is
+   * shared by every caller: one per write would grow without bound while a
+   * slow collector holds a pass. */
+  private scheduleDrain(force: boolean): Promise<void> {
+    this.forceNext ||= force;
     if (this.queuedDrain) return this.queuedDrain;
     const run = (): Promise<void> => {
       this.queuedDrain = null;
-      return this.drainLocked();
+      const forced = this.forceNext;
+      this.forceNext = false;
+      return this.drainLocked(forced);
     };
     this.queuedDrain = this.drainChain.then(run, run);
     this.drainChain = this.queuedDrain;
@@ -622,7 +646,7 @@ export class HttpSink implements Sink {
     if (this.exitHooks) return;
     const beforeExit = (): void => {
       // Node re-fires `beforeExit` once the pass's work is done; one pass only.
-      if (this.buffer.length === 0 || this.exitPassRan) {
+      if (this.unsent === 0 || this.exitPassRan) {
         this.warnUnloggedRefusals("process exiting");
         return;
       }
@@ -635,7 +659,7 @@ export class HttpSink implements Sink {
     // `emitWarning` would never print, so the count is written straight out.
     const exit = (): void => {
       try {
-        if (this.buffer.length > 0 && !this.unsentWarned) stderrLine(this.unsentAtExit());
+        if (this.unsent > 0 && !this.unsentWarned) stderrLine(this.unsentAtExit());
         this.warnUnloggedRefusals("process exiting", stderrLine);
       } catch {
         // A throw here would turn the vendor's clean exit into a crash.
@@ -650,19 +674,19 @@ export class HttpSink implements Sink {
    * total (SPEC §11.2); what is left is reported, not sent. */
   private async exitPass(): Promise<void> {
     const deadline = Date.now() + this.shutdownFlushTimeoutMs;
-    while (this.circuit.canRequest() && Date.now() < deadline) {
-      const batch = this.cutBatch(false);
+    while (this.circuit.canRequest() && Date.now() >= this.retryAt && Date.now() < deadline) {
+      const batch = this.takeBatch(true, false);
       if (batch === null) break;
-      if (!(await this.sendBatch(batch, 0, deadline))) break;
+      if (!this.putBack(await this.sendBatch(batch, 0, deadline))) break;
     }
     this.exitPassRan = true;
     this.unsentWarned = true;
-    if (this.buffer.length > 0) warn(this.unsentAtExit());
+    if (this.unsent > 0) warn(this.unsentAtExit());
     this.warnUnloggedRefusals("process exiting");
   }
 
   private unsentAtExit(): string {
-    return `baton: process exiting with ${this.buffer.length} unsent event(s).`;
+    return `baton: process exiting with ${this.unsent} unsent event(s).`;
   }
 
   private authHeaders(): Record<string, string> {
@@ -675,14 +699,19 @@ export class HttpSink implements Sink {
     return "transient_failure";
   }
 
-  /** A refused event is otherwise dropped silently, which looks the same from
-   * the vendor's process as an accepted one. The collector's own message is
-   * logged because it names the field at fault; it is capped and escaped
+  /** Counts `n` refused events and logs them, at most once a minute per
+   * kind. A refused event is otherwise dropped silently, which looks the same
+   * from the vendor's process as an accepted one. The collector's own message
+   * is logged because it names the field at fault; it is capped and escaped
    * because it is a remote server's text landing in the vendor's log. */
-  private static logRefusal(refused: number, why: string, detail: string, unlogged: number): void {
-    const what = refused === 1 ? "an event and it has" : `${refused} events and they have`;
+  private refuse(n: number, { kind, detail }: Refusal, byCollector = true): void {
+    if (n === 0) return;
+    PROCESS_DROPS.add("refused", n);
+    const unlogged = this.refusalToLog(kind, n);
+    if (unlogged === null) return;
+    const what = n === 1 ? "an event and it has" : `${n} events and they have`;
     warn(
-      `baton: collector REFUSED ${what} been dropped (${why}): ` +
+      `baton: ${byCollector ? "collector REFUSED" : "REFUSED, unsent,"} ${what} been dropped (${kind}): ` +
         `${escapeForLog(capCodePoints(detail, REFUSAL_BODY_MAX_LEN))} — the event is gone; nothing retries a refusal.` +
         (unlogged > 0 ? ` ${unlogged} more refused since the last such warning.` : ""),
     );
@@ -730,59 +759,82 @@ export class HttpSink implements Sink {
     }
   }
 
-  /** Sends everything waiting, in batches. A report pending when the pass
-   * starts rides along; one armed by this pass's own delivery waits for the
-   * next batch. */
-  private async drainLocked(): Promise<void> {
+  /** Sends what is due, one batch at a time; `force` (a flush or close) sends
+   * everything waiting. A report set up before the pass rides along; one set
+   * up by this pass's own delivery waits for the next batch. */
+  private async drainLocked(force: boolean): Promise<void> {
     let failed = false;
     let reportDue = this.pendingReport !== null;
     while (!this.closed) {
-      if (!this.circuit.canRequest() || (!this.closeStarted && Date.now() < this.retryAt)) {
+      if (!this.isDue(force, reportDue)) break;
+      // SPEC §2.5: nothing is sent during a 429's wait, not even at close.
+      if (!this.circuit.canRequest() || Date.now() < this.retryAt) {
         failed = true;
         break;
       }
-      const batch = this.cutBatch(reportDue);
-      if (batch === null) break;
+      const batch = this.takeBatch(force, reportDue)!;
       if (batch.some((w) => w.reportSum !== undefined)) reportDue = false;
-      if (!(await this.sendBatch(batch, this.maxRetries, Infinity))) {
+      if (!this.putBack(await this.sendBatch(batch, this.maxRetries, Infinity))) {
         failed = true;
         break;
       }
     }
-    if (!failed && this.buffer.length === 0) this.exitPassRan = false;
+    if (!failed && this.unsent === 0) this.exitPassRan = false;
+    this.waitForTimer = failed;
     this.clearTimer();
-    // A failed batch is tried again when the timer fires, not only on the next
-    // write. The backoff floor keeps a zero interval from spinning.
-    if (this.buffer.length > 0) {
+    if (failed) {
       const waits = [this.flushIntervalMs, this.backoffBaseMs, this.retryAt - Date.now(), this.circuit.msUntilRequest()];
-      this.armTimer(Math.max(...waits));
+      if (this.buffer.length > 0 || this.pendingReport !== null) this.armTimer(Math.max(...waits));
+      return;
     }
-    else if (this.pendingReport !== null) this.armTimer(this.flushIntervalMs);
+    const dueAt = [this.buffer[0]?.writtenAt, this.pendingReport === null ? undefined : this.reportSetAt];
+    const next = Math.min(...dueAt.filter((at) => at !== undefined));
+    if (next !== Infinity) this.armTimer(next + this.flushIntervalMs - Date.now());
   }
 
-  /** The head of the buffer that fits one request: one tenant and vendor
-   * (SPEC §2.5), at most 100 events and 1 MiB, but always at least one event,
-   * so an event over the cap is sent alone and refused by the collector. */
-  private cutBatch(withReport: boolean): Waiting[] | null {
+  private isDue(force: boolean, reportDue: boolean): boolean {
+    const now = Date.now();
+    if (this.buffer.length > 0) {
+      return force || this.batchIsFull() || this.buffer[0]!.writtenAt + this.flushIntervalMs <= now;
+    }
+    return reportDue && this.pendingReport !== null && (force || this.reportSetAt + this.flushIntervalMs <= now);
+  }
+
+  /** Takes out of the buffer the head that fits one request: one tenant and
+   * vendor (SPEC §2.5), at most 100 events and 1 MiB. */
+  private takeBatch(force: boolean, withReport: boolean): Waiting[] | null {
+    if (!this.isDue(force, withReport)) return null;
     const maxEvents = this.batchless ? 1 : BATCH_MAX_EVENTS;
     const batch: Waiting[] = [];
     let bytes = BATCH_FRAME_BYTES - 1;
     const fits = (w: Waiting): boolean =>
       batch.length === 0 ||
-      (batch.length < maxEvents &&
-        batchKey(w.event) === batchKey(batch[0]!.event) &&
-        bytes + 1 + w.bytes <= BATCH_MAX_BYTES);
+      (batch.length < maxEvents && sameBatch(w.event, batch[0]!.event) && bytes + 1 + w.bytes <= BATCH_MAX_BYTES);
     for (const waiting of this.buffer) {
       if (!fits(waiting)) break;
       batch.push(waiting);
       bytes += 1 + waiting.bytes;
     }
+    this.buffer.splice(0, batch.length);
+    this.bufferedBytes -= sum(batch.map((w) => w.bytes));
+    this.sendingEvents = batch.length;
     // In one-event mode the report goes alone, once the buffer is empty.
     if (withReport && (!this.batchless || batch.length === 0)) {
       const report = this.buildReport();
-      if (report !== null && (batch.length === 0 || fits(report))) batch.push(report);
+      if (report !== null && fits(report)) batch.push(report);
     }
     return batch.length > 0 ? batch : null;
+  }
+
+  /** Puts a kept batch's events back at the head of the buffer; `true` when
+   * there were none. */
+  private putBack(kept: Waiting[]): boolean {
+    this.sendingEvents = 0;
+    const events = kept.filter((w) => w.reportSum === undefined);
+    this.buffer.unshift(...events);
+    this.bufferedBytes += sum(events.map((w) => w.bytes));
+    this.dropOverflow();
+    return kept.length === 0;
   }
 
   /** After a delivery, sets up a report of this process's loss totals (SPEC
@@ -797,9 +849,9 @@ export class HttpSink implements Sink {
     ) {
       return;
     }
-    const sum = Object.values(PROCESS_DROPS.total()).reduce((a, b) => a + b, 0);
-    if (sum === this.reportedSum) return;
+    if (sum(Object.values(PROCESS_DROPS.total())) === this.reportedSum) return;
     this.lastReportAt = now;
+    this.reportSetAt = Date.now();
     this.pendingReport = { tenant_id, vendor_id, consent_token };
   }
 
@@ -820,8 +872,7 @@ export class HttpSink implements Sink {
         payload: { instance_id: PROCESS_DROPS.instanceId, dropped: totals },
       });
       const json = JSON.stringify(report);
-      const reportSum = Object.values(totals).reduce((a, b) => a + b, 0);
-      return { event: report, json, bytes: utf8Bytes(json), writtenAt: Date.now(), reportSum };
+      return { event: report, json, bytes: utf8Bytes(json), writtenAt: Date.now(), reportSum: sum(Object.values(totals)) };
     } catch {
       // A lost report is never counted (SPEC §11.4.7).
       this.pendingReport = null;
@@ -830,64 +881,67 @@ export class HttpSink implements Sink {
   }
 
   /** Sends one batch, splitting it on 413, until every event in it is
-   * delivered or refused (`true`), or a failure leaves the rest buffered
-   * (`false`). */
-  private async sendBatch(batch: Waiting[], retries: number, deadline: number): Promise<boolean> {
+   * delivered or refused. Returns what a failure kept, to go back in the
+   * buffer. */
+  private async sendBatch(batch: Waiting[], retries: number, deadline: number): Promise<Waiting[]> {
+    const batchless = this.batchless;
+    const body = batchless ? batch[0]!.json : BATCH_OPEN + batch.map((w) => w.json).join(",") + BATCH_CLOSE;
     for (let attempt = 0; ; attempt++) {
       const timeLeft = deadline - Date.now();
-      if (timeLeft <= 0) return false;
-      const batchless = this.batchless;
-      const answer = await this.post(batch, batchless, Math.min(this.requestTimeoutMs, timeLeft));
+      if (timeLeft <= 0) return batch;
+      const answer = await this.post(body, batch, batchless, Math.min(this.requestTimeoutMs, timeLeft));
       if (answer.kind === "no_batch_endpoint") {
         this.batchless = true;
         warn("baton: the collector has no batch endpoint; sending one event per request.");
-        for (const waiting of batch) {
-          const sent = await this.sendBatch([waiting], retries, deadline);
-          if (!sent) return false;
+        for (const [i, waiting] of batch.entries()) {
+          const kept = await this.sendBatch([waiting], retries, deadline);
+          if (kept.length > 0) return [...kept, ...batch.slice(i + 1)];
         }
-        return true;
+        return [];
       }
       if (answer.kind === "too_large") {
-        const half = Math.ceil(batch.length / 2);
-        return (
-          (await this.sendBatch(batch.slice(0, half), retries, deadline)) &&
-          this.sendBatch(batch.slice(half), retries, deadline)
-        );
+        const half = Math.floor(batch.length / 2);
+        const kept = await this.sendBatch(batch.slice(0, half), retries, deadline);
+        if (kept.length > 0) return [...kept, ...batch.slice(half)];
+        return this.sendBatch(batch.slice(half), retries, deadline);
       }
       if (answer.kind === "transient") {
         if (answer.retryAfterMs !== null) {
           this.retryAt = Date.now() + answer.retryAfterMs;
-          return false;
+          return batch;
         }
         if (attempt < retries && !this.closed) {
           await this.sleepUnlessClosed(Math.min(this.backoffBaseMs * 2 ** attempt, this.backoffMaxMs));
           if (!this.closed) continue;
         }
         this.circuit.recordFailure();
-        return false;
+        return batch;
       }
       this.circuit.recordSuccess();
       this.settle(batch, answer);
-      return true;
+      return [];
     }
   }
 
   private settle(batch: Waiting[], answer: Extract<Answer, { kind: "answered" | "refused" }>): void {
-    this.release(batch);
     let lastDelivered: Event | null = null;
-    for (const [i, waiting] of batch.entries()) {
-      const refused = answer.kind === "refused" || answer.refused.has(i);
-      if (waiting.reportSum === undefined) {
-        // A whole-batch refusal was counted when it was answered.
-        if (!refused) lastDelivered = waiting.event;
-        else if (answer.kind === "answered") PROCESS_DROPS.add("refused");
-        continue;
+    const refused = new Map<string, { first: Refusal; n: number }>();
+    for (const waiting of batch) {
+      const refusal = answer.kind === "refused" ? answer.refusal : answer.refused.get(waiting.event.event_id);
+      if (waiting.reportSum !== undefined) {
+        this.pendingReport = null;
+        if (refusal === undefined) this.reportedSum = waiting.reportSum;
+        // A collector that predates `client_report` refuses it this way.
+        else if (answer.kind === "answered" || answer.status === 400 || answer.status === 422) this.reportsStopped = true;
+      } else if (refusal === undefined) {
+        lastDelivered = waiting.event;
+      } else {
+        const seen = refused.get(refusal.kind);
+        if (seen) seen.n += 1;
+        else refused.set(refusal.kind, { first: refusal, n: 1 });
       }
-      this.pendingReport = null;
-      if (!refused) this.reportedSum = waiting.reportSum;
-      // A collector that predates `client_report` refuses it this way.
-      else if (answer.kind === "answered" || answer.status === 400 || answer.status === 422) this.reportsStopped = true;
     }
+    for (const { first, n } of refused.values()) this.refuse(n, first);
     if (lastDelivered !== null) {
       PROCESS_DROPS.logRecovery();
       this.maybeReport(lastDelivered);
@@ -923,8 +977,9 @@ export class HttpSink implements Sink {
 
   /** Aborted by the timeout or by `aclose()`. Built by hand: `AbortSignal.any`
    * is missing before Node 20.3, and on some later versions it keeps every
-   * combined signal alive as long as the long-lived `closing` signal. */
-  private async post(batch: Waiting[], batchless: boolean, timeoutMs: number): Promise<Answer> {
+   * combined signal alive as long as the long-lived `closing` signal. Any body
+   * read is under the same signal, so a stalled body cannot hold the drain. */
+  private async post(body: string, batch: Waiting[], batchless: boolean, timeoutMs: number): Promise<Answer> {
     const request = new AbortController();
     const abort = (): void => request.abort();
     const timer = setTimeout(abort, timeoutMs);
@@ -933,25 +988,24 @@ export class HttpSink implements Sink {
       const response = await this.fetchImpl(batchless ? `${this.url}/v0/events` : `${this.url}/v0/events/batch`, {
         method: "POST",
         headers: this.authHeaders(),
-        body: batchless ? batch[0]!.json : `{"events":[${batch.map((w) => w.json).join(",")}]}`,
+        body,
         signal: request.signal,
+        // A followed redirect turns the POST into a GET (SPEC §2.5).
+        redirect: "manual",
       });
       const { status } = response;
-      if (HttpSink.classifyStatus(status) === "success") {
-        if (batchless) {
-          void response.body?.cancel().catch(() => undefined);
-          return { kind: "answered", refused: new Set() };
-        }
-        return { kind: "answered", refused: await this.refusedInResults(response, batch) };
+      const outcome = HttpSink.classifyStatus(status);
+      if (outcome === "success") {
+        return { kind: "answered", refused: batchless ? new Map<string, Refusal>() : HttpSink.refusedIn(await response.text()) };
       }
-      const other = this.otherAnswer(status, response, batch.length, batchless);
+      const other = HttpSink.otherAnswer(response, batch.length, batchless);
       if (other !== null) {
         // An unread body holds its connection until GC.
         void response.body?.cancel().catch(() => undefined);
         return other;
       }
-      await this.countRefusal(response, batch);
-      return { kind: "refused", status };
+      const detail = await HttpSink.readHead(response).catch(() => "<unreadable>");
+      return { kind: "refused", status, refusal: { kind: `HTTP ${status}`, detail } };
     } catch {
       return { kind: "transient", retryAfterMs: null };
     } finally {
@@ -961,7 +1015,8 @@ export class HttpSink implements Sink {
   }
 
   /** Every answer but a 2xx and a refusal of the whole batch. */
-  private otherAnswer(status: number, response: Response, size: number, batchless: boolean): Answer | null {
+  private static otherAnswer(response: Response, size: number, batchless: boolean): Answer | null {
+    const { status } = response;
     if (status === 413 && size > 1) return { kind: "too_large" };
     if ((status === 404 || status === 405) && !batchless) return { kind: "no_batch_endpoint" };
     if (status === 429) return { kind: "transient", retryAfterMs: retryAfterMs(response.headers.get("Retry-After")) };
@@ -969,40 +1024,22 @@ export class HttpSink implements Sink {
     return null;
   }
 
-  private async countRefusal(response: Response, batch: Waiting[]): Promise<void> {
-    const events = batch.filter((w) => w.reportSum === undefined).length;
-    PROCESS_DROPS.add("refused", events);
-    const unlogged = events > 0 ? this.refusalToLog(`HTTP ${response.status}`, events) : null;
-    if (unlogged === null) {
-      void response.body?.cancel().catch(() => undefined);
-      return;
+  /** The refused results by `event_id` (SPEC §2.5). An event with no readable
+   * result was delivered. */
+  private static refusedIn(text: string): Map<string, Refusal> {
+    const refused = new Map<string, Refusal>();
+    let results: unknown;
+    try {
+      results = (JSON.parse(text) as { results?: unknown } | null)?.results;
+    } catch {
+      return refused;
     }
-    // The body read is under the request's timeout signal, so a stalled body
-    // logs "<unreadable>" instead of holding the drain.
-    const detail = await HttpSink.readHead(response).catch(() => "<unreadable>");
-    HttpSink.logRefusal(events, `HTTP ${response.status}`, detail, unlogged);
-  }
-
-  /** A 2xx whose body cannot be read is taken as accepting every event: the
-   * collector said it took the batch. */
-  private async refusedInResults(
-    response: Response,
-    batch: Waiting[],
-  ): Promise<Set<number>> {
-    const refused = new Set<number>();
-    const body: unknown = await response.json().catch(() => null);
-    const results: unknown = (body as { results?: unknown } | null)?.results;
     if (!Array.isArray(results)) return refused;
-    batch.forEach((waiting, i) => {
-      const result = results[i] as { status?: unknown; error?: { code?: unknown; message?: unknown } } | undefined;
-      if (result?.status !== "refused") return;
-      refused.add(i);
-      if (waiting.reportSum !== undefined) return;
-      const text = (value: unknown): string => (typeof value === "string" ? value : "");
-      const code = text(result.error?.code) || "no code";
-      const unlogged = this.refusalToLog(code, 1);
-      if (unlogged !== null) HttpSink.logRefusal(1, code, text(result.error?.message), unlogged);
-    });
+    const str = (value: unknown): string => (typeof value === "string" ? value : "");
+    for (const result of results as { event_id?: unknown; status?: unknown; error?: { code?: unknown; message?: unknown } }[]) {
+      if (result?.status !== "refused" || typeof result.event_id !== "string") continue;
+      refused.set(result.event_id, { kind: str(result.error?.code) || "no code", detail: str(result.error?.message) });
+    }
     return refused;
   }
 }

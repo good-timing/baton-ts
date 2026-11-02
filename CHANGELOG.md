@@ -6,17 +6,20 @@
   request to `POST {url}/v0/events/batch` (SPEC §2.5), instead of one event
   per request. A batch goes when 100 events are waiting, when the next event
   would take the body over 1 MiB, or 5 seconds after the oldest waiting event
-  was written. `flush()` and `aclose()` still send at once. So an event can
-  now reach the collector up to 5 seconds later than before, and a process
-  that calls `process.exit()` without `aclose()` can leave up to 5 seconds of
-  events unsent (it says how many on stderr). The new `flushIntervalMs`
-  option changes the 5 seconds. A collector that answers
-  413 gets the batch again in two halves. A collector that answers a 429 with
-  `Retry-After` gets nothing more until that time has passed. An older
-  collector with no batch endpoint answers 404 or 405: the sink then sends
-  one event per request to `POST {url}/v0/events` for the rest of the
-  process, and loses nothing. Loss reports (`client_report`) now go inside
-  the next batch, so there is only ever one request at a time.
+  was written. After a batch goes, what is left waits its own turn. `flush()`
+  and `aclose()` still send at once. So an event can now reach the collector
+  up to 5 seconds later than before, and a process that calls `process.exit()`
+  without `aclose()` can leave up to 5 seconds of events unsent (it says how
+  many on stderr). The new `flushIntervalMs` option changes the 5 seconds. A
+  collector that answers 413 gets the batch again in two halves. An event that
+  alone is over 1 MiB is never sent; it is counted as refused. A collector
+  that answers a 429 with `Retry-After` (whole seconds, from 1 to 60) gets
+  nothing more until that time has passed, not even at close. The sink does
+  not follow redirects. An older collector with no batch endpoint answers 404
+  or 405: the sink then sends one event per request to `POST {url}/v0/events`
+  for the rest of the process, and loses nothing. Loss reports
+  (`client_report`) now go inside the next batch, so there is only ever one
+  request at a time.
 
 - **`HttpSink` memory no longer grows with each write while the collector is
   slow or down.** Each `write()` queued its own send pass behind the one

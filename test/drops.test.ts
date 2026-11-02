@@ -3,7 +3,8 @@ import { DROP_REASONS, type DropReason, PROCESS_DROPS } from "../src/drops.js";
 import { ToolCallStartEventSchema, type Event } from "../src/events.js";
 import { emit } from "../src/integrations/mcp/emit.js";
 import { Client } from "../src/index.js";
-import { HttpSink, safeWrite, type Sink } from "../src/sinks.js";
+import { safeWrite, type Sink } from "../src/sinks.js";
+import { acceptAll, results, sentIn, sequences, sinkWith } from "./_sink.js";
 
 function makeEvent(): Event {
   return ToolCallStartEventSchema.parse({
@@ -24,7 +25,7 @@ const neverAnswers = (_url: string | URL | Request, init?: RequestInit) =>
   });
 
 function httpSink(fetchImpl: typeof fetch, options: { bufferSize?: number; shutdownFlushTimeoutMs?: number } = {}) {
-  return new HttpSink("https://collector.example", { apiKey: "k", fetchImpl, maxRetries: 0, ...options });
+  return sinkWith(fetchImpl, { maxRetries: 0, ...options });
 }
 
 const writeRejects: Sink = {
@@ -154,13 +155,13 @@ describe("every event is delivered or counted (SPEC §11.2)", () => {
     }
   });
 
-  it("does not lose an event the buffer pushed out while it was being sent", async () => {
+  it("never pushes out an event while it is being sent", async () => {
     let answer: (response: Response) => void = () => {};
     const posted: number[][] = [];
     const fetchImpl = (_url: string | URL | Request, init?: RequestInit) => {
-      const { events } = JSON.parse(init!.body as string) as { events: { sequence_number: number }[] };
-      posted.push(events.map((e) => e.sequence_number));
-      return new Promise<Response>((resolve) => (answer = resolve));
+      posted.push(sequences(init));
+      const events = sentIn(init);
+      return new Promise<Response>((resolve) => (answer = resolve)).then(() => results(events));
     };
     const sink = httpSink(fetchImpl, { bufferSize: 2 });
     const warnings = collectWarnings();
@@ -169,19 +170,44 @@ describe("every event is delivered or counted (SPEC §11.2)", () => {
       const flushing = sink.flush();
       await vi.waitFor(() => expect(posted).toEqual([[1, 2]]));
       await sink.write({ ...makeEvent(), sequence_number: 3 });
-      answer(new Response(null, { status: 202 }));
+      answer(new Response());
       await vi.waitFor(() => expect(posted).toEqual([[1, 2], [3]]));
-      answer(new Response(null, { status: 202 }));
+      answer(new Response());
       await flushing;
       await sink.aclose();
-      expect(PROCESS_DROPS.total()).toEqual({ buffer_full: 1 });
+      expect(PROCESS_DROPS.total()).toEqual({});
     } finally {
       warnings.restore();
     }
   });
 
+  it("counts an event once when the buffer is full while its batch is refused", async () => {
+    let answer: ((response: Response) => void) | undefined;
+    const posted: number[][] = [];
+    const fetchImpl = (_url: string | URL | Request, init?: RequestInit) => {
+      posted.push(sequences(init));
+      if (answer === undefined) return new Promise<Response>((resolve) => (answer = resolve));
+      return Promise.resolve(results(sentIn(init)));
+    };
+    const sink = httpSink(fetchImpl, { bufferSize: 2 });
+    const warnings = collectWarnings();
+    try {
+      for (let i = 1; i <= 2; i += 1) await sink.write({ ...makeEvent(), sequence_number: i });
+      const flushing = sink.flush();
+      await vi.waitFor(() => expect(answer).toBeDefined());
+      for (let i = 3; i <= 5; i += 1) await sink.write({ ...makeEvent(), sequence_number: i });
+      answer!(new Response(null, { status: 400 }));
+      await flushing;
+      expect(PROCESS_DROPS.total()).toEqual({ buffer_full: 1, refused: 2 });
+      expect(posted).toEqual([[1, 2], [4, 5]]);
+    } finally {
+      await sink.aclose();
+      warnings.restore();
+    }
+  });
+
   it("counts and logs nothing on a healthy run", async () => {
-    const sink = httpSink(() => Promise.resolve(new Response(null, { status: 202 })));
+    const sink = httpSink(acceptAll);
     const warnings = collectWarnings();
     try {
       for (let i = 0; i < 3; i += 1) await sink.write(makeEvent());

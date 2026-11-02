@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { PROCESS_DROPS } from "../src/drops.js";
 import { ToolCallStartEventSchema, type Event } from "../src/events.js";
 import { HttpSink } from "../src/sinks.js";
+import { results, sentIn, sinkWith } from "./_sink.js";
 
 function makeEvent(): Event {
   return ToolCallStartEventSchema.parse({
@@ -18,8 +19,6 @@ function makeEvent(): Event {
 
 type Body = Record<string, unknown> & { event_type: string; payload: Record<string, unknown> };
 
-const ok = (results: { status: string }[]) => new Response(JSON.stringify({ results }), { status: 200 });
-
 /** Answers each event by a list of statuses (202 accepts, anything else is
  * refused in the results). A report sent alone is answered `reportStatus`:
  * `"refused"` refuses it in the results, `null` fails to connect, `"hang"`
@@ -28,10 +27,9 @@ function collector(eventStatuses: number[], reportStatus: number | null | "hang"
   const statuses = eventStatuses[Symbol.iterator]();
   const state = { reports: [] as Body[], delivered: 0, requests: [] as Body[][], inFlight: 0, most: 0 };
   const answer = (init: RequestInit | undefined): Promise<Response> => {
-    const { events } = JSON.parse(init!.body as string) as { events: Body[] };
+    const events = sentIn(init) as unknown as Body[];
     state.requests.push(events);
-    const alone = events.every((e) => e.event_type === "client_report");
-    if (alone) {
+    if (events.every((e) => e.event_type === "client_report")) {
       state.reports.push(...events);
       if (reportStatus === null) return Promise.reject(new TypeError("fetch failed"));
       if (reportStatus === "hang") {
@@ -39,21 +37,22 @@ function collector(eventStatuses: number[], reportStatus: number | null | "hang"
           init?.signal?.addEventListener("abort", () => reject(new Error("aborted")));
         });
       }
-      if (reportStatus === "refused") return Promise.resolve(ok([{ status: "refused" }]));
-      if (reportStatus !== 202) return Promise.resolve(new Response(null, { status: reportStatus }));
-      return Promise.resolve(ok([{ status: "accepted" }]));
-    }
-    const results = events.map((e) => {
-      if (e.event_type === "client_report") {
-        state.reports.push(e);
-        return { status: reportStatus === "refused" ? "refused" : "accepted" };
+      if (typeof reportStatus === "number" && reportStatus !== 202) {
+        return Promise.resolve(new Response(null, { status: reportStatus }));
       }
-      const status = statuses.next().value as number;
-      if (status !== 202) return { status: "refused" };
-      state.delivered += 1;
-      return { status: "accepted" };
-    });
-    return Promise.resolve(ok(results));
+      return Promise.resolve(results(events, () => (reportStatus === "refused" ? "refused" : "accepted")));
+    }
+    return Promise.resolve(
+      results(events, (e) => {
+        if (e.event_type === "client_report") {
+          state.reports.push(e);
+          return reportStatus === "refused" ? "refused" : "accepted";
+        }
+        if (statuses.next().value !== 202) return "refused";
+        state.delivered += 1;
+        return "accepted";
+      }),
+    );
   };
   const fetchImpl = async (_url: string | URL | Request, init?: RequestInit): Promise<Response> => {
     state.most = Math.max(state.most, ++state.inFlight);
@@ -70,7 +69,7 @@ function httpSink(
   fetchImpl: typeof fetch,
   options: { shutdownFlushTimeoutMs?: number; requestTimeoutMs?: number; flushIntervalMs?: number } = {},
 ) {
-  return new HttpSink("https://collector.example", { apiKey: "k", fetchImpl, maxRetries: 0, ...options });
+  return sinkWith(fetchImpl, { maxRetries: 0, ...options });
 }
 
 const internals = (sink: HttpSink) =>

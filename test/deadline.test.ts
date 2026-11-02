@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { raceDeadline, TIMED_OUT } from "../src/deadline.js";
 import { boundedSinkCall, callWithin, HttpSink, MultiSink } from "../src/sinks.js";
+import { results, sentIn } from "./_sink.js";
 import { Client, type Sink } from "../src/index.js";
 
 function collectWarnings(): { seen: string[]; restore: () => void } {
@@ -330,8 +331,8 @@ function slowHttpSink(answerMs: number, shutdownFlushTimeoutMs: number): { sink:
   const fetchImpl = (_url: string | URL | Request, init?: RequestInit) =>
     new Promise<Response>((resolve) =>
       setTimeout(() => {
-        sent += (JSON.parse(init!.body as string) as { events: unknown[] }).events.length;
-        resolve(new Response(null, { status: 202 }));
+        sent += sentIn(init).length;
+        resolve(results(sentIn(init)));
       }, answerMs),
     );
   const sink = new HttpSink("https://collector.example", { apiKey: "k", fetchImpl, shutdownFlushTimeoutMs });

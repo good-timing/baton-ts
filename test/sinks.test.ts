@@ -3,13 +3,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { PROCESS_DROPS } from "../src/drops.js";
-import { FileSink, HttpSink, MultiSink, SinkClosedError, StdoutSink, safeWrite, type Sink } from "../src/sinks.js";
+import { FileSink, HttpSink, MultiSink, SinkClosedError, StdoutSink, safeWrite, type HttpSinkOptions, type Sink } from "../src/sinks.js";
 import { withBaton } from "../src/integrations/mcp/withBaton.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { z } from "zod";
 import { ToolCallStartEventSchema, type Event } from "../src/events.js";
+import { acceptAll, results, sentIn, sequences, sinkWith, type Sent } from "./_sink.js";
 
 function makeEvent(overrides: Partial<{ sequence_number: number }> = {}): Event {
   return ToolCallStartEventSchema.parse({
@@ -51,20 +52,6 @@ describe("StdoutSink", () => {
 
 function messages(warning: { mock: { calls: unknown[][] } }): string[] {
   return warning.mock.calls.map(([message]) => String(message));
-}
-
-type Sent = { event_type: string; sequence_number: number };
-
-/** The events in one request, a batch or a single event. */
-function sentIn(init: RequestInit): Sent[] {
-  const body = JSON.parse(init.body as string) as { events?: Sent[] } & Sent;
-  return body.events ?? [body];
-}
-
-function sequences(init: RequestInit): number[] {
-  return sentIn(init)
-    .filter((e) => e.event_type !== "client_report")
-    .map((e) => e.sequence_number);
 }
 
 /** Called directly, so the test runner's own exit listeners never fire. */
@@ -171,7 +158,7 @@ describe("MultiSink", () => {
 
 describe("HttpSink", () => {
   it("POSTs a batch to {url}/v0/events/batch with bearer auth and drains the buffer", async () => {
-    const fetchImpl = vi.fn().mockResolvedValue(new Response(null, { status: 202 }));
+    const fetchImpl = vi.fn().mockImplementation(acceptAll);
     const sink = new HttpSink("https://collector.example/", { apiKey: "k", fetchImpl });
 
     await sink.write(makeEvent({ sequence_number: 1 }));
@@ -191,10 +178,8 @@ describe("HttpSink", () => {
     const fetchImpl = vi
       .fn()
       .mockResolvedValueOnce(new Response(null, { status: 503 }))
-      .mockResolvedValueOnce(new Response(null, { status: 202 }));
-    const sink = new HttpSink("https://collector.example", {
-      apiKey: "k",
-      fetchImpl,
+      .mockImplementationOnce(acceptAll);
+    const sink = sinkWith(fetchImpl, {
       backoffBaseMs: 1,
     });
 
@@ -207,7 +192,7 @@ describe("HttpSink", () => {
 
   it("drops a permanent failure (4xx) without retrying", async () => {
     const fetchImpl = vi.fn().mockResolvedValue(new Response(null, { status: 400 }));
-    const sink = new HttpSink("https://collector.example", { apiKey: "k", fetchImpl });
+    const sink = sinkWith(fetchImpl);
 
     await sink.write(makeEvent());
     await sink.flush();
@@ -223,7 +208,7 @@ describe("HttpSink", () => {
       .mockResolvedValue(new Response(reason + "😀".repeat(600), { status: 422 }));
     const warning = vi.spyOn(process, "emitWarning").mockImplementation(() => {});
     try {
-      const sink = new HttpSink("https://collector.example", { apiKey: "k", fetchImpl });
+      const sink = sinkWith(fetchImpl);
       await sink.write(makeEvent());
       await sink.flush();
       await sink.aclose();
@@ -242,7 +227,7 @@ describe("HttpSink", () => {
     const fetchImpl = vi.fn().mockResolvedValue(new Response("bad\nfield\u001b[31m\u202e\u2028😀 \\u{a}", { status: 422 }));
     const warning = vi.spyOn(process, "emitWarning").mockImplementation(() => {});
     try {
-      const sink = new HttpSink("https://collector.example", { apiKey: "k", fetchImpl });
+      const sink = sinkWith(fetchImpl);
       await sink.write(makeEvent());
       await sink.flush();
       await sink.aclose();
@@ -260,7 +245,7 @@ describe("HttpSink", () => {
     let now = 1_000_000;
     const clock = vi.spyOn(performance, "now").mockImplementation(() => now);
     try {
-      const sink = new HttpSink("https://collector.example", { apiKey: "k", fetchImpl });
+      const sink = sinkWith(fetchImpl);
       const refusals = () => messages(warning).filter((m) => m.includes("REFUSED"));
       for (let i = 0; i < 3; i++) await sink.write(makeEvent());
       await sink.flush();
@@ -298,7 +283,7 @@ describe("HttpSink", () => {
     const fetchImpl = vi.fn().mockImplementation(() => Promise.resolve(new Response("no", { status: statuses.shift()! })));
     const warning = vi.spyOn(process, "emitWarning").mockImplementation(() => {});
     try {
-      const sink = new HttpSink("https://collector.example", { apiKey: "k", fetchImpl });
+      const sink = sinkWith(fetchImpl);
       for (let i = 0; i < 3; i++) {
         await sink.write(makeEvent());
         await sink.flush();
@@ -320,7 +305,7 @@ describe("HttpSink", () => {
     const fetchImpl = vi.fn().mockImplementation(() => Promise.resolve(new Response("no", { status: 422 })));
     const warning = vi.spyOn(process, "emitWarning").mockImplementation(() => {});
     try {
-      const sink = new HttpSink("https://collector.example", { apiKey: "k", fetchImpl });
+      const sink = sinkWith(fetchImpl);
       const { atExit } = exitHooks(sink);
       for (let i = 0; i < 3; i++) {
         await sink.write(makeEvent());
@@ -341,7 +326,7 @@ describe("HttpSink", () => {
     const fetchImpl = vi.fn().mockImplementation(() => Promise.resolve(new Response("no", { status: 422 })));
     const warning = vi.spyOn(process, "emitWarning").mockImplementation(() => {});
     const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
-    const sink = new HttpSink("https://collector.example", { apiKey: "k", fetchImpl, maxRetries: 0 });
+    const sink = sinkWith(fetchImpl, { maxRetries: 0 });
     try {
       for (let i = 0; i < 2; i++) {
         await sink.write(makeEvent());
@@ -370,7 +355,7 @@ describe("HttpSink", () => {
     const fetchImpl = vi.fn().mockRejectedValue(new Error("offline"));
     const warning = vi.spyOn(process, "emitWarning").mockImplementation(() => {});
     const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
-    const sink = new HttpSink("https://collector.example", { apiKey: "k", fetchImpl, maxRetries: 0 });
+    const sink = sinkWith(fetchImpl, { maxRetries: 0 });
     try {
       await sink.write(makeEvent());
       await sink.flush();
@@ -404,7 +389,7 @@ describe("HttpSink", () => {
     const fetchImpl = vi.fn().mockResolvedValue(new Response(endless, { status: 413 }));
     const warning = vi.spyOn(process, "emitWarning").mockImplementation(() => {});
     try {
-      const sink = new HttpSink("https://collector.example", { apiKey: "k", fetchImpl });
+      const sink = sinkWith(fetchImpl);
       await sink.write(makeEvent());
       await sink.flush();
       await sink.aclose();
@@ -429,10 +414,10 @@ describe("HttpSink", () => {
     const fetchImpl = vi
       .fn()
       .mockImplementationOnce(async (_url: string, init: RequestInit) => stalled(init.signal!))
-      .mockResolvedValue(new Response(null, { status: 202 }));
+      .mockImplementation(acceptAll);
     const warning = vi.spyOn(process, "emitWarning").mockImplementation(() => {});
     try {
-      const sink = new HttpSink("https://collector.example", { apiKey: "k", fetchImpl, requestTimeoutMs: 20 });
+      const sink = sinkWith(fetchImpl, { requestTimeoutMs: 20 });
       await sink.write(makeEvent({ sequence_number: 1 }));
       await sink.flush();
       await sink.write(makeEvent({ sequence_number: 2 }));
@@ -449,9 +434,7 @@ describe("HttpSink", () => {
 
   it("opens the circuit breaker after consecutive failures and stops sending", async () => {
     const fetchImpl = vi.fn().mockResolvedValue(new Response(null, { status: 500 }));
-    const sink = new HttpSink("https://collector.example", {
-      apiKey: "k",
-      fetchImpl,
+    const sink = sinkWith(fetchImpl, {
       maxRetries: 0,
       circuitBreakerThreshold: 2,
       circuitBreakerResetMs: 60_000,
@@ -481,11 +464,11 @@ describe("HttpSink", () => {
       return new Promise<Response>((resolve) =>
         setTimeout(() => {
           inFlight -= 1;
-          resolve(new Response(null, { status: 202 }));
+          resolve(results(sentIn(init)));
         }, 5),
       );
     });
-    const sink = new HttpSink("https://collector.example", { apiKey: "k", fetchImpl, flushIntervalMs: 1 });
+    const sink = sinkWith(fetchImpl, { flushIntervalMs: 1 });
 
     const flushes: Promise<void>[] = [];
     for (let i = 0; i < 250; i += 1) {
@@ -502,10 +485,8 @@ describe("HttpSink", () => {
   });
 
   it("drops the oldest event on buffer overflow", async () => {
-    const fetchImpl = vi.fn().mockResolvedValue(new Response(null, { status: 202 }));
-    const sink = new HttpSink("https://collector.example", {
-      apiKey: "k",
-      fetchImpl,
+    const fetchImpl = vi.fn().mockImplementation(acceptAll);
+    const sink = sinkWith(fetchImpl, {
       bufferSize: 1,
       // Prevent the background drain from racing the second write.
       maxRetries: 0,
@@ -526,13 +507,13 @@ describe("HttpSink", () => {
     const sent: number[] = [];
     const fetchImpl = vi.fn().mockImplementation((_url: string, init: RequestInit) => {
       sent.push(...sequences(init));
-      return Promise.resolve(new Response(null, { status: 202 }));
+      return acceptAll("", init);
     });
     const warnings: string[] = [];
     const spy = vi.spyOn(process, "emitWarning").mockImplementation((w: string | Error) => {
       warnings.push(String(w));
     });
-    const sink = new HttpSink("https://collector.example", { apiKey: "k", fetchImpl });
+    const sink = sinkWith(fetchImpl);
     try {
       const bad = makeEvent({ sequence_number: 0 });
       (bad.payload as { params: Record<string, unknown> }).params = { n: 10n, secret: "jane@x.co" };
@@ -565,9 +546,7 @@ describe("HttpSink", () => {
     const spy = vi.spyOn(process, "emitWarning").mockImplementation((w: string | Error) => {
       warnings.push(String(w));
     });
-    const sink = new HttpSink("https://collector.example", {
-      apiKey: "k",
-      fetchImpl,
+    const sink = sinkWith(fetchImpl, {
       shutdownFlushTimeoutMs: 60,
       maxRetries: 0,
       circuitBreakerResetMs: 0,
@@ -591,7 +570,7 @@ describe("HttpSink", () => {
 
       // The process kept running after all: a write leaves exit mode.
       exiting = false;
-      fetchImpl.mockImplementation(() => Promise.resolve(new Response(null, { status: 202 })));
+      fetchImpl.mockImplementation(acceptAll);
       await sink.write(makeEvent({ sequence_number: 5 }));
       await sink.flush();
       expect(fetchImpl.mock.calls.length).toBe(2);
@@ -612,9 +591,7 @@ describe("HttpSink", () => {
     const spy = vi.spyOn(process, "emitWarning").mockImplementation((w: string | Error) => {
       warnings.push(String(w));
     });
-    const sink = new HttpSink("https://collector.example", {
-      apiKey: "k",
-      fetchImpl,
+    const sink = sinkWith(fetchImpl, {
       requestTimeoutMs: 10_000,
       shutdownFlushTimeoutMs: 80,
     });
@@ -649,7 +626,7 @@ describe("HttpSink", () => {
     const spy = vi.spyOn(process, "emitWarning").mockImplementation((w: string | Error) => {
       warnings.push(String(w));
     });
-    const sink = new HttpSink("https://collector.example", { apiKey: "k", fetchImpl, maxRetries: 0 });
+    const sink = sinkWith(fetchImpl, { maxRetries: 0 });
     try {
       await sink.write(makeEvent());
       const [first, second] = [sink.aclose(), sink.aclose()];
@@ -663,14 +640,14 @@ describe("HttpSink", () => {
 
   it("keeps flush() from waiting while a pass queued during the wait is stuck", async () => {
     const fails: ((err: Error) => void)[] = [];
-    const stuck = () =>
-      new Promise<Response>((_resolve, reject) => {
-        fails.push(reject);
-      });
     const fetchImpl = vi
       .fn()
-      .mockImplementationOnce(stuck)
-      .mockImplementationOnce(stuck)
+      .mockImplementationOnce(
+        () =>
+          new Promise<Response>((_resolve, reject) => {
+            fails.push(reject);
+          }),
+      )
       .mockImplementation(
         (_url: string, init: RequestInit) =>
           new Promise<Response>((_resolve, reject) => {
@@ -678,26 +655,22 @@ describe("HttpSink", () => {
           }),
       );
     const spy = vi.spyOn(process, "emitWarning").mockImplementation(() => {});
-    const sink = new HttpSink("https://collector.example", {
-      apiKey: "k",
-      fetchImpl,
+    const sink = sinkWith(fetchImpl, {
       maxRetries: 0,
       requestTimeoutMs: 10_000,
       shutdownFlushTimeoutMs: 200,
+      flushIntervalMs: 1,
     });
-    const fullBatch = async () => {
-      for (let i = 0; i < 100; i += 1) await sink.write(makeEvent());
-    };
     try {
-      await fullBatch();
+      await sink.write(makeEvent());
       const flushing = sink.flush();
-      // The flush's own pass starts, so the next full batch queues a pass of its own.
+      await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalledTimes(1));
+      // The timer queues a pass of its own behind the flush's stuck one.
+      await sink.write(makeEvent());
+      await vi.waitFor(() => expect(sink["queuedDrain"]).not.toBeNull());
+      await flushing;
       fails[0]!(new Error("refused"));
       await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalledTimes(2));
-      await fullBatch();
-      await flushing;
-      fails[1]!(new Error("refused"));
-      await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalledTimes(3));
       const started = Date.now();
       await sink.flush();
       expect(Date.now() - started).toBeLessThan(100);
@@ -717,8 +690,8 @@ describe("HttpSink", () => {
             release = resolve;
           }),
       )
-      .mockImplementation(() => Promise.resolve(new Response(null, { status: 202 })));
-    const sink = new HttpSink("https://collector.example", { apiKey: "k", fetchImpl });
+      .mockImplementation(acceptAll);
+    const sink = sinkWith(fetchImpl);
     const passes = vi.spyOn(sink as unknown as { drainLocked: () => Promise<void> }, "drainLocked");
     try {
       // Every write after the 100th finds a full batch waiting.
@@ -743,11 +716,9 @@ describe("HttpSink", () => {
             release = resolve;
           }),
       )
-      .mockImplementation(() => Promise.resolve(new Response(null, { status: 202 })));
+      .mockImplementation(acceptAll);
     const spy = vi.spyOn(process, "emitWarning").mockImplementation(() => {});
-    const sink = new HttpSink("https://collector.example", {
-      apiKey: "k",
-      fetchImpl,
+    const sink = sinkWith(fetchImpl, {
       requestTimeoutMs: 10_000,
       shutdownFlushTimeoutMs: 50,
     });
@@ -798,7 +769,7 @@ describe("HttpSink", () => {
     const spy = vi.spyOn(process, "emitWarning").mockImplementation((w: string | Error) => {
       warnings.push(String(w));
     });
-    const sink = new HttpSink("https://collector.example", { apiKey: "k", fetchImpl, maxRetries: 0 });
+    const sink = sinkWith(fetchImpl, { maxRetries: 0 });
     try {
       await sink.write(makeEvent());
       await sink.aclose();
@@ -810,9 +781,7 @@ describe("HttpSink", () => {
 
   it("does not start a second exit pass for an event written during shutdown", async () => {
     const fetchImpl = vi.fn().mockRejectedValue(new Error("refused"));
-    const sink = new HttpSink("https://collector.example", {
-      apiKey: "k",
-      fetchImpl,
+    const sink = sinkWith(fetchImpl, {
       maxRetries: 0,
       circuitBreakerResetMs: 0,
     });
@@ -837,9 +806,7 @@ describe("HttpSink", () => {
 
   it("does not retry a fast-failing send at exit", async () => {
     const fetchImpl = vi.fn().mockRejectedValue(new Error("refused"));
-    const sink = new HttpSink("https://collector.example", {
-      apiKey: "k",
-      fetchImpl,
+    const sink = sinkWith(fetchImpl, {
       maxRetries: 0,
       circuitBreakerResetMs: 0,
     });
@@ -866,9 +833,7 @@ describe("HttpSink", () => {
           init.signal?.addEventListener("abort", () => reject(new Error("aborted")));
         }),
     );
-    const sink = new HttpSink("https://collector.example", {
-      apiKey: "k",
-      fetchImpl,
+    const sink = sinkWith(fetchImpl, {
       requestTimeoutMs: 20,
       maxRetries: 1,
       backoffBaseMs: 1,
@@ -892,8 +857,7 @@ describe("HttpSink batches (SPEC §2.5)", () => {
   });
 
   type Answer = (events: Sent[], url: string, init: RequestInit) => Response;
-  const accepted = (events: Sent[]) =>
-    new Response(JSON.stringify({ results: events.map(() => ({ status: "accepted" })) }), { status: 200 });
+  const accepted = (events: Sent[]) => results(events);
 
   /** A collector answering each request with `answer`, recording every request. */
   function collector(answer: Answer = accepted) {
@@ -903,7 +867,11 @@ describe("HttpSink batches (SPEC §2.5)", () => {
       requests.push({ url, events, bytes: Buffer.byteLength(init.body as string) });
       return Promise.resolve(answer(events, url, init));
     });
-    return { fetchImpl, requests, batches: () => requests.map((r) => r.events.map((e) => e.sequence_number)) };
+    const batches = () =>
+      requests
+        .map((r) => r.events.filter((e) => e.event_type !== "client_report").map((e) => e.sequence_number))
+        .filter((batch) => batch.length > 0);
+    return { fetchImpl, requests, batches };
   }
 
   const quiet = () => vi.spyOn(process, "emitWarning").mockImplementation(() => {});
@@ -916,7 +884,7 @@ describe("HttpSink batches (SPEC §2.5)", () => {
 
   it("sends once 100 events wait, and not before", async () => {
     const { fetchImpl, batches } = collector();
-    const sink = new HttpSink("https://collector.example", { apiKey: "k", fetchImpl });
+    const sink = sinkWith(fetchImpl);
     try {
       for (let i = 0; i < 99; i += 1) await sink.write(makeEvent({ sequence_number: i }));
       await new Promise((resolve) => setTimeout(resolve, 30));
@@ -930,7 +898,7 @@ describe("HttpSink batches (SPEC §2.5)", () => {
 
   it("sends before the next event would take the body over 1 MiB, counting UTF-8 bytes", async () => {
     const { fetchImpl, requests, batches } = collector();
-    const sink = new HttpSink("https://collector.example", { apiKey: "k", fetchImpl });
+    const sink = sinkWith(fetchImpl);
     try {
       // "é" is two bytes in UTF-8, so these are about 400 kB each, not 200.
       await sink.write(sized(1, 400_000));
@@ -938,35 +906,65 @@ describe("HttpSink batches (SPEC §2.5)", () => {
       await new Promise((resolve) => setTimeout(resolve, 30));
       expect(fetchImpl).not.toHaveBeenCalled();
       await sink.write(sized(3, 400_000));
-      await vi.waitFor(() => expect(batches()).toEqual([[1, 2], [3]]));
+      await vi.waitFor(() => expect(batches()).toEqual([[1, 2]]));
+      await sink.flush();
+      expect(batches()).toEqual([[1, 2], [3]]);
       for (const { bytes } of requests) expect(bytes).toBeLessThanOrEqual(1_048_576);
     } finally {
       await sink.aclose();
     }
   });
 
-  it("sends an event over 1 MiB alone, and counts it refused when the collector answers 413", async () => {
-    const { fetchImpl, batches } = collector((events, _url, init) =>
-      Buffer.byteLength(init.body as string) > 1_048_576 ? new Response("too large", { status: 413 }) : accepted(events),
-    );
+  it("never sends an event over 1 MiB, and counts it refused", async () => {
+    const { fetchImpl, batches } = collector();
     const warning = quiet();
-    const sink = new HttpSink("https://collector.example", { apiKey: "k", fetchImpl });
+    const sink = sinkWith(fetchImpl);
     await sink.write(makeEvent({ sequence_number: 1 }));
     await sink.write(sized(2, 1_100_000));
-    await vi.waitFor(() => expect(batches()).toEqual([[1], [2]]));
+    await sink.flush();
+    expect(batches()).toEqual([[1]]);
+    await sink.aclose();
+    expect(PROCESS_DROPS.total()).toEqual({ refused: 1 });
+    expect(messages(warning).join("")).toContain("REFUSED, unsent, an event and it has been dropped (over 1 MiB)");
+  });
+
+  it("counts a single event refused when the collector answers 413", async () => {
+    const { fetchImpl, batches } = collector(() => new Response("too large", { status: 413 }));
+    const warning = quiet();
+    const sink = sinkWith(fetchImpl);
+    await sink.write(makeEvent({ sequence_number: 1 }));
+    await sink.flush();
+    expect(batches()).toEqual([[1]]);
     await sink.aclose();
     expect(PROCESS_DROPS.total()).toEqual({ refused: 1 });
     expect(messages(warning).join("")).toContain("REFUSED an event and it has been dropped (HTTP 413): too large");
+  });
+
+  it("sends a full batch at once and leaves the rest for its own turn", async () => {
+    const { fetchImpl, batches } = collector();
+    const sink = sinkWith(fetchImpl);
+    try {
+      for (let i = 0; i < 101; i += 1) await sink.write(makeEvent({ sequence_number: i }));
+      await vi.waitFor(() => expect(batches()).toHaveLength(1));
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      expect(batches()[0]).toHaveLength(100);
+      expect(batches()).toHaveLength(1);
+      expect(sink["buffer"]).toHaveLength(1);
+      await sink.flush();
+      expect(batches()[1]).toEqual([100]);
+    } finally {
+      await sink.aclose();
+    }
   });
 
   it("splits a batch the collector answers 413 to, and sends each half", async () => {
     const { fetchImpl, batches } = collector((events) =>
       events.length > 2 ? new Response(null, { status: 413 }) : accepted(events),
     );
-    const sink = new HttpSink("https://collector.example", { apiKey: "k", fetchImpl });
+    const sink = sinkWith(fetchImpl);
     for (let i = 1; i <= 5; i += 1) await sink.write(makeEvent({ sequence_number: i }));
     await sink.flush();
-    expect(batches()).toEqual([[1, 2, 3, 4, 5], [1, 2, 3], [1, 2], [3], [4, 5]]);
+    expect(batches()).toEqual([[1, 2, 3, 4, 5], [1, 2], [3, 4, 5], [3], [4, 5]]);
     expect(sink["buffer"]).toHaveLength(0);
     await sink.aclose();
     expect(PROCESS_DROPS.total()).toEqual({});
@@ -974,7 +972,7 @@ describe("HttpSink batches (SPEC §2.5)", () => {
 
   it("puts one tenant and vendor in a batch", async () => {
     const { fetchImpl, batches } = collector();
-    const sink = new HttpSink("https://collector.example", { apiKey: "k", fetchImpl });
+    const sink = sinkWith(fetchImpl);
     for (const [n, vendor] of [[1, "v"], [2, "v"], [3, "w"], [4, "v"]] as const) {
       await sink.write({ ...makeEvent({ sequence_number: n }), vendor_id: vendor });
     }
@@ -986,7 +984,7 @@ describe("HttpSink batches (SPEC §2.5)", () => {
   it("sends flushIntervalMs after the oldest waiting event was written", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
     const { fetchImpl, batches } = collector();
-    const sink = new HttpSink("https://collector.example", { apiKey: "k", fetchImpl, flushIntervalMs: 50 });
+    const sink = sinkWith(fetchImpl, { flushIntervalMs: 50 });
     await sink.write(makeEvent({ sequence_number: 1 }));
     await vi.advanceTimersByTimeAsync(30);
     await sink.write(makeEvent({ sequence_number: 2 }));
@@ -999,7 +997,7 @@ describe("HttpSink batches (SPEC §2.5)", () => {
 
   it("sends at once on flush(), without waiting for the timer", async () => {
     const { fetchImpl, batches } = collector();
-    const sink = new HttpSink("https://collector.example", { apiKey: "k", fetchImpl, flushIntervalMs: 60_000 });
+    const sink = sinkWith(fetchImpl, { flushIntervalMs: 60_000 });
     await sink.write(makeEvent({ sequence_number: 1 }));
     const started = Date.now();
     await sink.flush();
@@ -1011,7 +1009,7 @@ describe("HttpSink batches (SPEC §2.5)", () => {
   it("tries a failed batch again when the timer fires, with no further write", async () => {
     const answers = [new Response(null, { status: 503 })];
     const { fetchImpl, batches } = collector((events) => answers.shift() ?? accepted(events));
-    const sink = new HttpSink("https://collector.example", { apiKey: "k", fetchImpl, maxRetries: 0, flushIntervalMs: 20 });
+    const sink = sinkWith(fetchImpl, { maxRetries: 0, flushIntervalMs: 20 });
     await sink.write(makeEvent({ sequence_number: 1 }));
     await sink.flush();
     expect(sink["buffer"]).toHaveLength(1);
@@ -1022,7 +1020,7 @@ describe("HttpSink batches (SPEC §2.5)", () => {
 
   it("does not hold the process open with its timer", async () => {
     const { fetchImpl } = collector();
-    const sink = new HttpSink("https://collector.example", { apiKey: "k", fetchImpl });
+    const sink = sinkWith(fetchImpl);
     await sink.write(makeEvent());
     const timer = sink["flushTimer"] as NodeJS.Timeout;
     expect(timer).not.toBeNull();
@@ -1038,7 +1036,7 @@ describe("HttpSink batches (SPEC §2.5)", () => {
         url.endsWith("/batch") ? new Response(null, { status }) : new Response(null, { status: 202 }),
       );
       const warning = quiet();
-      const sink = new HttpSink("https://collector.example", { apiKey: "k", fetchImpl });
+      const sink = sinkWith(fetchImpl);
       for (let i = 1; i <= 3; i += 1) await sink.write(makeEvent({ sequence_number: i }));
       await sink.flush();
       await sink.write(makeEvent({ sequence_number: 4 }));
@@ -1056,22 +1054,19 @@ describe("HttpSink batches (SPEC §2.5)", () => {
     },
   );
 
-  it("counts each event the results refuse, and delivers the rest", async () => {
-    const { fetchImpl } = collector(
-      () =>
-        new Response(
-          JSON.stringify({
-            results: [
-              { status: "accepted" },
-              { status: "refused", error: { code: "payload_malformed", message: "bad\nfield" } },
-              { status: "duplicate" },
-            ],
-          }),
-          { status: 200 },
-        ),
-    );
+  it("reads the results by event_id, counts each refused event, and delivers the rest", async () => {
+    const { fetchImpl } = collector((events) => {
+      const [a, b, c] = events;
+      const answers = [
+        { event_id: "not-in-this-batch", status: "refused" },
+        { event_id: b!.event_id, status: "refused", error: { code: "payload_malformed", message: "bad\nfield" } },
+        { event_id: c!.event_id, status: "duplicate" },
+        { event_id: a!.event_id, status: "accepted" },
+      ];
+      return new Response(JSON.stringify({ results: answers }), { status: 200 });
+    });
     const warning = quiet();
-    const sink = new HttpSink("https://collector.example", { apiKey: "k", fetchImpl });
+    const sink = sinkWith(fetchImpl);
     for (let i = 1; i <= 3; i += 1) await sink.write(makeEvent({ sequence_number: i }));
     await sink.flush();
     expect(sink["buffer"]).toHaveLength(0);
@@ -1080,21 +1075,130 @@ describe("HttpSink batches (SPEC §2.5)", () => {
     expect(messages(warning).join("")).toContain("REFUSED an event and it has been dropped (payload_malformed): bad\\u{a}field");
   });
 
-  it("keeps the batch on 429 and sends nothing until Retry-After has passed", async () => {
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
-    const answers = [new Response(null, { status: 429, headers: { "Retry-After": "2" } })];
-    const { fetchImpl, batches } = collector((events) => answers.shift() ?? accepted(events));
-    const sink = new HttpSink("https://collector.example", { apiKey: "k", fetchImpl, flushIntervalMs: 10 });
-    await sink.write(makeEvent({ sequence_number: 1 }));
+  it("counts an event with no readable result as delivered", async () => {
+    const { fetchImpl } = collector(() => new Response(JSON.stringify({ results: [] }), { status: 200 }));
+    const sink = sinkWith(fetchImpl);
+    await sink.write(makeEvent());
     await sink.flush();
-    await sink.flush();
-    await vi.advanceTimersByTimeAsync(1990);
-    expect(batches()).toEqual([[1]]);
-    await vi.advanceTimersByTimeAsync(20);
-    expect(batches()).toEqual([[1], [1]]);
     expect(sink["buffer"]).toHaveLength(0);
     await sink.aclose();
     expect(PROCESS_DROPS.total()).toEqual({});
+  });
+
+  it("sends a batch again when its 2xx body cannot be read before the timeout", async () => {
+    const stalled = (signal: AbortSignal) =>
+      new Response(
+        new ReadableStream({
+          start(controller) {
+            signal.addEventListener("abort", () => controller.error(signal.reason));
+          },
+        }),
+        { status: 200 },
+      );
+    let first = true;
+    const { fetchImpl, batches } = collector((events, _url, init) => {
+      if (!first) return accepted(events);
+      first = false;
+      return stalled(init.signal!);
+    });
+    const sink = sinkWith(fetchImpl, { requestTimeoutMs: 20, backoffBaseMs: 1 });
+    await sink.write(makeEvent({ sequence_number: 1 }));
+    await sink.flush();
+    expect(batches()).toEqual([[1], [1]]);
+    await sink.aclose();
+    expect(PROCESS_DROPS.total()).toEqual({});
+  });
+
+  it("does not follow a redirect, and keeps the events", async () => {
+    const { fetchImpl, requests } = collector(() => new Response(null, { status: 302, headers: { Location: "/elsewhere" } }));
+    const sink = sinkWith(fetchImpl, { maxRetries: 0 });
+    await sink.write(makeEvent());
+    await sink.flush();
+    expect(sink["buffer"]).toHaveLength(1);
+    await sink.flush();
+    expect(requests.map((r) => r.url)).toEqual([
+      "https://collector.example/v0/events/batch",
+      "https://collector.example/v0/events/batch",
+    ]);
+    expect((fetchImpl.mock.calls[0]![1] as RequestInit).redirect).toBe("manual");
+    await sink.aclose();
+  });
+
+  it("waits for the timer after a failed batch, not for the next write", async () => {
+    const { fetchImpl } = collector(() => new Response(null, { status: 503 }));
+    quiet();
+    const sink = sinkWith(fetchImpl, { maxRetries: 0, flushIntervalMs: 60_000 });
+    try {
+      for (let i = 0; i < 100; i += 1) await sink.write(makeEvent());
+      await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalledTimes(1));
+      for (let i = 0; i < 300; i += 1) await sink.write(makeEvent());
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+    } finally {
+      await sink.aclose();
+    }
+  });
+
+  /** The number of requests sent by `atMs` after a 429 answered with `retryAfter`. */
+  async function requestsAfter429(retryAfter: string | null, atMs: number, options: Partial<HttpSinkOptions> = {}) {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    const headers: Record<string, string> = retryAfter === null ? {} : { "Retry-After": retryAfter };
+    const answers = [new Response(null, { status: 429, headers })];
+    const { fetchImpl, batches } = collector((events) => answers.shift() ?? accepted(events));
+    const sink = sinkWith(fetchImpl, { flushIntervalMs: 10, maxRetries: 0, ...options });
+    await sink.write(makeEvent({ sequence_number: 1 }));
+    await sink.flush();
+    await sink.flush();
+    await vi.advanceTimersByTimeAsync(atMs);
+    return { sink, batches };
+  }
+
+  it("keeps the batch on 429 and sends nothing, not even on flush(), until Retry-After has passed", async () => {
+    const before = await requestsAfter429("2", 1990);
+    expect(before.batches()).toEqual([[1]]);
+    await before.sink.aclose();
+    const after = await requestsAfter429("2", 2010);
+    expect(after.batches()).toEqual([[1], [1]]);
+    expect(after.sink["buffer"]).toHaveLength(0);
+    await after.sink.aclose();
+    expect(PROCESS_DROPS.total()).toEqual({ unsent_at_close: 1 });
+  });
+
+  it.each([
+    ["0", 990, 1010],
+    ["600", 59_990, 60_010],
+  ])("clamps Retry-After %s to 1 to 60 seconds", async (retryAfter, before, after) => {
+    const early = await requestsAfter429(retryAfter, before);
+    expect(early.batches()).toHaveLength(1);
+    await early.sink.aclose();
+    const late = await requestsAfter429(retryAfter, after);
+    expect(late.batches()).toHaveLength(2);
+    await late.sink.aclose();
+  });
+
+  it.each([null, "soon", "Wed, 21 Oct 2015 07:28:00 GMT", "1.5"])(
+    "handles a 429 with Retry-After %s like a 5xx, which counts towards the breaker",
+    async (retryAfter) => {
+      const { sink, batches } = await requestsAfter429(retryAfter, 1010, { circuitBreakerThreshold: 1 });
+      expect(batches()).toEqual([[1]]);
+      await sink.aclose();
+    },
+  );
+
+  it("does not count a 429 with a readable Retry-After towards the breaker", async () => {
+    const { sink, batches } = await requestsAfter429("1", 1010, { circuitBreakerThreshold: 1 });
+    expect(batches()).toEqual([[1], [1]]);
+    await sink.aclose();
+  });
+
+  it("sends nothing at close or exit during a 429 wait, and counts what waits as unsent", async () => {
+    const { sink, batches } = await requestsAfter429("30", 0);
+    quiet();
+    exitHooks(sink).atExit();
+    await exitHooks(sink).drained();
+    await sink.aclose();
+    expect(batches()).toEqual([[1]]);
+    expect(PROCESS_DROPS.total()).toEqual({ unsent_at_close: 1 });
   });
 });
 
