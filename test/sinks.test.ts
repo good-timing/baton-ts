@@ -48,11 +48,17 @@ function messages(warning: { mock: { calls: unknown[][] } }): string[] {
   return warning.mock.calls.map(([message]) => String(message));
 }
 
-/** The sink's `beforeExit` handler and its drain chain, without firing the
- * test runner's own `beforeExit` listeners. */
-function exitHooks(sink: HttpSink): { atExit: () => void; drained: () => Promise<void> } {
-  const internals = sink as unknown as { beforeExitHandler: () => void; drainChain: Promise<void> };
-  return { atExit: () => internals.beforeExitHandler(), drained: () => internals.drainChain };
+/** Called directly, so the test runner's own exit listeners never fire. */
+function exitHooks(sink: HttpSink): { atExit: () => void; drained: () => Promise<void>; exited: () => void } {
+  const internals = sink as unknown as {
+    exitHooks: { beforeExit: () => void; exit: () => void };
+    drainChain: Promise<void>;
+  };
+  return {
+    atExit: () => internals.exitHooks.beforeExit(),
+    drained: () => internals.drainChain,
+    exited: () => internals.exitHooks.exit(),
+  };
 }
 describe("FileSink", () => {
   const tempPath = () => join(mkdtempSync(join(tmpdir(), "baton-filesink-")), "events.jsonl");
@@ -290,6 +296,60 @@ describe("HttpSink", () => {
       expect(exiting).toEqual(["baton: process exiting; 2 more event(s) refused since the last such warning."]);
       await sink.aclose();
     } finally {
+      warning.mockRestore();
+    }
+  });
+
+  it("writes what is left to stderr when process.exit() skips beforeExit", async () => {
+    const fetchImpl = vi.fn().mockImplementation(() => Promise.resolve(new Response("no", { status: 422 })));
+    const warning = vi.spyOn(process, "emitWarning").mockImplementation(() => {});
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const sink = new HttpSink("https://collector.example", { apiKey: "k", fetchImpl, maxRetries: 0 });
+    try {
+      for (let i = 0; i < 2; i++) await sink.write(makeEvent());
+      await sink.flush();
+      fetchImpl.mockRejectedValue(new Error("offline"));
+      for (let i = 0; i < 3; i++) await sink.write(makeEvent());
+      const { exited } = exitHooks(sink);
+      exited();
+
+      expect(messages(stderr)).toEqual([
+        "baton: process exiting with 3 unsent event(s).\n",
+        "baton: process exiting; 1 more event(s) refused since the last such warning.\n",
+      ]);
+      const exitListeners = process.listeners("exit").length;
+      await sink.aclose();
+      expect(process.listeners("exit")).toHaveLength(exitListeners - 1);
+    } finally {
+      await sink.aclose();
+      stderr.mockRestore();
+      warning.mockRestore();
+    }
+  });
+
+  it("writes at exit only what the beforeExit pass did not warn about", async () => {
+    const fetchImpl = vi.fn().mockRejectedValue(new Error("offline"));
+    const warning = vi.spyOn(process, "emitWarning").mockImplementation(() => {});
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const sink = new HttpSink("https://collector.example", { apiKey: "k", fetchImpl, maxRetries: 0 });
+    try {
+      await sink.write(makeEvent());
+      await sink.flush();
+      const { atExit, drained, exited } = exitHooks(sink);
+      atExit();
+      await drained();
+      exited();
+      expect(messages(warning)).toContain("baton: process exiting with 1 unsent event(s).");
+      expect(stderr).not.toHaveBeenCalled();
+
+      // The process went on after the pass and recorded more it cannot send.
+      await sink.write(makeEvent());
+      await sink.flush();
+      exited();
+      expect(messages(stderr)).toEqual(["baton: process exiting with 2 unsent event(s).\n"]);
+    } finally {
+      await sink.aclose();
+      stderr.mockRestore();
       warning.mockRestore();
     }
   });

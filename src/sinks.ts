@@ -57,6 +57,10 @@ export async function safeWrite(sink: Sink, event: Event): Promise<void> {
   }
 }
 
+function stderrLine(message: string): void {
+  process.stderr.write(`${message}\n`);
+}
+
 function isTimerMs(value: unknown): value is number {
   return typeof value === "number" && value >= 0 && value <= MAX_TIMER_MS;
 }
@@ -295,6 +299,8 @@ export class HttpSink implements Sink {
   /** Set when an exit pass ends; cleared once a normal drain empties the
    * buffer, which means the process went on. */
   private exitPassRan = false;
+  /** Whether the exit pass warned about every event now buffered. */
+  private unsentWarned = false;
   private readonly maxRetries: number;
   private readonly backoffBaseMs: number;
   private readonly backoffMaxMs: number;
@@ -311,7 +317,7 @@ export class HttpSink implements Sink {
   private skipWarnedFor: Promise<unknown> | null = null;
   private closeOnce: Promise<void> | undefined;
   private drainChain: Promise<void> = Promise.resolve();
-  private beforeExitHandler: (() => void) | null = null;
+  private exitHooks: { beforeExit: () => void; exit: () => void } | null = null;
   /** The least time between two of this sink's loss reports. */
   private static reportIntervalMs = 60_000;
   /** Totals only grow, so their sum tells whether they changed. */
@@ -362,8 +368,9 @@ export class HttpSink implements Sink {
   async write(event: Event): Promise<void> {
     if (this.closed) throw new Error("HttpSink is closed");
     this.enqueue(event);
+    this.unsentWarned = false;
     void this.scheduleDrain();
-    this.ensureBeforeExitRegistered();
+    this.ensureExitHooksRegistered();
   }
 
   flush(): Promise<void> {
@@ -394,9 +401,10 @@ export class HttpSink implements Sink {
       warn(`baton: the sink closed with ${this.buffer.length} event(s) unsent.`);
     }
     this.warnUnloggedRefusals("the sink closed");
-    if (this.beforeExitHandler) {
-      process.off("beforeExit", this.beforeExitHandler);
-      this.beforeExitHandler = null;
+    if (this.exitHooks) {
+      process.off("beforeExit", this.exitHooks.beforeExit);
+      process.off("exit", this.exitHooks.exit);
+      this.exitHooks = null;
     }
   }
 
@@ -466,11 +474,11 @@ export class HttpSink implements Sink {
 
   /** Best-effort flush when the process is about to exit without an
    * explicit `aclose()`. SIGKILL, or SIGTERM with no installed handler, skip
-   * `beforeExit` entirely: a vendor needing that guarantee must call
-   * `aclose()` from their own handler. */
-  private ensureBeforeExitRegistered(): void {
-    if (this.beforeExitHandler) return;
-    this.beforeExitHandler = () => {
+   * both hooks: a vendor needing that guarantee must call `aclose()` from
+   * their own handler. */
+  private ensureExitHooksRegistered(): void {
+    if (this.exitHooks) return;
+    const beforeExit = (): void => {
       // Node re-fires `beforeExit` once the pass's work is done; one pass only.
       if (this.buffer.length === 0 || this.exitPassRan) {
         this.warnUnloggedRefusals("process exiting");
@@ -481,7 +489,19 @@ export class HttpSink implements Sink {
         () => this.exitPass(),
       );
     };
-    process.on("beforeExit", this.beforeExitHandler);
+    // `process.exit()` skips `beforeExit`. At `exit` nothing can be sent and
+    // `emitWarning` would never print, so the count is written straight out.
+    const exit = (): void => {
+      try {
+        if (this.buffer.length > 0 && !this.unsentWarned) stderrLine(this.unsentAtExit());
+        this.warnUnloggedRefusals("process exiting", stderrLine);
+      } catch {
+        // A throw here would turn the vendor's clean exit into a crash.
+      }
+    };
+    this.exitHooks = { beforeExit, exit };
+    process.on("beforeExit", beforeExit);
+    process.on("exit", exit);
   }
 
   /** One attempt per event, no retry, within `shutdownFlushTimeoutMs` in
@@ -504,10 +524,13 @@ export class HttpSink implements Sink {
       this.dequeue(event);
     }
     this.exitPassRan = true;
-    if (this.buffer.length > 0) {
-      warn(`baton: process exiting with ${this.buffer.length} unsent event(s).`);
-    }
+    this.unsentWarned = true;
+    if (this.buffer.length > 0) warn(this.unsentAtExit());
     this.warnUnloggedRefusals("process exiting");
+  }
+
+  private unsentAtExit(): string {
+    return `baton: process exiting with ${this.buffer.length} unsent event(s).`;
   }
 
   private events_url(): string {
@@ -542,13 +565,13 @@ export class HttpSink implements Sink {
     );
   }
 
-  private warnUnloggedRefusals(when: string): void {
+  private warnUnloggedRefusals(when: string, emit: (message: string) => void = warn): void {
     let total = 0;
     for (const seen of this.refusals.values()) {
       total += seen.unlogged;
       seen.unlogged = 0;
     }
-    if (total > 0) warn(`baton: ${when}; ${total} more event(s) refused since the last such warning.`);
+    if (total > 0) emit(`baton: ${when}; ${total} more event(s) refused since the last such warning.`);
   }
 
   /** How many refusals with `status` went unlogged before this one, or `null`

@@ -15,6 +15,12 @@
   read from a file saved with a BOM may, now fails to parse; remove the mark
   before passing it in. This matches `baton-sdk` on `main` and the Go SDK. A
   server name is still read the way the Console reads it.
+- **`HttpSink` warns about unsent events when the vendor calls
+  `process.exit()`.** That call skips `beforeExit`, so the sink's exit pass
+  never ran and the events were lost without a word. Now the sink writes
+  "baton: process exiting with N unsent event(s)." and any unreported
+  refusal count straight to stderr at Node's `exit`. Nothing can be sent at
+  that point, so the events are still lost, but the loss is visible.
 - **`HttpSink` warns about refused events at most once a minute per HTTP
   status, and escapes the collector's text.** The first refusal with a status
   warns as before. Later ones with that status within a minute are only
