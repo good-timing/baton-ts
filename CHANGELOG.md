@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- **`HttpSink` memory no longer grows with each write while the collector is
+  slow or down.** Each `write()` queued its own send pass behind the one
+  under way, and a queued pass held memory until it ran. With the collector
+  hung or refusing, a pass takes seconds, so a busy server gained about 1 KB
+  per event for as long as the outage lasted, beyond the 1,000-event buffer.
+  Writes now share the one pass waiting to start. Found by the new speed and
+  load run (`npm run bench`). The Python and Go SDKs did not have this.
+
 ## 0.6.3: a paused call is one call; a write after close is counted as after_close
 
 - **An event written to a closed sink is dropped and counted as

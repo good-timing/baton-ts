@@ -344,6 +344,7 @@ export class HttpSink implements Sink {
   private skipWarnedFor: Promise<unknown> | null = null;
   private closeOnce: Promise<void> | undefined;
   private drainChain: Promise<void> = Promise.resolve();
+  private queuedDrain: Promise<void> | null = null;
   private exitHooks: { beforeExit: () => void; exit: () => void } | null = null;
   /** The least time between two of this sink's loss reports. */
   private static reportIntervalMs = 60_000;
@@ -486,17 +487,19 @@ export class HttpSink implements Sink {
     this.buffer.push(event);
   }
 
-  /** Serializes every call to `drainLocked` — from `write()`'s background
-   * drain and from explicit `flush()` alike — onto one promise chain, so
-   * concurrent tool calls (the normal case once the MCP interceptor is
-   * wired up) can never run two drains at once racing on `buffer[0]`/
-   * `shift()`. Mirrors Python's `asyncio.Lock` around `_drain_locked`. */
+  /** Runs `drainLocked` after the pass under way, one pass at a time, so two
+   * never race on `buffer[0]`/`shift()`. A pass not yet started sends
+   * everything in the buffer when it starts, so callers share it: one per
+   * write would grow without bound while a slow collector holds a pass. */
   private scheduleDrain(): Promise<void> {
-    this.drainChain = this.drainChain.then(
-      () => this.drainLocked(),
-      () => this.drainLocked(),
-    );
-    return this.drainChain;
+    if (this.queuedDrain) return this.queuedDrain;
+    const run = (): Promise<void> => {
+      this.queuedDrain = null;
+      return this.drainLocked();
+    };
+    this.queuedDrain = this.drainChain.then(run, run);
+    this.drainChain = this.queuedDrain;
+    return this.queuedDrain;
   }
 
   /** Best-effort flush when the process is about to exit without an

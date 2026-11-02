@@ -634,16 +634,15 @@ describe("HttpSink", () => {
   });
 
   it("keeps flush() from waiting while a pass queued during the wait is stuck", async () => {
-    let fail: (err: Error) => void = () => {};
+    const fails: ((err: Error) => void)[] = [];
+    const stuck = () =>
+      new Promise<Response>((_resolve, reject) => {
+        fails.push(reject);
+      });
     const fetchImpl = vi
       .fn()
-      .mockImplementationOnce(
-        () =>
-          new Promise<Response>((_resolve, reject) => {
-            fail = reject;
-          }),
-      )
-      .mockImplementationOnce(() => Promise.reject(new Error("refused")))
+      .mockImplementationOnce(stuck)
+      .mockImplementationOnce(stuck)
       .mockImplementation(
         (_url: string, init: RequestInit) =>
           new Promise<Response>((_resolve, reject) => {
@@ -661,10 +660,12 @@ describe("HttpSink", () => {
     try {
       await sink.write(makeEvent());
       const flushing = sink.flush();
+      // The flush's own pass starts, so the next write queues a pass of its own.
+      fails[0]!(new Error("refused"));
+      await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalledTimes(2));
       await sink.write(makeEvent());
       await flushing;
-      // The flush's own pass ends; the one the second write() queued is stuck.
-      fail(new Error("refused"));
+      fails[1]!(new Error("refused"));
       await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalledTimes(3));
       const started = Date.now();
       await sink.flush();
@@ -672,6 +673,30 @@ describe("HttpSink", () => {
     } finally {
       await sink.aclose();
       spy.mockRestore();
+    }
+  });
+
+  it("queues one pass, not one per write, while a send is stuck", async () => {
+    let release: (response: Response) => void = () => {};
+    const fetchImpl = vi
+      .fn()
+      .mockImplementationOnce(
+        () =>
+          new Promise<Response>((resolve) => {
+            release = resolve;
+          }),
+      )
+      .mockImplementation(() => Promise.resolve(new Response(null, { status: 202 })));
+    const sink = new HttpSink("https://collector.example", { apiKey: "k", fetchImpl });
+    const passes = vi.spyOn(sink as unknown as { drainLocked: () => Promise<void> }, "drainLocked");
+    try {
+      for (let i = 0; i < 50; i += 1) await sink.write(makeEvent());
+      release(new Response(null, { status: 202 }));
+      await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalledTimes(50));
+      await sink["drainChain"];
+      expect(passes.mock.calls.length).toBeLessThanOrEqual(2);
+    } finally {
+      await sink.aclose();
     }
   });
 
