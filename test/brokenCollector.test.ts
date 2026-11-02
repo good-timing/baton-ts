@@ -18,13 +18,13 @@ interface Scenario {
   mode: string;
   delay_ms?: number;
   events: number;
-  expect?: { accepted?: number; dropped?: number };
+  expect?: { accepted?: number; dropped?: number; reports?: number };
 }
 
 const collectorDir = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "baton-spec", "collector");
 const spec = JSON.parse(readFileSync(path.join(collectorDir, "scenarios.json"), "utf-8")) as {
   settings: { request_timeout_ms: number; shutdown_budget_ms: number; backoff_base_ms: number };
-  limits: { write_ms: number; close_margin_ms: number };
+  limits: { write_ms: number; close_margin_ms: number; report_ms: number };
   scenarios: Scenario[];
 };
 const hasPython = spawnSync("python3", ["--version"]).status === 0;
@@ -66,10 +66,16 @@ async function startCollector(scenario: Scenario): Promise<number> {
   });
 }
 
-async function received(port: number, mode: string): Promise<{ accepted: number[]; requests: number }> {
-  if (mode === "down") return { accepted: [], requests: 0 };
-  const response = await fetch(`http://127.0.0.1:${port}/_received`, { signal: AbortSignal.timeout(2000) });
-  return (await response.json()) as { accepted: number[]; requests: number };
+interface Received {
+  accepted: number[];
+  requests: number;
+  reports: number;
+}
+
+async function received(port: number, mode: string, query = ""): Promise<Received> {
+  if (mode === "down") return { accepted: [], requests: 0, reports: 0 };
+  const response = await fetch(`http://127.0.0.1:${port}/_received${query}`, { signal: AbortSignal.timeout(5000) });
+  return (await response.json()) as Received;
 }
 
 describe.skipIf(!hasPython)("the HTTP sink against a broken collector", () => {
@@ -93,21 +99,28 @@ describe.skipIf(!hasPython)("the HTTP sink against a broken collector", () => {
         await sink.write(makeEvent(n));
         expect(performance.now() - started).toBeLessThanOrEqual(limits.write_ms);
       }
+      const reports = scenario.expect?.reports;
+      if (reports !== undefined) {
+        const accepted = scenario.expect?.accepted ?? 0;
+        await received(port, scenario.mode, `?accepted=${accepted}&reports=${reports}&wait_ms=${limits.report_ms}`);
+      }
       const started = performance.now();
       await sink.aclose();
       expect(performance.now() - started).toBeLessThanOrEqual(settings.shutdown_budget_ms + limits.close_margin_ms);
 
       // A step that failed is one that raised somewhere unseen.
       expect(seen.filter((w) => w.includes(" failed"))).toEqual([]);
-      const { accepted: got, requests } = await received(port, scenario.mode);
+      const { accepted: got, requests, reports: reported } = await received(port, scenario.mode);
       if (scenario.mode !== "down") expect(requests).toBeGreaterThanOrEqual(1);
       const dropped = Object.values(PROCESS_DROPS.total()).reduce((sum, n) => sum + n, 0);
       expect(got.every((n) => sent.includes(n))).toBe(true);
       expect(got.length + dropped).toBeGreaterThanOrEqual(sent.length);
       if (scenario.expect?.accepted !== undefined) expect(got.length).toBe(scenario.expect.accepted);
       if (scenario.expect?.dropped !== undefined) expect(dropped).toBe(scenario.expect.dropped);
+      if (reports !== undefined) expect(reported).toBe(reports);
     } finally {
       warnings.mockRestore();
     }
-  });
+    // Above the report wait and close limits together, so a failure reports itself, not a timeout.
+  }, 15_000);
 });
