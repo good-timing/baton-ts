@@ -35,7 +35,10 @@ interface Captured {
   url: string;
   bearer: string;
   events: Record<string, unknown>[];
-  posts: number;
+}
+
+function sentOnce(captured: Captured): void {
+  expect(new Set(captured.events.map((e) => e.event_id)).size).toBe(captured.events.length);
 }
 
 /**
@@ -47,19 +50,18 @@ interface Captured {
  * carry a body — so every POST was a rejected fetch, retried four times, and
  * the sink never accepted one. The assertions passed anyway, because this
  * function records the request before it builds the response: the test proved
- * the SDK had ATTEMPTED a POST, which is not what it claims. `posts` is
- * counted for that reason, and asserted equal to the number of events.
+ * the SDK had ATTEMPTED a POST, which is not what it claims. A rejected POST
+ * is sent again, so `sentOnce` asserts no event arrived twice.
  */
 function stubCollector(): Captured {
-  const captured: Captured = { url: "", bearer: "", events: [], posts: 0 };
+  const captured: Captured = { url: "", bearer: "", events: [] };
   vi.stubGlobal(
     "fetch",
     async (url: string, init: { headers: Record<string, string>; body: string }) => {
-      captured.posts += 1;
       captured.url = String(url);
       captured.bearer = init.headers["Authorization"] ?? "";
-      const body = JSON.parse(init.body) as Record<string, unknown>[] | Record<string, unknown>;
-      captured.events.push(...(Array.isArray(body) ? body : [body]));
+      const body = JSON.parse(init.body) as { events: Record<string, unknown>[] };
+      captured.events.push(...body.events);
       return new Response(null, { status: 202 });
     },
   );
@@ -99,13 +101,12 @@ describe("a DSN reaches the wire", () => {
     // Asserted by EQUALITY, never by substring: an origin that kept the
     // workspace and server segments would produce a URL that a containment
     // check passes happily on.
-    expect(captured.url).toBe("https://ingest.example.com/v0/events");
+    expect(captured.url).toBe("https://ingest.example.com/v0/events/batch");
     expect(captured.bearer).toBe(`Bearer ${KEY}`);
     expect(captured.events.length).toBeGreaterThan(0);
-    // One POST per event: the collector ACCEPTED them. A retried POST means
-    // the sink rejected the response, and this assertion is what separates
-    // "delivered" from "attempted".
-    expect(captured.posts).toBe(captured.events.length);
+    // A retried POST means the sink rejected the response, and this
+    // assertion is what separates "delivered" from "attempted".
+    sentOnce(captured);
     for (const event of captured.events) {
       expect(event.tenant_id).toBe(WORKSPACE);
       expect(event.vendor_id).toBe(SERVER);
@@ -146,8 +147,8 @@ describe("a DSN reaches the wire", () => {
     await handle.flush();
     await handle.aclose();
 
-    expect(captured.url).toBe("https://ingest.example.com/v0/events");
-    expect(captured.posts).toBe(captured.events.length);
+    expect(captured.url).toBe("https://ingest.example.com/v0/events/batch");
+    sentOnce(captured);
     expect(captured.events[0]?.vendor_id).toBe(SERVER);
     expect(captured.events[0]?.consent_token).toBe(DEFAULT_CONSENT_TOKEN);
   });
@@ -164,7 +165,7 @@ describe("a DSN reaches the wire", () => {
     await handle.flush();
     await handle.aclose();
 
-    expect(captured.url).toBe("https://ingest.example.com/v0/events");
+    expect(captured.url).toBe("https://ingest.example.com/v0/events/batch");
     expect(captured.events[0]?.vendor_id).toBe(SERVER);
   });
 });
@@ -307,7 +308,7 @@ describe("the consent token", () => {
     await handle.flush();
     await handle.aclose();
 
-    expect(captured.posts).toBe(captured.events.length);
+    sentOnce(captured);
     expect(captured.events.length).toBeGreaterThan(0);
     for (const event of captured.events) {
       expect(event.consent_token).toBe(DEFAULT_CONSENT_TOKEN);

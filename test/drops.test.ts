@@ -156,22 +156,23 @@ describe("every event is delivered or counted (SPEC §11.2)", () => {
 
   it("does not lose an event the buffer pushed out while it was being sent", async () => {
     let answer: (response: Response) => void = () => {};
-    const posted: number[] = [];
+    const posted: number[][] = [];
     const fetchImpl = (_url: string | URL | Request, init?: RequestInit) => {
-      const body = JSON.parse(init!.body as string) as { event_type: string; sequence_number: number };
-      if (body.event_type === "client_report") return Promise.resolve(new Response(null, { status: 202 }));
-      posted.push(body.sequence_number);
+      const { events } = JSON.parse(init!.body as string) as { events: { sequence_number: number }[] };
+      posted.push(events.map((e) => e.sequence_number));
       return new Promise<Response>((resolve) => (answer = resolve));
     };
     const sink = httpSink(fetchImpl, { bufferSize: 2 });
     const warnings = collectWarnings();
     try {
-      for (let i = 1; i <= 3; i += 1) await sink.write({ ...makeEvent(), sequence_number: i });
+      for (let i = 1; i <= 2; i += 1) await sink.write({ ...makeEvent(), sequence_number: i });
+      const flushing = sink.flush();
+      await vi.waitFor(() => expect(posted).toEqual([[1, 2]]));
+      await sink.write({ ...makeEvent(), sequence_number: 3 });
       answer(new Response(null, { status: 202 }));
-      await vi.waitFor(() => expect(posted).toEqual([1, 2]));
+      await vi.waitFor(() => expect(posted).toEqual([[1, 2], [3]]));
       answer(new Response(null, { status: 202 }));
-      await vi.waitFor(() => expect(posted).toEqual([1, 2, 3]));
-      answer(new Response(null, { status: 202 }));
+      await flushing;
       await sink.aclose();
       expect(PROCESS_DROPS.total()).toEqual({ buffer_full: 1 });
     } finally {

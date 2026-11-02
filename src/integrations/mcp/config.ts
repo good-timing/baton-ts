@@ -317,7 +317,7 @@ export function resolveBatonConfig(config: BatonConfig): ResolvedBatonConfig {
   // a cast that would go on compiling if a check were ever deleted.
   return {
     ...identity,
-    // The origin is scheme + authority; `HttpSink` appends `/v0/events`
+    // The origin is scheme + authority; `HttpSink` appends `/v0/events/batch`
     // itself, exactly as it does for an explicitly-constructed sink.
     sink: new HttpSink(dsn.origin, { apiKey: dsn.key }),
   };

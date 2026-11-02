@@ -14,11 +14,11 @@ interface Scenario {
   mode: string;
   delay_ms?: number;
   events: number;
-  expect?: { accepted?: number; dropped?: number; reports?: number };
+  expect?: { accepted?: number; dropped?: number; reports?: number; requests?: number };
 }
 
 const spec = scenarioFile<{
-  settings: { request_timeout_ms: number; shutdown_budget_ms: number; backoff_base_ms: number };
+  settings: { request_timeout_ms: number; shutdown_budget_ms: number; backoff_base_ms: number; flush_interval_ms: number };
   limits: { write_ms: number; close_margin_ms: number; report_ms: number };
   scenarios: Scenario[];
 }>("scenarios.json");
@@ -58,6 +58,7 @@ describe.skipIf(!hasPython)("the HTTP sink against a broken collector", () => {
         requestTimeoutMs: settings.request_timeout_ms,
         shutdownFlushTimeoutMs: settings.shutdown_budget_ms,
         backoffBaseMs: settings.backoff_base_ms,
+        flushIntervalMs: settings.flush_interval_ms,
       });
       const sent = Array.from({ length: scenario.events }, (_, i) => i + 1);
       for (const n of sent) {
@@ -84,6 +85,7 @@ describe.skipIf(!hasPython)("the HTTP sink against a broken collector", () => {
       if (scenario.expect?.accepted !== undefined) expect(got.length).toBe(scenario.expect.accepted);
       if (scenario.expect?.dropped !== undefined) expect(dropped).toBe(scenario.expect.dropped);
       if (reports !== undefined) expect(reported).toBe(reports);
+      if (scenario.expect?.requests !== undefined) expect(requests).toBe(scenario.expect.requests);
     } finally {
       warnings.mockRestore();
     }

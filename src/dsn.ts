@@ -28,7 +28,7 @@
  *
  * **The path segments are DATA, not a route.** Nobody can `GET` that URL. The
  * ingest origin is scheme + authority and *nothing else*; `HttpSink` appends
- * `/v0/events` itself, exactly as it does for an explicitly-constructed sink.
+ * `/v0/events/batch` itself, exactly as it does for an explicitly-constructed sink.
  * A parser that appends anything here reproduces a double-append this project
  * has already shipped once.
  *
@@ -154,7 +154,7 @@ const BARE_KEY_HINT =
 export interface Dsn {
   /**
    * Scheme + authority, no path and no trailing slash — what `HttpSink` takes
-   * as its base URL and appends `/v0/events` to.
+   * as its base URL and appends `/v0/events/batch` to.
    */
   readonly origin: string;
   /**
@@ -211,7 +211,7 @@ function splitDsn(raw: string): SplitDsn | null {
   // The authority ends at the first `/`, `?` or `#` — what `urlsplit` does,
   // and skipping the last two would let `https://key@host?a=b/ten_.../srv`
   // parse with a QUERY STRING inside the origin, which `HttpSink` would then
-  // append `/v0/events` to.
+  // append `/v0/events/batch` to.
   const end = rest.search(/[/?#]/);
   if (end === -1) return { scheme, netloc: rest, slash: "", path: "" };
 
@@ -508,7 +508,7 @@ export function parseDsn(raw: string): Dsn {
   // out of the no-`@` branch that has the sentence for this. Nothing
   // downstream objects: the segments validate, `origin` becomes
   // `https://baton_pk_...` and rides on the config, and `HttpSink` appends
-  // `/v0/events` and hands the result to `fetch` as a HOSTNAME — which puts
+  // `/v0/events/batch` and hands the result to `fetch` as a HOSTNAME — which puts
   // the bearer in a DNS query and a TLS SNI field on every send, to every
   // resolver in path. The bearer also silently becomes the one-character
   // userinfo, so nothing downstream even authenticates.

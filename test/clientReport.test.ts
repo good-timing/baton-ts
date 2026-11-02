@@ -18,46 +18,71 @@ function makeEvent(): Event {
 
 type Body = Record<string, unknown> & { event_type: string; payload: Record<string, unknown> };
 
-/** Answers events by a list of statuses, and reports with `reportStatus`;
- * `null` makes a report fail to connect, `"hang"` never answers it. */
-function collector(eventStatuses: number[], reportStatus: number | null | "hang" = 202) {
+const ok = (results: { status: string }[]) => new Response(JSON.stringify({ results }), { status: 200 });
+
+/** Answers each event by a list of statuses (202 accepts, anything else is
+ * refused in the results). A report sent alone is answered `reportStatus`:
+ * `"refused"` refuses it in the results, `null` fails to connect, `"hang"`
+ * never answers. A report riding with events is accepted. */
+function collector(eventStatuses: number[], reportStatus: number | null | "hang" | "refused" = 202) {
   const statuses = eventStatuses[Symbol.iterator]();
-  const state = { reports: [] as Body[], delivered: 0 };
-  const fetchImpl = (_url: string | URL | Request, init?: RequestInit): Promise<Response> => {
-    const body = JSON.parse(init!.body as string) as Body;
-    if (body.event_type === "client_report") {
-      state.reports.push(body);
+  const state = { reports: [] as Body[], delivered: 0, requests: [] as Body[][], inFlight: 0, most: 0 };
+  const answer = (init: RequestInit | undefined): Promise<Response> => {
+    const { events } = JSON.parse(init!.body as string) as { events: Body[] };
+    state.requests.push(events);
+    const alone = events.every((e) => e.event_type === "client_report");
+    if (alone) {
+      state.reports.push(...events);
       if (reportStatus === null) return Promise.reject(new TypeError("fetch failed"));
       if (reportStatus === "hang") {
         return new Promise((_resolve, reject) => {
           init?.signal?.addEventListener("abort", () => reject(new Error("aborted")));
         });
       }
-      return Promise.resolve(new Response(null, { status: reportStatus }));
+      if (reportStatus === "refused") return Promise.resolve(ok([{ status: "refused" }]));
+      if (reportStatus !== 202) return Promise.resolve(new Response(null, { status: reportStatus }));
+      return Promise.resolve(ok([{ status: "accepted" }]));
     }
-    const status = statuses.next().value as number;
-    if (status === 202) state.delivered += 1;
-    return Promise.resolve(new Response(null, { status }));
+    const results = events.map((e) => {
+      if (e.event_type === "client_report") {
+        state.reports.push(e);
+        return { status: reportStatus === "refused" ? "refused" : "accepted" };
+      }
+      const status = statuses.next().value as number;
+      if (status !== 202) return { status: "refused" };
+      state.delivered += 1;
+      return { status: "accepted" };
+    });
+    return Promise.resolve(ok(results));
+  };
+  const fetchImpl = async (_url: string | URL | Request, init?: RequestInit): Promise<Response> => {
+    state.most = Math.max(state.most, ++state.inFlight);
+    try {
+      return await answer(init);
+    } finally {
+      state.inFlight -= 1;
+    }
   };
   return { fetchImpl, state };
 }
 
 function httpSink(
   fetchImpl: typeof fetch,
-  options: { shutdownFlushTimeoutMs?: number; requestTimeoutMs?: number } = {},
+  options: { shutdownFlushTimeoutMs?: number; requestTimeoutMs?: number; flushIntervalMs?: number } = {},
 ) {
   return new HttpSink("https://collector.example", { apiKey: "k", fetchImpl, maxRetries: 0, ...options });
 }
 
 const internals = (sink: HttpSink) =>
-  sink as unknown as { reportInFlight: AbortController | null; maybeReport: (e: Event) => void };
+  sink as unknown as { pendingReport: unknown; maybeReport: (e: Event) => void };
 
-/** Writes and flushes `n` events, letting each report that starts settle. */
+/** Writes and flushes `n` events. The second flush sends, alone, a report the
+ * first one's delivery set up. */
 async function send(sink: HttpSink, n: number): Promise<void> {
   for (let i = 0; i < n; i += 1) {
     await sink.write(makeEvent());
     await sink.flush();
-    await vi.waitFor(() => expect(internals(sink).reportInFlight).toBeNull());
+    await sink.flush();
   }
 }
 
@@ -136,7 +161,7 @@ describe("client_report (SPEC §11.4.7)", () => {
     await sink.aclose();
   });
 
-  it.each([400, 422])("a collector that answers a report %i gets no more", async (status) => {
+  it.each([400, 422, "refused"] as const)("a collector that answers a report %s gets no more", async (status) => {
     const warnings = quiet();
     noInterval();
     const { fetchImpl, state } = collector([400, 202, 400, 202], status);
@@ -161,22 +186,54 @@ describe("client_report (SPEC §11.4.7)", () => {
     expect(PROCESS_DROPS.total()).toEqual({ refused: 1 });
   });
 
-  it("sends one report at a time, and close aborts it", async () => {
+  it("rides the next batch, so it is never a request beside one", async () => {
     quiet();
     noInterval();
-    const { fetchImpl, state } = collector([400, 202, 400, 202], "hang");
-    const sink = httpSink(fetchImpl, { shutdownFlushTimeoutMs: 5000 });
-    for (let i = 0; i < 4; i += 1) {
+    const { fetchImpl, state } = collector([400, 202, 202]);
+    const sink = httpSink(fetchImpl);
+    for (let i = 0; i < 3; i += 1) {
       await sink.write(makeEvent());
       await sink.flush();
     }
-    expect(state.reports).toHaveLength(1);
-    expect(internals(sink).reportInFlight).not.toBeNull();
+    expect(state.requests.map((events) => events.map((e) => e.event_type))).toEqual([
+      ["tool_call_start"],
+      ["tool_call_start"],
+      ["tool_call_start", "client_report"],
+    ]);
+    await sink.aclose();
+  });
+
+  it("goes when the timer fires if no event follows", async () => {
+    quiet();
+    const { fetchImpl, state } = collector([400, 202]);
+    const sink = httpSink(fetchImpl, { flushIntervalMs: 20 });
+    await sink.write(makeEvent());
+    await sink.flush();
+    await sink.write(makeEvent());
+    await sink.flush();
+    expect(state.reports).toEqual([]);
+    await vi.waitFor(() => expect(state.reports).toHaveLength(1));
+    await sink.aclose();
+  });
+
+  it("waits its turn behind no request, and close aborts it", async () => {
+    quiet();
+    noInterval();
+    const { fetchImpl, state } = collector([400, 202, 202], "hang");
+    const sink = httpSink(fetchImpl, { requestTimeoutMs: 10_000, shutdownFlushTimeoutMs: 100 });
+    for (let i = 0; i < 2; i += 1) {
+      await sink.write(makeEvent());
+      await sink.flush();
+    }
+    void sink.flush();
+    await vi.waitFor(() => expect(state.reports).toHaveLength(1));
+    await sink.write(makeEvent());
     const started = performance.now();
     await sink.aclose();
     expect(performance.now() - started).toBeLessThan(1000);
-    await vi.waitFor(() => expect(internals(sink).reportInFlight).toBeNull());
-    expect(PROCESS_DROPS.total()).toEqual({ refused: 2 });
+    expect(state.most).toBe(1);
+    expect(state.inFlight).toBe(0);
+    expect(PROCESS_DROPS.total()).toEqual({ refused: 1, unsent_at_close: 1 });
   });
 
   it("starts no report once close began", async () => {
@@ -187,7 +244,7 @@ describe("client_report (SPEC §11.4.7)", () => {
     await send(sink, 1);
     await sink.aclose();
     internals(sink).maybeReport(makeEvent());
-    expect(internals(sink).reportInFlight).toBeNull();
+    expect(internals(sink).pendingReport).toBeNull();
     expect(state.reports).toEqual([]);
   });
 

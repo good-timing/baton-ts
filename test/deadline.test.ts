@@ -327,10 +327,10 @@ describe("one shutdown deadline, handed down (SPEC §11.2 rule 7)", () => {
 
 function slowHttpSink(answerMs: number, shutdownFlushTimeoutMs: number): { sink: HttpSink; sent: () => number } {
   let sent = 0;
-  const fetchImpl = () =>
+  const fetchImpl = (_url: string | URL | Request, init?: RequestInit) =>
     new Promise<Response>((resolve) =>
       setTimeout(() => {
-        sent += 1;
+        sent += (JSON.parse(init!.body as string) as { events: unknown[] }).events.length;
         resolve(new Response(null, { status: 202 }));
       }, answerMs),
     );

@@ -84,7 +84,7 @@ describe("the happy path", () => {
   });
 
   it("carries no path in the origin", () => {
-    // Asserted by EQUALITY. `HttpSink` appends `/v0/events` to this value, so
+    // Asserted by EQUALITY. `HttpSink` appends `/v0/events/batch` to this value, so
     // an origin that kept the workspace and server segments would POST to a
     // URL that does not exist — and a substring check would pass happily on
     // exactly that bug.
@@ -509,7 +509,7 @@ describe("a key in the host slot is refused rather than parsed", () => {
 
   it("is what stops the key becoming the ORIGIN, which is the actual harm", () => {
     // Before the refusal this returned `origin: "https://baton_pk_aaa…"` with
-    // `key: "x"`. `HttpSink` appends `/v0/events` and hands that to `fetch`, so
+    // `key: "x"`. `HttpSink` appends `/v0/events/batch` and hands that to `fetch`, so
     // the bearer went out as a DNS name and a TLS SNI field on every send — and
     // the one-character userinfo became the bearer, so nothing authenticated
     // either. Asserted on the PARSE, because no test downstream would have
@@ -780,7 +780,7 @@ describe("the leaks review found", () => {
     // ⚠ The first guard here listed three characters and called the set
     // closed, on a measurement taken in ONE POSITION. WHATWG strips leading
     // and trailing C0 controls AND the space as well, so these parsed clean
-    // with `pathname` still `/` — then `HttpSink` appended `/v0/events`, which
+    // with `pathname` still `/` — then `HttpSink` appended its path, which
     // put the character mid-string, and `fetch` threw on every send inside the
     // sink's bare catch. Retried, dropped, forever, from an install that
     // raised nothing. The likely real input is a DSN copied with a stray space
@@ -815,9 +815,9 @@ describe("the leaks review found", () => {
   it("refuses a backslash-smuggled path in the authority", () => {
     // WHATWG folds `\` to `/` for special schemes, so `new URL` accepted
     // `host\evil` as a host with a path — while the split kept the whole
-    // thing as the authority. `HttpSink` would then append `/v0/events` to
+    // thing as the authority. `HttpSink` would then append `/v0/events/batch` to
     // `https://host\evil`, which `fetch` resolves to
-    // `https://host/evil/v0/events`: a 404 at the first tool call, from an
+    // `https://host/evil/v0/events/batch`: a 404 at the first tool call, from an
     // install that raised nothing.
     //
     // Refused by the character class now rather than by the assertion on what
