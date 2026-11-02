@@ -16,16 +16,23 @@ type Step =
   | { close_twice: object }
   | { check: { tool_events: number } };
 
+interface Settings {
+  request_timeout_ms: number;
+  shutdown_budget_ms: number;
+  backoff_base_ms: number;
+}
+
 interface Scenario {
   name: string;
   mode: string;
   delay_ms?: number;
+  settings?: Partial<Settings>;
   steps: Step[];
   expect: { dropped: Record<string, number>; warnings_after_close?: number };
 }
 
 const spec = scenarioFile<{
-  settings: { request_timeout_ms: number; shutdown_budget_ms: number; backoff_base_ms: number };
+  settings: Settings;
   limits: { call_ms: number; close_margin_ms: number };
   scenarios: Scenario[];
 }>("shutdown.json");
@@ -60,7 +67,8 @@ describe.skipIf(!hasPython)("withBaton's shutdown against the fake collector", (
       });
 
       const port = await startCollector(scenario.mode, scenario.delay_ms);
-      const { settings, limits } = spec;
+      const { limits } = spec;
+      const settings = { ...spec.settings, ...scenario.settings };
       const sink = new HttpSink(`http://127.0.0.1:${port}`, {
         apiKey: "k",
         requestTimeoutMs: settings.request_timeout_ms,
