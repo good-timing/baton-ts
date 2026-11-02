@@ -281,8 +281,7 @@ interface Waiting {
   bytes: number;
   writtenAt: number;
   reportSum?: number;
-  /** A report taken into a batch with no events. It, or any report sent one
-   * event per request, is dropped, not kept, when its request fails (SPEC §11.4.7). */
+  /** A report taken into a batch with no events. */
   alone?: boolean;
 }
 

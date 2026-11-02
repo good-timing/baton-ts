@@ -516,6 +516,23 @@ describe("what stops loss reports (SPEC §11.4.7)", () => {
     await sink.aclose();
   });
 
+  it("a report taken with events and split off by a 413 is kept when its half fails", async () => {
+    quiet();
+    const { fetchImpl, requests } = scripted([refuseEach, acceptEach, status(413), acceptEach, status(500)]);
+    const sink = httpSink(fetchImpl);
+    await sendEach(sink, 3);
+    await sink.flush();
+    await sendEach(sink, 1);
+    expect(requests.slice(2).map((r) => r.types)).toEqual([
+      ["tool_call_start", "client_report"],
+      ["tool_call_start"],
+      ["client_report"],
+      ["client_report"],
+      ["tool_call_start"],
+    ]);
+    await sink.aclose();
+  });
+
   it("a report that rode with events is kept when its batch is", async () => {
     quiet();
     const { fetchImpl, requests } = scripted([refuseEach, acceptEach, status(500)]);
