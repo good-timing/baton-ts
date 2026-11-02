@@ -247,6 +247,11 @@ describe("client_report (SPEC §11.4.7)", () => {
 });
 
 type Reply = (events: Body[]) => Response | Promise<Response>;
+type Hanging = (init?: RequestInit) => Promise<Response>;
+
+/** A request that is never answered; it ends only when the sink aborts it. */
+const hang: Hanging = (init) =>
+  new Promise((_resolve, reject) => init?.signal?.addEventListener("abort", () => reject(new Error("aborted"))));
 
 const each = (status: (e: Body) => string, code = "payload_malformed"): Reply => (events) =>
   new Response(
@@ -397,12 +402,12 @@ describe("what stops loss reports (SPEC §11.4.7)", () => {
       await sendEach(sink, 2);
       await vi.advanceTimersByTimeAsync(3000);
       await sink.write(makeEvent());
-      const timers = vi.spyOn(globalThis, "setTimeout");
+      const passes = vi.spyOn(HttpSink.prototype as unknown as { drainLocked: () => Promise<void> }, "drainLocked");
       await vi.advanceTimersByTimeAsync(2000);
       expect(requests.slice(2).map((r) => r.types)).toEqual([["tool_call_start", "client_report"]]);
       await vi.advanceTimersByTimeAsync(3000);
-      expect(timers.mock.calls.length).toBeLessThan(5);
-      timers.mockRestore();
+      expect(passes.mock.calls.length).toBeLessThan(5);
+      passes.mockRestore();
       await sink.aclose();
     } finally {
       vi.useRealTimers();
@@ -420,11 +425,11 @@ describe("what stops loss reports (SPEC §11.4.7)", () => {
       await sendEach(sink, 2);
       await vi.advanceTimersByTimeAsync(3000);
       await sink.write({ ...makeEvent(), vendor_id: "w" });
-      const timers = vi.spyOn(globalThis, "setTimeout");
+      const passes = vi.spyOn(HttpSink.prototype as unknown as { drainLocked: () => Promise<void> }, "drainLocked");
       await vi.advanceTimersByTimeAsync(4900);
       expect(requests).toHaveLength(2);
-      expect(timers.mock.calls.length).toBeLessThan(5);
-      timers.mockRestore();
+      expect(passes.mock.calls.length).toBeLessThan(5);
+      passes.mockRestore();
       await vi.advanceTimersByTimeAsync(100);
       expect(requests.slice(2).map((r) => r.types)).toEqual([["tool_call_start"], ["client_report"]]);
       expect(builds).toHaveBeenCalledTimes(1);
@@ -432,6 +437,85 @@ describe("what stops loss reports (SPEC §11.4.7)", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it.each([
+    ["500", () => Promise.resolve(new Response(null, { status: 500 }))],
+    ["no answer", hang],
+  ] as [string, Hanging][])("a lone report that fails (%s) is dropped, so it does not pause events", async (_name, failure) => {
+    quiet();
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    try {
+      // One event per request: e1 refused, e2 delivered, then every lone report fails.
+      const answers: Reply[] = [status(404), status(400), status(202)];
+      const requests: string[][] = [];
+      const fetchImpl = async (_url: string | URL | Request, init?: RequestInit): Promise<Response> => {
+        const types = (sentIn(init) as unknown as Body[]).map((e) => e.event_type);
+        requests.push(types);
+        const scriptedReply = answers[requests.length - 1];
+        if (scriptedReply) return scriptedReply([]);
+        return types.includes("client_report") ? failure(init) : new Response(null, { status: 202 });
+      };
+      const sink = httpSink(fetchImpl, { flushIntervalMs: 5000, requestTimeoutMs: 100 });
+      await sendEach(sink, 2);
+      await vi.advanceTimersByTimeAsync(60_000);
+      vi.useRealTimers();
+      await sendEach(sink, 10);
+      const sentEvents = requests.slice(3).filter((r) => r[0] !== "client_report");
+      expect(sentEvents).toHaveLength(10);
+      expect(requests.filter((r) => r[0] === "client_report")).toHaveLength(1);
+      expect((sink as unknown as { circuit: { canRequest: () => boolean } }).circuit.canRequest()).toBe(true);
+      await sink.aclose();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("one event per request, a report taken beside an event is still alone, and dropped when it fails", async () => {
+    quiet();
+    const requests: string[][] = [];
+    const answers = [404, 400, 202];
+    const fetchImpl = (_url: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      const types = (sentIn(init) as unknown as Body[]).map((e) => e.event_type);
+      requests.push(types);
+      const code = answers[requests.length - 1] ?? (types.includes("client_report") ? 500 : 202);
+      return Promise.resolve(new Response(null, { status: code }));
+    };
+    const sink = httpSink(fetchImpl);
+    await sendEach(sink, 5);
+    expect(requests.filter((r) => r[0] === "client_report")).toHaveLength(1);
+    await sink.aclose();
+  });
+
+  it("a report that rode with events is kept when its batch is", async () => {
+    quiet();
+    const { fetchImpl, requests } = scripted([refuseEach, acceptEach, status(500)]);
+    const sink = httpSink(fetchImpl);
+    await sendEach(sink, 3);
+    await sink.flush();
+    expect(requests.slice(2).map((r) => r.types)).toEqual([
+      ["tool_call_start", "client_report"],
+      ["tool_call_start", "client_report"],
+    ]);
+    await sink.aclose();
+  });
+
+  it("an answer that lands after close does not count its events again", async () => {
+    quiet();
+    let answer = (): void => {};
+    const fetchImpl = (_url: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      const events = sentIn(init) as unknown as Body[];
+      return new Promise((resolve) => {
+        answer = () => resolve(refuseEach(events));
+      });
+    };
+    const sink = httpSink(fetchImpl, { shutdownFlushTimeoutMs: 50, requestTimeoutMs: 10_000 });
+    await sink.write(makeEvent());
+    await sink.aclose();
+    expect(PROCESS_DROPS.total()).toEqual({ unsent_at_close: 1 });
+    answer();
+    await new Promise((r) => setTimeout(r, 20));
+    expect(PROCESS_DROPS.total()).toEqual({ unsent_at_close: 1 });
   });
 
   it("rides the first batch with room, not only the last in the queue", async () => {

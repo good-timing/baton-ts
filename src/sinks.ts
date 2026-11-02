@@ -281,6 +281,8 @@ interface Waiting {
   bytes: number;
   writtenAt: number;
   reportSum?: number;
+  /** A report taken with no event beside it: dropped, not kept, when its request fails (SPEC §11.4.7). */
+  alone?: boolean;
 }
 
 interface Refusal {
@@ -837,7 +839,7 @@ export class HttpSink implements Sink {
     this.buffer.splice(0, batch.length);
     this.bufferedBytes -= eventBytes;
     this.sendingEvents = batch.length;
-    if (report !== null && fits(report)) batch.push(report);
+    if (report !== null && fits(report)) batch.push({ ...report, alone: this.batchless || batch.length === 0 });
     return batch.length > 0 ? batch : null;
   }
 
@@ -849,7 +851,10 @@ export class HttpSink implements Sink {
     if (this.closed) return kept.length === 0;
     const events: Waiting[] = [];
     for (const waiting of kept) {
-      if (waiting.reportSum !== undefined) continue;
+      if (waiting.reportSum !== undefined) {
+        if (waiting.alone) this.pendingReport = null;
+        continue;
+      }
       events.push(waiting);
       this.bufferedBytes += waiting.bytes;
     }
@@ -952,6 +957,8 @@ export class HttpSink implements Sink {
 
   /** `alone` is one event per request (SPEC §2.5), so a whole refusal there is that event's own. */
   private settle(batch: Waiting[], answer: Extract<Answer, { kind: "answered" | "refused" }>, alone: boolean): void {
+    // close() has already counted these as unsent_at_close.
+    if (this.closed) return;
     let lastDelivered: Event | null = null;
     const refused = new Map<string, { first: Refusal; n: number }>();
     for (const waiting of batch) {
