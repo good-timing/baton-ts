@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.6.2: every lost event counted and reported; blank is Unicode White_Space
 
 - **Blank means empty after removing Unicode `White_Space`, as SPEC §11.4
   says, everywhere a wire value is checked or stripped:** a principal or
