@@ -37,7 +37,9 @@ export interface Extra {
    * `envelope` holds the reserved `io.modelcontextprotocol/*` keys this
    * major lifts out of `_meta`; absent entirely when the request carried
    * none, which is the common case on a 2025-11-25 connection. */
-  mcpReq?: { _meta?: unknown; envelope?: unknown } | undefined;
+  mcpReq?:
+    | { _meta?: unknown; envelope?: unknown; inputResponses?: unknown; requestState?: () => unknown }
+    | undefined;
   /** 1.x: the transport request's headers, as a plain object whose values may
    * be a STRING, an ARRAY of strings (a repeated header line), or undefined. */
   requestInfo?: { headers?: unknown } | undefined;

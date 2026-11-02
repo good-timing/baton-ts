@@ -14,6 +14,19 @@
   another line. The call itself was never affected. This matches `baton-sdk`
   and the Go SDK.
 
+- **A tool call, prompt get or resource read that pauses for input is one
+  call.** On `@modelcontextprotocol/server` 2.x a handler can return
+  `inputRequired(...)` and resume in a later round, either as separate
+  requests from a 2026-07-28 client or inside one request through the
+  server's shim for 2025 clients. Each round used to be recorded as its own
+  call, so one call showed up as two or more, and the pause was recorded as
+  a successful call whose result was the input request. Now a paused round
+  sends no end event and a resumed round sends no start, as the Python and
+  Go SDKs do for tool calls. If the SDK then fails the call, for example
+  because the client cannot answer the input request, the error is sent as
+  the call's terminal event. As there, a tool call's start and end carry
+  different `call_id`s, because each round mints its own.
+
 ## 0.6.2: every lost event counted and reported; blank is Unicode White_Space
 
 - **Blank means empty after removing Unicode `White_Space`, as SPEC §11.4

@@ -141,6 +141,7 @@ import {
   isErrorResult,
   TOOL_ERROR_TYPE,
 } from "./errorResult.js";
+import { isInputRequired, resumesPausedCall } from "./inputRequired.js";
 import { BatonHandle } from "./handle.js";
 import {
   deriveAnnotationToolName,
@@ -296,8 +297,8 @@ const CLEAN_OUTCOME: OuterOutcome = { failed: false, raised: false, result: unde
  * `flushTerminal !== null` FIRST, so the real state space has three members —
  * inner unreached, inner reached but parked nothing (`openCall` threw), inner
  * reached and parked — and the third is subdivided by WHICH lane parked. That
- * last fact travels as the choice between `parkFailure` and `parkSuccess`
- * rather than as a field, which is what let the claim read as true.
+ * last fact travels as the choice between `parkFailure`, `parkSuccess` and
+ * `parkPause` rather than as a field, which is what let the claim read as true.
  *
  * ⚠ **`flushTerminal` exists because two terminal events on one `call_id`
  * would break pairing** (SPEC §11.5.4 tier 1). The inner has already decided
@@ -456,7 +457,7 @@ async function resolveEnvelopeParts(
 /**
  * Open a tool call: resolve everything the envelope needs, strip Baton's
  * injected intent params out of `params` IN PLACE, and emit the opening
- * `tool_call_start`.
+ * `tool_call_start`, unless the request resumes a paused call.
  *
  * ⚠ **Extracted so BOTH seams open a call the same way.** The inner executor
  * wrapper opens a call that reached the vendor's handler; the outer
@@ -527,6 +528,7 @@ async function openCall(
     call_id: uuid7(),
   };
 
+  if (resumesPausedCall(extra)) return { common, session };
   await emit(ctx.sink, () =>
     ToolCallStartEventSchema.parse({
       ...common,
@@ -590,7 +592,7 @@ function batonWrap(nameRef: { current: string }, original: AnyHandler, ctx: Wrap
      * shapes own it. Relabelling that as `output_schema_mismatch` would blame
      * our conversion for the vendor's failure. */
     const terminate = async (
-      build: () => Event,
+      build: (() => Event) | null,
       replacement: ((outcome: OuterOutcome) => Event) | null,
     ): Promise<void> => {
       if (!slot) {
@@ -599,7 +601,7 @@ function batonWrap(nameRef: { current: string }, original: AnyHandler, ctx: Wrap
         // SPEC §11.4.3 agrees that is the right degradation, since "a
         // producer with only one seam cannot emit `failure_kind` correctly
         // and MUST omit it".
-        await emit(ctx.sink, build);
+        if (build !== null) await emit(ctx.sink, build);
         return;
       }
       // ⚠ **A parked terminal already here belongs to an EARLIER-completING
@@ -614,8 +616,8 @@ function batonWrap(nameRef: { current: string }, original: AnyHandler, ctx: Wrap
       //     lands second and used to erase it;
       //   - v2's legacy `inputRequired` shim, which loops
       //     `await handler(request, ctxNext)` inside ONE dispatch
-      //     (`mcp-DXXb3Vv3.mjs:602`), so every round but the last parks and
-      //     is immediately superseded.
+      //     (`mcp-DXXb3Vv3.mjs:602`), so every paused round parks a terminal
+      //     only a failure sends, and the next round supersedes it.
       //
       // The earlier one is flushed UNREPLACED, which is the correct reading
       // rather than a convenience: the outer's outcome describes the call
@@ -628,9 +630,8 @@ function batonWrap(nameRef: { current: string }, original: AnyHandler, ctx: Wrap
       slot.flushTerminal = async (outcome) => {
         // The choice is made INSIDE the thunk, so either branch allocates its
         // sequence number at flush — the property `CallSlot` exists to keep.
-        await emit(ctx.sink, () =>
-          replacement !== null && outcome.failed ? replacement(outcome) : build(),
-        );
+        if (replacement !== null && outcome.failed) await emit(ctx.sink, () => replacement(outcome));
+        else if (build !== null) await emit(ctx.sink, build);
       };
     };
 
@@ -652,6 +653,10 @@ function batonWrap(nameRef: { current: string }, original: AnyHandler, ctx: Wrap
       build: () => Event,
       replacement: (outcome: OuterOutcome) => Event,
     ): Promise<void> => terminate(build, replacement);
+
+    /** Park a paused round: it sends nothing unless the SDK then fails the call. */
+    const parkPause = (replacement: (outcome: OuterOutcome) => Event): Promise<void> =>
+      terminate(null, replacement);
 
     const startedAt = performance.now();
     let result: unknown;
@@ -696,6 +701,67 @@ function batonWrap(nameRef: { current: string }, original: AnyHandler, ctx: Wrap
     }
 
     const durationMs = Math.round(performance.now() - startedAt);
+
+    // The handler returned and the outer seam then saw the call fail: on the
+    // success lane what failed is the producer's own conversion of the output
+    // (SPEC §11.4.3's `output_schema_mismatch`), and after a pause it is the
+    // SDK's handling of the input request. The stream would otherwise file the
+    // caller's failure as a success, or not at all.
+    const failedAbove = (outcome: OuterOutcome, failureKind?: string): Event =>
+      ToolCallErrorEventSchema.parse({
+        ...common,
+        sequence_number: ctx.counter.nextFor(session),
+        captured_at: new Date().toISOString(),
+        payload: {
+          tool_name: toolName,
+          // The lane the OUTER came back on, not this one's: on 2.x the
+          // conversion failure is converted to a returned `isError` inside
+          // `tools/call` (`mcp-DXXb3Vv3.mjs:1402`), so `"tool_error"` is
+          // right there. A pause the SDK rejects on 2026-07-28 raises, so
+          // both lanes are reachable.
+          error_type: outcome.raised ? errorTypeOf(outcome.err) : TOOL_ERROR_TYPE,
+          // ⚠ The INNER's measurement — the vendor's handler duration —
+          // not the outer's. Every other leg means the same thing by this
+          // member, and widening it here for one failure kind would make
+          // `duration_ms` mean two things in one column.
+          duration_ms: durationMs,
+          // Omitted, not null, when undetermined: SPEC §11.4.3 says MUST OMIT.
+          ...(failureKind === undefined ? {} : { failure_kind: failureKind }),
+          // ⚠ **WITHHELD under `"off"`, unlike the three request-side
+          // kinds.** The message quotes the value the tool returned
+          // ("`'not-an-int'` is not of type `integer`"), so it is
+          // result-derived by provenance and goes — which leaves
+          // `failure_kind` as the ONLY surviving signal for an
+          // `output_schema_mismatch` under `"off"`, and is the measurement
+          // that justified putting the member on the wire at all.
+          //
+          // ⚠ `result` is what the CLIENT received — the SDK's own error
+          // envelope — not the vendor's rejected return value. §11.4.3
+          // asks for the envelope that holds the flag and the reason, and
+          // this package's own invariant is that it agrees with the
+          // caller. Recording the rejected output TOO would need a member
+          // nothing on the wire has; the loss is deliberate and worth
+          // knowing when debugging one of these.
+          ...resultDerivedFields(
+            ctx.resultCaptureMode,
+            () => (outcome.raised ? messageOf(outcome.err) : errorText(outcome.result)),
+            // ⚠ `null` on the `raised` lane, never `undefined`, and the
+            // union is what forces the branch rather than a comment: the
+            // scrubber would answer `undefined` and DROP the key, where the
+            // sibling raise lane a few lines up declares `result: null`
+            // explicitly, for the reason `ToolCallErrorPayloadSchema`
+            // records. One shape for "no result object existed", not two.
+            outcome.raised ? null : outcome.result ?? null,
+            (text) => errorBody(ctx, text),
+            ctx.scrubber,
+          ),
+        },
+      });
+
+    if (isInputRequired(result)) {
+      await parkPause(failedAbove);
+      return result;
+    }
 
     // The OTHER failure shape (SPEC §11.4.3): the handler returned normally
     // and the result carries MCP's error flag, which rides a 200 rather than a
@@ -747,62 +813,7 @@ function batonWrap(nameRef: { current: string }, original: AnyHandler, ctx: Wrap
             ...endResultFields(ctx.resultCaptureMode, result, ctx.scrubber),
           },
         }),
-      // The handler returned something this sensor reads as a success, and
-      // then the outer seam saw the call fail anyway — so what failed is the
-      // producer's own conversion of the output (SPEC §11.4.3's
-      // `output_schema_mismatch`). Correcting this is the whole point of the
-      // second seam: without it this is a `tool_call_end` for a call the
-      // CALLER saw fail, which is a success the product invented.
-      (outcome) =>
-        ToolCallErrorEventSchema.parse({
-          ...common,
-          sequence_number: ctx.counter.nextFor(session),
-          captured_at: new Date().toISOString(),
-          payload: {
-            tool_name: toolName,
-            // The lane the OUTER came back on, not this one's: on 2.x the
-            // conversion failure is converted to a returned `isError` inside
-            // `tools/call` (`mcp-DXXb3Vv3.mjs:1402`), so `"tool_error"` is
-            // right there. A throw out of the handler is unreachable on
-            // either major today for this lane; spelled anyway, because the
-            // alternative is a crash on the day it stops being.
-            error_type: outcome.raised ? errorTypeOf(outcome.err) : TOOL_ERROR_TYPE,
-            // ⚠ The INNER's measurement — the vendor's handler duration —
-            // not the outer's. Every other leg means the same thing by this
-            // member, and widening it here for one failure kind would make
-            // `duration_ms` mean two things in one column.
-            duration_ms: durationMs,
-            failure_kind: OUTPUT_SCHEMA_MISMATCH,
-            // ⚠ **WITHHELD under `"off"`, unlike the three request-side
-            // kinds.** The message quotes the value the tool returned
-            // ("`'not-an-int'` is not of type `integer`"), so it is
-            // result-derived by provenance and goes — which leaves
-            // `failure_kind` as the ONLY surviving signal for this failure
-            // under `"off"`, and is the measurement that justified putting
-            // the member on the wire at all.
-            //
-            // ⚠ `result` is what the CLIENT received — the SDK's own error
-            // envelope — not the vendor's rejected return value. §11.4.3
-            // asks for the envelope that holds the flag and the reason, and
-            // this package's own invariant is that it agrees with the
-            // caller. Recording the rejected output TOO would need a member
-            // nothing on the wire has; the loss is deliberate and worth
-            // knowing when debugging one of these.
-            ...resultDerivedFields(
-              ctx.resultCaptureMode,
-              () => (outcome.raised ? messageOf(outcome.err) : errorText(outcome.result)),
-              // ⚠ `null` on the `raised` lane, never `undefined`, and the
-              // union is what forces the branch rather than a comment: the
-              // scrubber would answer `undefined` and DROP the key, where the
-              // sibling raise lane a few lines up declares `result: null`
-              // explicitly, for the reason `ToolCallErrorPayloadSchema`
-              // records. One shape for "no result object existed", not two.
-              outcome.raised ? null : outcome.result ?? null,
-              (text) => errorBody(ctx, text),
-              ctx.scrubber,
-            ),
-          },
-        }),
+      (outcome) => failedAbove(outcome, OUTPUT_SCHEMA_MISMATCH),
     );
 
     return result;
@@ -1177,12 +1188,15 @@ function installLifecycleSeam(
       );
     };
 
-    await fire(spec.schemas.start, spec.startParams(requestParams));
+    if (!resumesPausedCall(extra)) await fire(spec.schemas.start, spec.startParams(requestParams));
 
     const startedAt = performance.now();
     const elapsed = (): number => Math.round(performance.now() - startedAt);
     try {
       const result = await handler(...args);
+      // Unlike tools, this seam wraps the SDK's pause handling, so a pause the
+      // SDK then fails throws into the catch below.
+      if (isInputRequired(result)) return result;
       await fire(spec.schemas.end, {
         ...(spec.countKey === undefined ? {} : { count: countOf(result, spec.countKey) }),
         duration_ms: elapsed(),

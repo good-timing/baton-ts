@@ -261,7 +261,7 @@ None of it blocks the quickstart above.
 - Only the high-level `McpServer`. The low-level `Server` is not wrapped.
 - **Task-based tools are not wrapped, and are not left alone either.** A 1.x tool registered with an object at `.handler` rather than a function produces no `tool_call_*` events at all, and nothing reports that. It still gets the intent parameters added to its advertised schema, because injection runs before the wrap is skipped and the strip only happens inside the wrapper. So `user_goal` can arrive in your own handler's arguments. Tools on the same server registered the ordinary way are unaffected. ⚠ **The request-level seam above does not rescue this one**: it reports only on tools this package wrapped, so a task-based tool emits nothing even for a rejected argument, where an unknown tool now emits a `tool_call_error`.
 - Intent parameters need a Zod schema. On the 2.x SDK a tool registered with a non-Zod standard schema is still wrapped and still emits `tool_call_*`; it just advertises no intent parameters.
-- v2's `createMcpHandler` is untested. A server built per request by your own code is supported: see [A server per request](#a-server-per-request).
+- v2's `createMcpHandler` is tested only for calls that pause for input. A server built per request by your own code is supported: see [A server per request](#a-server-per-request).
 
 ## Wire compatibility
 
