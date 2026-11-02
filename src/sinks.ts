@@ -924,7 +924,7 @@ export class HttpSink implements Sink {
         return batch;
       }
       this.circuit.recordSuccess();
-      this.settle(batch, answer);
+      this.settle(batch, answer, batchless);
       return [];
     }
   }
@@ -938,7 +938,8 @@ export class HttpSink implements Sink {
     return [];
   }
 
-  private settle(batch: Waiting[], answer: Extract<Answer, { kind: "answered" | "refused" }>): void {
+  /** `alone` is one event per request (SPEC §2.5), so a whole refusal there is that event's own. */
+  private settle(batch: Waiting[], answer: Extract<Answer, { kind: "answered" | "refused" }>, alone: boolean): void {
     let lastDelivered: Event | null = null;
     const refused = new Map<string, { first: Refusal; n: number }>();
     for (const waiting of batch) {
@@ -947,8 +948,11 @@ export class HttpSink implements Sink {
       if (waiting.reportSum !== undefined) {
         this.pendingReport = null;
         if (refusal === undefined) this.reportedSum = waiting.reportSum;
-        // A collector that predates `client_report` refuses it this way.
-        else if (answer.kind === "answered" || answer.status === 400 || answer.status === 422) this.reportsStopped = true;
+        // A collector that predates `client_report` refuses it this way. A whole
+        // batch refused may be another event's fault, and another code is not about the type.
+        else if (answer.kind === "answered" ? refusal.kind === "payload_malformed" : alone && (answer.status === 400 || answer.status === 422)) {
+          this.reportsStopped = true;
+        }
       } else if (refusal === undefined) {
         lastDelivered = waiting.event;
       } else {

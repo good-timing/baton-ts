@@ -148,10 +148,10 @@ describe("client_report (SPEC §11.4.7)", () => {
     await sink.aclose();
   });
 
-  it.each([400, 422, "refused"] as const)("a collector that answers a report %s gets no more", async (status) => {
+  it("a collector that refuses a report as malformed gets no more", async () => {
     const warnings = quiet();
     noInterval();
-    const { fetchImpl, state } = collector([400, 202, 400, 202], status);
+    const { fetchImpl, state } = collector([400, 202, 400, 202], "refused");
     const sink = httpSink(fetchImpl);
     await send(sink, 4);
     expect(state.reports).toHaveLength(1);
@@ -242,6 +242,126 @@ describe("client_report (SPEC §11.4.7)", () => {
     const sink = httpSink(fetchImpl, { requestTimeoutMs: 20 });
     await send(sink, 3);
     expect(state.reports).toHaveLength(2);
+    await sink.aclose();
+  });
+});
+
+type Reply = (events: Body[]) => Response | Promise<Response>;
+
+const each = (status: (e: Body) => string, code = "payload_malformed"): Reply => (events) =>
+  new Response(
+    JSON.stringify({
+      results: events.map((e) => {
+        const s = status(e);
+        return { event_id: e.event_id, status: s, ...(s === "refused" ? { error: { code, message: "no" } } : {}) };
+      }),
+    }),
+    { status: 200 },
+  );
+const acceptEach = each(() => "accepted");
+const refuseEach = each(() => "refused");
+const status = (code: number): Reply => () => new Response(null, { status: code });
+
+/** Answers request i with `replies[i]`, then accepts everything. */
+function scripted(replies: Reply[]) {
+  const requests: { url: string; types: string[] }[] = [];
+  const fetchImpl = async (url: string | URL | Request, init?: RequestInit): Promise<Response> => {
+    const events = sentIn(init) as unknown as Body[];
+    requests.push({ url: url instanceof Request ? url.url : url.toString(), types: events.map((e) => e.event_type) });
+    return (replies[requests.length - 1] ?? acceptEach)(events);
+  };
+  const withReport = () => requests.flatMap((r, i) => (r.types.includes("client_report") ? [i] : []));
+  return { fetchImpl, requests, withReport };
+}
+
+async function sendEach(sink: HttpSink, n: number): Promise<void> {
+  for (let i = 0; i < n; i += 1) {
+    await sink.write(makeEvent());
+    await sink.flush();
+  }
+}
+
+describe("what stops loss reports (SPEC §11.4.7)", () => {
+  // Request 0 loses an event, request 1 delivers one and sets up a report,
+  // and request 2 carries that report beside an event.
+  const lossThenReport = (third: Reply): Reply[] => [refuseEach, acceptEach, third];
+
+  it.each([400, 422])("a whole-batch %i does not stop them; another event may have caused it", async (code) => {
+    quiet();
+    noInterval();
+    const { fetchImpl, requests, withReport } = scripted(lossThenReport(status(code)));
+    const sink = httpSink(fetchImpl);
+    await sendEach(sink, 5);
+    expect(requests[2]!.types).toEqual(["tool_call_start", "client_report"]);
+    expect(withReport()).toEqual([2, 4]);
+    await sink.aclose();
+  });
+
+  it("a refused result with another code does not stop them", async () => {
+    quiet();
+    noInterval();
+    const quota = each((e) => (e.event_type === "client_report" ? "refused" : "accepted"), "quota_exhausted");
+    const { fetchImpl, withReport } = scripted(lossThenReport(quota));
+    const sink = httpSink(fetchImpl);
+    await sendEach(sink, 4);
+    expect(withReport()).toEqual([2, 3]);
+    await sink.aclose();
+  });
+
+  it("a refused result with payload_malformed stops them", async () => {
+    quiet();
+    noInterval();
+    const malformed = each((e) => (e.event_type === "client_report" ? "refused" : "accepted"));
+    const { fetchImpl, withReport } = scripted([refuseEach, acceptEach, malformed, refuseEach]);
+    const sink = httpSink(fetchImpl);
+    await sendEach(sink, 6);
+    expect(withReport()).toEqual([2]);
+    await sink.aclose();
+  });
+
+  it.each([400, 422])("a %i to a report sent alone, one event per request, stops them", async (code) => {
+    quiet();
+    noInterval();
+    // 404 on the batch path; then e1 refused, e2 delivered, e3 delivered, the report refused.
+    const { fetchImpl, requests, withReport } = scripted([status(404), status(400), status(202), status(202), status(code)]);
+    const sink = httpSink(fetchImpl);
+    await sendEach(sink, 3);
+    expect(requests[4]!.types).toEqual(["client_report"]);
+    await sink.write(makeEvent());
+    await sink.flush();
+    await sendEach(sink, 3);
+    expect(withReport()).toEqual([4]);
+    expect(requests.every((r, i) => i === 0 || r.url.endsWith("/v0/events"))).toBe(true);
+    await sink.aclose();
+  });
+
+  it.each([
+    ["500", status(500)],
+    ["302", status(302)],
+    ["429", status(429)],
+    ["a network error", () => Promise.reject(new TypeError("fetch failed"))],
+  ] as [string, Reply][])("a batch kept after %s keeps its report", async (_name, failure) => {
+    quiet();
+    noInterval();
+    const { fetchImpl, requests } = scripted(lossThenReport(failure));
+    const sink = httpSink(fetchImpl);
+    await sendEach(sink, 3);
+    expect(requests[2]!.types).toEqual(["tool_call_start", "client_report"]);
+    await sink.flush();
+    expect(requests[3]!.types).toEqual(["tool_call_start", "client_report"]);
+    await sink.aclose();
+  });
+
+  it("rides the first batch with room, not only the last in the queue", async () => {
+    quiet();
+    noInterval();
+    const { fetchImpl, requests } = scripted([refuseEach, acceptEach]);
+    const sink = httpSink(fetchImpl);
+    await sendEach(sink, 2);
+    await sink.write(makeEvent());
+    await sink.write({ ...makeEvent(), vendor_id: "w" });
+    await sink.flush();
+    expect(requests.slice(2).map((r) => r.types)).toEqual([["tool_call_start", "client_report"], ["tool_call_start"]]);
     await sink.aclose();
   });
 });
