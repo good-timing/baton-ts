@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.6.5: with no DSN, your server starts
 
 - **`user_goal` is removed from a tool call before the SDK checks its
   arguments, as SPEC §5.1.2 says, and so never reaches a 1.x task-based
