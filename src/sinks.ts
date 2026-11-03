@@ -262,10 +262,10 @@ export class MultiSink implements Sink {
 
 const BATCH_OPEN = '{"events":[';
 const BATCH_CLOSE = "]}";
-const BATCH_FRAME_BYTES = (BATCH_OPEN + BATCH_CLOSE).length;
+export const BATCH_FRAME_BYTES = (BATCH_OPEN + BATCH_CLOSE).length;
 /** SPEC §2.5's caps on one batch. */
 const BATCH_MAX_EVENTS = 100;
-const BATCH_MAX_BYTES = 1_048_576;
+export const BATCH_MAX_BYTES = 1_048_576;
 const FLUSH_INTERVAL_MS = 5000;
 /** SPEC §2.5: `Retry-After` is honoured from 1 to 60 seconds. */
 const RETRY_AFTER_MIN_S = 1;
@@ -281,8 +281,6 @@ interface Waiting {
   bytes: number;
   writtenAt: number;
   reportSum?: number;
-  /** A report taken into a batch with no events. */
-  alone?: boolean;
 }
 
 interface Refusal {
@@ -435,8 +433,9 @@ export class HttpSink implements Sink {
   private reportedSum = 0;
   private lastReportAt = -Infinity;
   private reportsStopped = false;
-  /** The envelope of a report due to ride the next batch, and when it was set up. */
-  private pendingReport: Pick<Event, "tenant_id" | "vendor_id" | "consent_token"> | null = null;
+  /** The envelope of a report due to ride the next batch, and when it was set up.
+   * `built` is the report once taken: a kept batch resends it unchanged (SPEC §11.4.7). */
+  private pendingReport: (Pick<Event, "tenant_id" | "vendor_id" | "consent_token"> & { built?: Waiting }) | null = null;
   private reportSetAt = 0;
 
   constructor(url: string, options: HttpSinkOptions) {
@@ -684,7 +683,7 @@ export class HttpSink implements Sink {
     while (this.circuit.canRequest() && Date.now() >= this.retryAt && Date.now() < deadline) {
       const batch = this.takeBatch(false);
       if (batch === null) break;
-      if (!this.putBack(await this.sendBatch(batch, 0, deadline))) break;
+      if (!this.putBack(await this.sendBatch(batch, 0, deadline), batch)) break;
     }
     this.exitPassRan = true;
     this.unsentWarned = true;
@@ -782,7 +781,7 @@ export class HttpSink implements Sink {
       const batch = this.takeBatch(reportDue);
       if (batch === null) break;
       if (batch.some((w) => w.reportSum !== undefined)) reportDue = false;
-      if (!this.putBack(await this.sendBatch(batch, this.maxRetries, Infinity))) {
+      if (!this.putBack(await this.sendBatch(batch, this.maxRetries, Infinity), batch)) {
         failed = true;
         break;
       }
@@ -816,22 +815,23 @@ export class HttpSink implements Sink {
 
   /** Takes the head of the buffer that fits one batch: one tenant and vendor
    * (SPEC §2.5), at most 100 events and 1 MiB. A due report with the head
-   * event's tenant and vendor takes one of those places; otherwise it is not
-   * built, and waits for a batch it can ride. Without a batch endpoint the same events go one
-   * per request. */
+   * event's tenant and vendor takes one of those places, and goes alone when
+   * the head event fits only without it. A report that cannot ride the head
+   * waits for a batch it can ride. Without a batch endpoint the same events
+   * go one per request. */
   private takeBatch(withReport: boolean): Waiting[] | null {
     const batch: Waiting[] = [];
     let bytes = BATCH_FRAME_BYTES - 1;
     let eventBytes = 0;
-    const fits = (w: Waiting, maxEvents = BATCH_MAX_EVENTS, maxBytes = BATCH_MAX_BYTES): boolean =>
-      batch.length === 0 ||
-      (batch.length < maxEvents && sameBatch(w.event, batch[0]!.event) && bytes + 1 + w.bytes <= maxBytes);
-    const report = withReport && this.reportRidesHead() ? this.buildReport() : null;
+    const report = withReport && this.reportRidesHead() ? (this.pendingReport!.built ?? this.buildReport()) : null;
     // A due report keeps its place, or a run of full batches never carries it (SPEC §11.4.7).
     const maxEvents = BATCH_MAX_EVENTS - (report ? 1 : 0);
     const maxBytes = BATCH_MAX_BYTES - (report ? 1 + report.bytes : 0);
+    const fits = (w: Waiting): boolean =>
+      bytes + 1 + w.bytes <= maxBytes &&
+      (batch.length === 0 || (batch.length < maxEvents && sameBatch(w.event, batch[0]!.event)));
     for (const waiting of this.buffer) {
-      if (!fits(waiting, maxEvents, maxBytes)) break;
+      if (!fits(waiting)) break;
       batch.push(waiting);
       bytes += 1 + waiting.bytes;
       eventBytes += waiting.bytes;
@@ -839,16 +839,14 @@ export class HttpSink implements Sink {
     this.buffer.splice(0, batch.length);
     this.bufferedBytes -= eventBytes;
     this.sendingEvents = batch.length;
-    if (report !== null && fits(report)) {
-      report.alone = batch.length === 0;
-      batch.push(report);
-    }
+    if (report !== null) batch.push(report);
     return batch.length > 0 ? batch : null;
   }
 
-  /** Puts a kept batch's events back at the head of the buffer; `true` when
-   * there were none. */
-  private putBack(kept: Waiting[]): boolean {
+  /** Puts what a failure `kept` of the batch `taken` back at the head of the
+   * buffer, and keeps its report unless `taken` had no events; `true` when
+   * nothing was kept. */
+  private putBack(kept: Waiting[], taken: Waiting[]): boolean {
     this.sendingEvents = 0;
     // close() has already counted these as unsent_at_close.
     if (this.closed) return kept.length === 0;
@@ -856,7 +854,7 @@ export class HttpSink implements Sink {
     for (const waiting of kept) {
       if (waiting.reportSum !== undefined) {
         // Read now, not at take time: a 404 during the send switches to one event per request.
-        if (waiting.alone || this.batchless) this.pendingReport = null;
+        if (taken.every((w) => w.reportSum !== undefined) || this.batchless) this.pendingReport = null;
         continue;
       }
       events.push(waiting);
@@ -892,17 +890,21 @@ export class HttpSink implements Sink {
 
   private buildReport(): Waiting | null {
     if (this.pendingReport === null) return null;
+    const { tenant_id, vendor_id, consent_token } = this.pendingReport;
     const totals = PROCESS_DROPS.total();
     try {
       const report = ClientReportEventSchema.parse({
-        ...this.pendingReport,
+        tenant_id,
+        vendor_id,
+        consent_token,
         session_id: PROCESS_DROPS.instanceId,
         sequence_number: nextClockSequence(),
         captured_at: new Date().toISOString(),
         payload: { instance_id: PROCESS_DROPS.instanceId, dropped: totals },
       });
       const json = JSON.stringify(report);
-      return { event: report, json, bytes: utf8Bytes(json), writtenAt: Date.now(), reportSum: sum(Object.values(totals)) };
+      this.pendingReport.built = { event: report, json, bytes: utf8Bytes(json), writtenAt: Date.now(), reportSum: sum(Object.values(totals)) };
+      return this.pendingReport.built;
     } catch {
       // A lost report is never counted (SPEC §11.4.7).
       this.pendingReport = null;

@@ -10,6 +10,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { z } from "zod";
 import { afterEach } from "vitest";
 import type { Event } from "../src/events.js";
+import { HttpSink } from "../src/sinks.js";
 
 const collectorDir = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "baton-spec", "collector");
 
@@ -36,6 +37,24 @@ export async function startCollector(mode: string, delayMs = 0): Promise<number>
     lines.once("line", (line) => resolve(Number(line)));
     child.once("error", reject);
     child.once("exit", (code) => reject(new Error(`the fake collector exited (${String(code)}) before printing its port`)));
+  });
+}
+
+/** The sink settings a scenario file shares, which a scenario's own `settings` override key by key. */
+export interface SinkSettings {
+  request_timeout_ms: number;
+  shutdown_budget_ms: number;
+  backoff_base_ms: number;
+  flush_interval_ms?: number;
+}
+
+export function scenarioSink(port: number, settings: SinkSettings): HttpSink {
+  return new HttpSink(`http://127.0.0.1:${port}`, {
+    apiKey: "k",
+    requestTimeoutMs: settings.request_timeout_ms,
+    shutdownFlushTimeoutMs: settings.shutdown_budget_ms,
+    backoffBaseMs: settings.backoff_base_ms,
+    ...(settings.flush_interval_ms === undefined ? {} : { flushIntervalMs: settings.flush_interval_ms }),
   });
 }
 

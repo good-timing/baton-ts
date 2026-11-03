@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { PROCESS_DROPS } from "../src/drops.js";
 import type { Event } from "../src/events.js";
-import { HttpSink } from "../src/sinks.js";
+import { BATCH_FRAME_BYTES, BATCH_MAX_BYTES, HttpSink } from "../src/sinks.js";
 import { makeEvent, results, sentIn, sinkWith } from "./_sink.js";
 
 
@@ -61,7 +61,10 @@ function httpSink(
 }
 
 const internals = (sink: HttpSink) =>
-  sink as unknown as { pendingReport: unknown; maybeReport: (e: Event) => void };
+  sink as unknown as { pendingReport: { built?: unknown } | null; maybeReport: (e: Event) => void };
+
+const padded = (pad: number) =>
+  ({ ...makeEvent(), payload: { tool_name: "lookup", params: { pad: "x".repeat(pad) } } }) as unknown as Event;
 
 /** Writes and flushes `n` events. The second flush sends, alone, a report the
  * first one's delivery set up. */
@@ -269,10 +272,14 @@ const status = (code: number): Reply => () => new Response(null, { status: code 
 
 /** Answers request i with `replies[i]`, then accepts everything. */
 function scripted(replies: Reply[]) {
-  const requests: { url: string; types: string[] }[] = [];
+  const requests: { url: string; types: string[]; ids: string[] }[] = [];
   const fetchImpl = async (url: string | URL | Request, init?: RequestInit): Promise<Response> => {
     const events = sentIn(init) as unknown as Body[];
-    requests.push({ url: url instanceof Request ? url.url : url.toString(), types: events.map((e) => e.event_type) });
+    requests.push({
+      url: url instanceof Request ? url.url : url.toString(),
+      types: events.map((e) => e.event_type),
+      ids: events.map((e) => e.event_id as string),
+    });
     return (replies[requests.length - 1] ?? acceptEach)(events);
   };
   const withReport = () => requests.flatMap((r, i) => (r.types.includes("client_report") ? [i] : []));
@@ -354,7 +361,51 @@ describe("what stops loss reports (SPEC §11.4.7)", () => {
     expect(requests[2]!.types).toEqual(["tool_call_start", "client_report"]);
     await sink.flush();
     expect(requests[3]!.types).toEqual(["tool_call_start", "client_report"]);
+    expect(requests[3]!.ids).toEqual(requests[2]!.ids);
     await sink.aclose();
+  });
+
+  it("a kept report, once delivered, is not sent again in place of the next one", async () => {
+    quiet();
+    noInterval();
+    const { fetchImpl, requests, withReport } = scripted([...lossThenReport(status(500)), acceptEach, refuseEach]);
+    const sink = httpSink(fetchImpl);
+    await sendEach(sink, 3);
+    await sink.flush();
+    await sendEach(sink, 3);
+    const reportIds = withReport().map((i) => requests[i]!.ids.at(-1));
+    expect(reportIds).toHaveLength(3);
+    expect(new Set(reportIds).size).toBe(2);
+    await sink.aclose();
+  });
+
+  it("close neither sends nor keeps a report a failed batch kept", async () => {
+    quiet();
+    const { fetchImpl, requests } = scripted([refuseEach, acceptEach, status(500)]);
+    const sink = httpSink(fetchImpl);
+    await sendEach(sink, 3);
+    expect(internals(sink).pendingReport?.built).toBeDefined();
+    await sink.aclose();
+    expect(requests.slice(3).map((r) => r.types)).toEqual([["tool_call_start"]]);
+    expect(internals(sink).pendingReport).toBeNull();
+  });
+
+  it("a report whose batch fails after close began is not kept", async () => {
+    quiet();
+    let fail = (): void => {};
+    const failLater: Reply = () => new Promise((r) => (fail = () => r(new Response(null, { status: 500 }))));
+    const { fetchImpl, requests } = scripted([refuseEach, acceptEach, failLater]);
+    const sink = httpSink(fetchImpl);
+    await sendEach(sink, 2);
+    await sink.write(makeEvent());
+    const flushing = sink.flush();
+    await vi.waitFor(() => expect(requests).toHaveLength(3));
+    const closing = sink.aclose();
+    fail();
+    await closing;
+    await flushing;
+    expect(requests[2]!.types).toEqual(["tool_call_start", "client_report"]);
+    expect(internals(sink).pendingReport).toBeNull();
   });
 
   it("takes one of a full batch's places, so batches full of events still carry it", async () => {
@@ -381,14 +432,25 @@ describe("what stops loss reports (SPEC §11.4.7)", () => {
     };
     const sink = httpSink(fetchImpl);
     await sendEach(sink, 2);
-    const padded = (pad: number) =>
-      ({ ...makeEvent(), payload: { tool_name: "lookup", params: { pad: "x".repeat(pad) } } }) as unknown as Event;
     // Four events leave 8 bytes under 1 MiB in a batch: '{"events":[' + 4 events + 3 commas + ']}'.
     const big = padded(262_138 - JSON.stringify(padded(0)).length);
     for (let i = 0; i < 12; i += 1) await sink.write(big);
     await vi.waitFor(() => expect(requests.length).toBeGreaterThanOrEqual(4));
     expect(requests[2]!.types).toContain("client_report");
-    expect(Math.max(...bodies)).toBeLessThanOrEqual(1_048_576);
+    expect(Math.max(...bodies)).toBeLessThanOrEqual(BATCH_MAX_BYTES);
+    await sink.aclose();
+  });
+
+  it("goes first, alone, when the first event fits a batch only without it", async () => {
+    quiet();
+    noInterval();
+    const { fetchImpl, requests } = scripted([refuseEach, acceptEach]);
+    const sink = httpSink(fetchImpl);
+    await sendEach(sink, 2);
+    await sink.write(padded(BATCH_MAX_BYTES - BATCH_FRAME_BYTES - 10 - JSON.stringify(padded(0)).length));
+    await sink.flush();
+    await sink.flush();
+    expect(requests.slice(2).map((r) => r.types)).toEqual([["client_report"], ["tool_call_start"]]);
     await sink.aclose();
   });
 
@@ -516,6 +578,23 @@ describe("what stops loss reports (SPEC §11.4.7)", () => {
     await sink.aclose();
   });
 
+  it("a report taken alone is dropped when its batch fails, whatever a later take did with it", async () => {
+    quiet();
+    const sink = httpSink(() => Promise.resolve(new Response(null, { status: 500 })));
+    const take = sink as unknown as {
+      takeBatch: (withReport: boolean) => unknown[] | null;
+      putBack: (kept: unknown[], taken: unknown[]) => boolean;
+    };
+    PROCESS_DROPS.add("refused");
+    internals(sink).maybeReport(makeEvent());
+    const lone = take.takeBatch(true)!;
+    await sink.write(makeEvent());
+    expect(take.takeBatch(true)).toHaveLength(2);
+    take.putBack(lone, lone);
+    expect(internals(sink).pendingReport).toBeNull();
+    await sink.aclose();
+  });
+
   it("a report taken with events and split off by a 413 is kept when its half fails", async () => {
     quiet();
     const { fetchImpl, requests } = scripted([refuseEach, acceptEach, status(413), acceptEach, status(500)]);
@@ -530,6 +609,7 @@ describe("what stops loss reports (SPEC §11.4.7)", () => {
       ["client_report"],
       ["tool_call_start"],
     ]);
+    expect(new Set([requests[2]!.ids[1], requests[4]!.ids[0], requests[5]!.ids[0]]).size).toBe(1);
     await sink.aclose();
   });
 
@@ -562,6 +642,27 @@ describe("what stops loss reports (SPEC §11.4.7)", () => {
     answer();
     await new Promise((r) => setTimeout(r, 20));
     expect(PROCESS_DROPS.total()).toEqual({ unsent_at_close: 1 });
+  });
+
+  it("a kept report waits behind another tenant's events and then goes unchanged", async () => {
+    quiet();
+    noInterval();
+    // While the batch fails, another vendor's event is written; the buffer holds one, so the kept event is pushed out.
+    const failBehindOther: Reply = async () => {
+      await sink.write({ ...makeEvent(), vendor_id: "w" });
+      return new Response(null, { status: 500 });
+    };
+    const { fetchImpl, requests } = scripted([refuseEach, acceptEach, failBehindOther]);
+    const sink = sinkWith(fetchImpl, { maxRetries: 0, bufferSize: 1 });
+    await sendEach(sink, 3);
+    await sink.flush();
+    expect(requests.slice(2).map((r) => r.types)).toEqual([
+      ["tool_call_start", "client_report"],
+      ["tool_call_start"],
+      ["client_report"],
+    ]);
+    expect(requests[4]!.ids[0]).toBe(requests[2]!.ids[1]);
+    await sink.aclose();
   });
 
   it("rides the first batch with room, not only the last in the queue", async () => {

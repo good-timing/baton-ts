@@ -6,9 +6,17 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { PROCESS_DROPS } from "../src/drops.js";
 import { withBaton } from "../src/integrations/mcp/withBaton.js";
-import { HttpSink } from "../src/sinks.js";
 import { CFG } from "./integrations/mcp/_majors.js";
-import { connectInMemory, echoServer, hasPython, scenarioFile, startCollector, toolEvents } from "./_scenarios.js";
+import {
+  connectInMemory,
+  echoServer,
+  hasPython,
+  scenarioFile,
+  scenarioSink,
+  startCollector,
+  toolEvents,
+  type SinkSettings,
+} from "./_scenarios.js";
 
 type Step =
   | { call: number }
@@ -17,23 +25,17 @@ type Step =
   | { close_twice: object }
   | { check: { tool_events: number } };
 
-interface Settings {
-  request_timeout_ms: number;
-  shutdown_budget_ms: number;
-  backoff_base_ms: number;
-}
-
 interface Scenario {
   name: string;
   mode: string;
   delay_ms?: number;
-  settings?: Partial<Settings>;
+  settings?: Partial<SinkSettings>;
   steps: Step[];
   expect: { dropped: Record<string, number>; warnings_after_close?: number };
 }
 
 const spec = scenarioFile<{
-  settings: Settings;
+  settings: SinkSettings;
   limits: { call_ms: number; close_margin_ms: number };
   scenarios: Scenario[];
 }>("shutdown.json");
@@ -70,12 +72,7 @@ describe.skipIf(!hasPython)("withBaton's shutdown against the fake collector", (
       const port = await startCollector(scenario.mode, scenario.delay_ms);
       const { limits } = spec;
       const settings = { ...spec.settings, ...scenario.settings };
-      const sink = new HttpSink(`http://127.0.0.1:${port}`, {
-        apiKey: "k",
-        requestTimeoutMs: settings.request_timeout_ms,
-        shutdownFlushTimeoutMs: settings.shutdown_budget_ms,
-        backoffBaseMs: settings.backoff_base_ms,
-      });
+      const sink = scenarioSink(port, settings);
       const server = echoServer();
       const handle = withBaton(server, { ...CFG, sink });
       const client = await connectInMemory(server);

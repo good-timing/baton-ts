@@ -12,7 +12,14 @@
   cannot reach. A `user_goal` that is not a string is now dropped rather than
   failing the call, as the retired names already were. This matches
   `baton-sdk`.
-
+- **A loss report that a failed batch kept is sent again unchanged** (SPEC
+  §11.4.7). The retry carries the same `client_report` event, with the same
+  `event_id`. Before, each retry built a new report, so the collector could
+  store two.
+- **When the first waiting event fits a batch only without the loss report,
+  the report goes first, alone, and the event goes next** (SPEC §11.4.7).
+  Before, the event went and the report waited, so a steady run of events
+  near 1 MiB could hold the report back for good.
 - **With nothing that says where events go, `withBaton` and `createBaton`
   warn once and install nothing, instead of throwing (SPEC §11.2 rule 10).**
   That is: no `dsn`, no `BATON_DSN`, no `vendorId`, no `tenantId` and no

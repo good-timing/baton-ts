@@ -5,20 +5,28 @@
  */
 import { describe, expect, it, vi } from "vitest";
 import { PROCESS_DROPS } from "../src/drops.js";
-import { HttpSink } from "../src/sinks.js";
 import { makeEvent } from "./_sink.js";
-import { hasPython, received, scenarioFile, startCollector, type Received } from "./_scenarios.js";
+import {
+  hasPython,
+  received,
+  scenarioFile,
+  scenarioSink,
+  startCollector,
+  type Received,
+  type SinkSettings,
+} from "./_scenarios.js";
 
 interface Scenario {
   name: string;
   mode: string;
   delay_ms?: number;
   events: number;
+  settings?: Partial<SinkSettings>;
   expect?: { accepted?: number; dropped?: number; reports?: number; requests?: number };
 }
 
 const spec = scenarioFile<{
-  settings: { request_timeout_ms: number; shutdown_budget_ms: number; backoff_base_ms: number; flush_interval_ms: number };
+  settings: SinkSettings;
   limits: { write_ms: number; close_margin_ms: number; report_ms: number };
   scenarios: Scenario[];
 }>("scenarios.json");
@@ -40,14 +48,9 @@ describe.skipIf(!hasPython)("the HTTP sink against a broken collector", () => {
     });
     try {
       const port = scenario.mode === "down" ? NOWHERE : await startCollector(scenario.mode, scenario.delay_ms);
-      const { settings, limits } = spec;
-      const sink = new HttpSink(`http://127.0.0.1:${port}`, {
-        apiKey: "k",
-        requestTimeoutMs: settings.request_timeout_ms,
-        shutdownFlushTimeoutMs: settings.shutdown_budget_ms,
-        backoffBaseMs: settings.backoff_base_ms,
-        flushIntervalMs: settings.flush_interval_ms,
-      });
+      const { limits } = spec;
+      const settings = { ...spec.settings, ...scenario.settings };
+      const sink = scenarioSink(port, settings);
       const sent = Array.from({ length: scenario.events }, (_, i) => i + 1);
       for (const n of sent) {
         const started = performance.now();
@@ -62,12 +65,12 @@ describe.skipIf(!hasPython)("the HTTP sink against a broken collector", () => {
       const started = performance.now();
       await sink.aclose();
       expect(performance.now() - started).toBeLessThanOrEqual(settings.shutdown_budget_ms + limits.close_margin_ms);
+      const dropped = Object.values(PROCESS_DROPS.total()).reduce((sum, n) => sum + n, 0);
 
       // A step that failed is one that raised somewhere unseen.
       expect(seen.filter((w) => w.includes(" failed"))).toEqual([]);
       const { accepted: got, requests, reports: reported } = await receivedBy(port, scenario.mode);
       if (scenario.mode !== "down") expect(requests).toBeGreaterThanOrEqual(1);
-      const dropped = Object.values(PROCESS_DROPS.total()).reduce((sum, n) => sum + n, 0);
       expect(got.every((n) => sent.includes(n))).toBe(true);
       expect(got.length + dropped).toBeGreaterThanOrEqual(sent.length);
       if (scenario.expect?.accepted !== undefined) expect(got.length).toBe(scenario.expect.accepted);
