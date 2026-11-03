@@ -81,10 +81,11 @@ export function expectNumberedFromOne(sink: CapturingSink, sessionId: string): v
   expect(numbers).toEqual(numbers.map((_, i) => i + 1));
 }
 
-/** An observed session is numbered by the clock too (SPEC §11.2 rule 5), so only its order is fixed. */
-export function expectRising(sink: CapturingSink, sessionId: string): void {
+/** With the clock stopped, an observed session's numbers rise by one only
+ * if every request's server numbers it on the one shared counter. */
+export function expectNumberedInOrderOnAStoppedClock(sink: CapturingSink, sessionId: string): void {
   const numbers = sink.events.filter((event) => event.session_id === sessionId).map((event) => event.sequence_number);
-  numbers.slice(1).forEach((n, i) => expect(n).toBeGreaterThan(numbers[i]!));
+  expect(numbers).toEqual(numbers.map((_, i) => numbers[0]! + i));
 }
 
 export interface Major {

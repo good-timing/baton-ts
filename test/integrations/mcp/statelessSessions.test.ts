@@ -8,11 +8,11 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { z } from "zod";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import type { Event } from "../../../src/events.js";
 import { createBaton, withBaton } from "../../../src/integrations/mcp/withBaton.js";
-import { CapturingSink, expectRising } from "./_majors.js";
+import { CapturingSink, expectNumberedInOrderOnAStoppedClock } from "./_majors.js";
 import { serveHttp } from "../../_http.js";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -106,11 +106,12 @@ describe("stateless HTTP: one session per request (SPEC §3.4 rung 5)", () => {
   it("createBaton numbers a client's mcp-session-id in order across requests (SPEC §11.2 rule 5)", async () => {
     const sink = new CapturingSink();
     const baton = createBaton({ ...CONFIG, sink });
+    const now = vi.spyOn(performance, "now").mockReturnValue(0);
 
-    await serve(perRequest(baton), 2, "client-session");
+    await serve(perRequest(baton), 2, "client-session").finally(() => now.mockRestore());
 
     const calls = sink.events.filter((e) => e.event_type.startsWith("tool_call_"));
     expect(calls.map((e) => [e.session_id, e.session_id_origin])).toEqual(Array(4).fill(["client-session", "observed"]));
-    expectRising(sink, "client-session");
+    expectNumberedInOrderOnAStoppedClock(sink, "client-session");
   });
 });

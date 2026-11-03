@@ -30,7 +30,7 @@ describe("SessionCounter", () => {
 
     expect(first).toBeGreaterThanOrEqual(before);
     expect(second).toBeGreaterThan(first);
-    expect(afterForgotten).toBeGreaterThanOrEqual(second);
+    expect(afterForgotten).toBeGreaterThan(second);
   });
 
   it("takes a resolved session's origin, and keeps no entry for a per-call one", () => {

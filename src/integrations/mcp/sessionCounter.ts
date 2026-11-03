@@ -5,7 +5,7 @@ export const SESSION_CAP = 4096;
 /** Per-session sequence numbers (SPEC §11.2 rule 5), for the
  * `SESSION_CAP` most recently used sessions. A minted session counts from 1;
  * an observed one is also at least the clock in µs, so its numbers still rise
- * after it is forgotten or when another process numbers the same session. */
+ * after it is forgotten. */
 export class SessionCounter {
   private readonly counters = new Map<string, number>();
 
