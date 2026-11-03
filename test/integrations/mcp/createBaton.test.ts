@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { createBaton, withBaton } from "../../../src/index.js";
 import { SENT_SURFACES_CAP } from "../../../src/integrations/mcp/surface.js";
-import { CapturingSink, CFG, expectNumberedFromOne, MAJORS, type Major } from "./_majors.js";
+import { CapturingSink, CFG, expectNumberedFromOne, expectRising, MAJORS, type Major } from "./_majors.js";
 
 const DSN = `https://baton_pk_${"a".repeat(43)}@ingest.example.com/ten_655b084e118b43f88992ee6357fcc23c/echo-server`;
 
@@ -88,7 +88,7 @@ describe.each(MAJORS)("createBaton on $label", (major) => {
 
     const calls = sink.events.filter((event) => event.event_type.startsWith("tool_call_"));
     expect(calls.map((event) => event.session_id)).toEqual(Array(4).fill("client-session"));
-    expectNumberedFromOne(sink, "client-session");
+    expectRising(sink, "client-session");
   });
 
   it("never joins two connections that have no session id (SPEC §3.4)", async () => {

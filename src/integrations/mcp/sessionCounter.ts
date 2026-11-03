@@ -1,29 +1,26 @@
-import { nextClockSequence } from "../../sequence.js";
+import { nextClockSequence, nowMicros } from "../../sequence.js";
 
-/**
- * Per-session monotonic sequence-number counter — mirrors `baton` (Python)'s
- * `_state.py::SessionCounter`. First call for a session returns 1.
- *
- * Python guards this with an `asyncio.Lock` because a single event loop can
- * still interleave two `await counter.next(...)` callers between the read
- * and the write of `self._counters[session_id]`. Node's single-threaded
- * event loop has the same hazard in principle, but `next()` here contains
- * no `await` — the read-increment-write is one synchronous turn, so it's
- * already atomic with respect to other JS execution. No lock needed.
- */
+export const SESSION_CAP = 4096;
+
+/** Per-session sequence numbers (SPEC §11.2 rule 5), for the
+ * `SESSION_CAP` most recently used sessions. A minted session counts from 1;
+ * an observed one is also at least the clock in µs, so its numbers still rise
+ * after it is forgotten or when another process numbers the same session. */
 export class SessionCounter {
   private readonly counters = new Map<string, number>();
 
-  /** A per-call session is numbered by the clock: a counter would keep an
-   * entry for every request the process serves. */
-  nextFor(session: { sessionId: string; perCall: boolean }): number {
-    return session.perCall ? nextClockSequence() : this.next(session.sessionId);
+  /** A per-call session is numbered by the clock: a counter would fill with
+   * sessions that never come back and push out live ones. */
+  nextFor(session: { sessionId: string; origin: "observed" | "minted"; perCall: boolean }): number {
+    return session.perCall ? nextClockSequence() : this.next(session.sessionId, session.origin === "observed");
   }
 
-  next(sessionId: string): number {
-    const current = this.counters.get(sessionId) ?? 0;
-    const next = current + 1;
+  next(sessionId: string, observed: boolean): number {
+    const previous = this.counters.get(sessionId) ?? 0;
+    const next = observed ? Math.max(previous + 1, nowMicros()) : previous + 1;
+    this.counters.delete(sessionId);
     this.counters.set(sessionId, next);
+    if (this.counters.size > SESSION_CAP) this.counters.delete(this.counters.keys().next().value as string);
     return next;
   }
 }
@@ -40,7 +37,7 @@ export class ServerCounter extends SessionCounter {
     super();
   }
 
-  override next(sessionId: string): number {
-    return sessionId === this.ownSessionId ? ++this.ownSequence : this.shared.next(sessionId);
+  override next(sessionId: string, observed: boolean): number {
+    return sessionId === this.ownSessionId ? ++this.ownSequence : this.shared.next(sessionId, observed);
   }
 }

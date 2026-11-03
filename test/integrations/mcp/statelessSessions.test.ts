@@ -12,7 +12,7 @@ import { describe, expect, it } from "vitest";
 
 import type { Event } from "../../../src/events.js";
 import { createBaton, withBaton } from "../../../src/integrations/mcp/withBaton.js";
-import { CapturingSink, expectNumberedFromOne } from "./_majors.js";
+import { CapturingSink, expectRising } from "./_majors.js";
 import { serveHttp } from "../../_http.js";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -111,6 +111,6 @@ describe("stateless HTTP: one session per request (SPEC §3.4 rung 5)", () => {
 
     const calls = sink.events.filter((e) => e.event_type.startsWith("tool_call_"));
     expect(calls.map((e) => [e.session_id, e.session_id_origin])).toEqual(Array(4).fill(["client-session", "observed"]));
-    expectNumberedFromOne(sink, "client-session");
+    expectRising(sink, "client-session");
   });
 });

@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+- **The session counter is bounded, and an observed session is numbered by
+  the clock too** (SPEC §11.2 rule 5). The counter keeps at most 4096
+  sessions and forgets the least recently used one. An observed session
+  (`session_id_origin: "observed"`) gets the larger of its previous number
+  plus one and the clock in microseconds, so its numbers still rise after it
+  is forgotten. A minted session still counts 1, 2, 3. A per-call session is
+  numbered by the clock, as before. **Consumer consequence:** an observed
+  session's numbers are clock values; their order is kept. This matches the
+  Go SDK.
+- **`unsent_at_close` is an estimate** (SPEC §11.2 rule 8). The code does not
+  change: `HttpSink` still counts the events waiting or being sent when close
+  runs out of time.
+
 ## 0.6.6: result capture "off" warns about resource and prompt errors
 
 - **`resultCaptureMode: "off"` now warns that the resource and prompt error

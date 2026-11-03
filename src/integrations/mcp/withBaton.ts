@@ -2082,7 +2082,7 @@ function install(
       session_id: sessionId,
       session_id_origin: "minted",
       consent_token: config.consentToken,
-      sequence_number: counter.next(sessionId),
+      sequence_number: counter.next(sessionId, false),
       captured_at: new Date().toISOString(),
       payload: {
         surface_hash: digest,

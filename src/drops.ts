@@ -18,7 +18,8 @@ export type DropReason = (typeof DROP_REASONS)[number];
 const RECOVERY_LOG_MS = 60_000;
 
 /** Events this process did not deliver, by reason: every event is either
- * delivered or counted here. One per process, like the sequence clock. */
+ * delivered or counted here, except at close, where the count is best effort
+ * (SPEC §11.2 rule 8). One per process, like the sequence clock. */
 class DropCounts {
   #instanceId = uuid7();
   readonly #total = new Map<DropReason, number>();

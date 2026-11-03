@@ -81,6 +81,12 @@ export function expectNumberedFromOne(sink: CapturingSink, sessionId: string): v
   expect(numbers).toEqual(numbers.map((_, i) => i + 1));
 }
 
+/** An observed session is numbered by the clock too (SPEC §11.2 rule 5), so only its order is fixed. */
+export function expectRising(sink: CapturingSink, sessionId: string): void {
+  const numbers = sink.events.filter((event) => event.session_id === sessionId).map((event) => event.sequence_number);
+  numbers.slice(1).forEach((n, i) => expect(n).toBeGreaterThan(numbers[i]!));
+}
+
 export interface Major {
   label: string;
   /** `eagerTools` declares the tools capability at construction, which on v2
