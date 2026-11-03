@@ -3,7 +3,7 @@
  * mirror of `baton` (Python)'s `integrations/_config.py::VendorConfig`.
  */
 
-import { parseDsn, selectDsn, VENDOR_ID_PATTERN } from "../../dsn.js";
+import { dsnFromEnvironment, parseDsn, selectDsn, VENDOR_ID_PATTERN } from "../../dsn.js";
 import { displayNameFromServer } from "./annotationName.js";
 import type { ResolvePrincipalHook } from "./principalResolution.js";
 import { DEFAULT_CONSENT_TOKEN } from "../../events.js";
@@ -59,7 +59,8 @@ export interface BatonConfig {
    * (`{vendorId}_annotate`). This is not the account — see `tenantId`.
    *
    * Required unless a `dsn` supplies it — the DSN's last path segment IS this
-   * value, and it is what the key is BOUND to. */
+   * value, and it is what the key is BOUND to. With no DSN, `tenantId` or sink
+   * either, the install adds nothing instead (SPEC §11.2 rule 10). */
   vendorId?: string;
   /** Account identifier for the envelope's `tenant_id` (SPEC §11.4).
    *
@@ -106,7 +107,7 @@ export interface BatonConfig {
    * one. Adding the read here would make this arm honour a variable the
    * equivalent Python door ignores. */
   consentToken?: string;
-  /** Where events go. Defaults to `new StdoutSink()` — zero-config dev mode. */
+  /** Where events go. With a `vendorId` and no DSN, defaults to `new StdoutSink()`. */
   sink?: Sink;
   /** PII scrubber per SPEC §7, applied to tool params/results, `_meta`,
    * intent strings and error bodies before they reach the sink. Defaults to
@@ -220,6 +221,36 @@ export function resolveTenantId(explicit: string | undefined, vendorId: string):
   const fromEnv = typeof process !== "undefined" ? process.env?.BATON_TENANT_ID : undefined;
   if (fromEnv) return fromEnv;
   return vendorId;
+}
+
+const STAND_IN_VENDOR_ID = "unset";
+
+/**
+ * `resolveBatonConfig` for an install, and whether nothing says where events
+ * go: no DSN, no `vendorId`, no `tenantId` and no sink (SPEC §11.2 rule 10).
+ * `BATON_TENANT_ID` does not count, so a stale one cannot stop a server. Then
+ * the config gets a stand-in identity, so every check still runs.
+ */
+export function resolveInstallConfig(config: BatonConfig): {
+  resolved: ResolvedBatonConfig;
+  unconfigured: boolean;
+} {
+  const unconfigured =
+    !config.dsn &&
+    dsnFromEnvironment() === undefined &&
+    !config.vendorId &&
+    !config.tenantId &&
+    config.sink === undefined;
+  const resolved = resolveBatonConfig(
+    unconfigured
+      ? {
+          ...config,
+          vendorId: STAND_IN_VENDOR_ID,
+          vendorDisplayName: config.vendorDisplayName ?? STAND_IN_VENDOR_ID,
+        }
+      : config,
+  );
+  return { resolved, unconfigured };
 }
 
 /**

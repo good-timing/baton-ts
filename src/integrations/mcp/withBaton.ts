@@ -113,13 +113,13 @@ import { Scrubber } from "../../scrub.js";
 import { scrubOrNull } from "./safeScrub.js";
 import { roundMetaCoordinates } from "../../metaCoordinates.js";
 import {
-  resolveBatonConfig,
+  resolveInstallConfig,
   resolveTenantId,
   withServerDisplayName,
   type BatonConfig,
   type ResolvedBatonConfig,
 } from "./config.js";
-import { captureDisabled, DisabledSink, logDisabled } from "../../optout.js";
+import { captureDisabled, DisabledSink, logDisabled, logUnconfigured } from "../../optout.js";
 import { capCodePoints, isBlank } from "../../_text.js";
 import { emit } from "./emit.js";
 import {
@@ -1894,28 +1894,23 @@ export function withBaton(server: SupportedMcpServer, supplied: BatonConfig = {}
   // mutation of the vendor's server.** Off means install nothing and never
   // throw, so this cannot sit after a check that raises: a switch that can
   // still abort a vendor's boot is worse than no switch. It also has to
-  // precede `resolveBatonConfig`, which would otherwise parse a DSN and
+  // precede `resolveInstallConfig`, which would otherwise parse a DSN and
   // construct an `HttpSink` for capture that is not going to happen.
   const disabledBy = captureDisabled();
   if (disabledBy !== null) {
     logDisabled(disabledBy, "withBaton");
-    return new BatonHandle({
-      // A sink the VENDOR constructed is held rather than dropped, so their
-      // `handle.aclose()` still releases it — we took ownership of that object
-      // the moment they passed it, and the switch does not undo that. Nothing
-      // writes to it: nothing is wrapped.
-      sink: supplied.sink ?? new DisabledSink(),
-      // Empty, and a constant, because when the switch is on nothing was
-      // resolved: inventing a session id would put a real identifier on a
-      // handle whose whole meaning is that no events exist under it.
-      vendorId: "",
-      sessionId: "baton-disabled",
-      annotationToolName: "",
-    });
+    // A sink the VENDOR constructed is held rather than dropped, so their
+    // `handle.aclose()` still releases it — we took ownership of that object
+    // the moment they passed it, and the switch does not undo that. Nothing
+    // writes to it: nothing is wrapped.
+    return inertHandle(supplied.sink ?? new DisabledSink(), "baton-disabled");
   }
-  const resolved = resolveBatonConfig(supplied);
-  warnUnusedReportSettings(resolved);
-  return install(server, supplied, resolved, new SentSurfaces(), new Set());
+  const { resolved, unconfigured } = resolveInstallConfig(supplied);
+  if (!unconfigured) warnUnusedReportSettings(resolved);
+  const handle = install(server, supplied, resolved, new SentSurfaces(), new Set(), unconfigured);
+  // After the checks, so an install that fails does not first say it added nothing.
+  if (unconfigured) logUnconfigured("withBaton");
+  return handle;
 }
 
 /** One Baton for a process that builds a new `McpServer` for every request.
@@ -1943,10 +1938,12 @@ export function createBaton(supplied: BatonConfig = {}): Baton {
   // Everything the environment or a bad config can decide is settled here, so
   // a request cannot fail on it or be switched off by it:
   // `createBaton.test.ts`, "reads the environment once".
-  const resolved = resolveBatonConfig(supplied);
-  warnUnusedReportSettings(resolved);
+  const { resolved, unconfigured } = resolveInstallConfig(supplied);
   if (resolved.reportMode === "on") deriveAnnotationToolName(resolved.vendorId, supplied.annotationToolName);
-  const sink = resolved.sink ?? new StdoutSink();
+  // After every check that needs no server; those that do run on each `wrap`.
+  if (unconfigured) logUnconfigured("createBaton");
+  else warnUnusedReportSettings(resolved);
+  const sink = unconfigured ? new DisabledSink() : (resolved.sink ?? new StdoutSink());
   const config = {
     ...resolved,
     sink,
@@ -1956,11 +1953,28 @@ export function createBaton(supplied: BatonConfig = {}): Baton {
   const warned = new Set<string>();
   return {
     wrap: (server) => {
-      install(server, supplied, config, sentSurfaces, warned);
+      install(server, supplied, config, sentSurfaces, warned, unconfigured);
     },
     flush: () => boundedSinkCall(sink, "flush"),
     aclose: () => boundedSinkCall(sink, "aclose"),
   };
+}
+
+/** A handle for an install that added nothing. The session id is a constant: a
+ * real one would name a session no event exists under. */
+function inertHandle(sink: Sink, sessionId: string): BatonHandle {
+  return new BatonHandle({ sink, sessionId, vendorId: "", annotationToolName: "" });
+}
+
+/** Both majors' `McpServer` has these; the low-level `Server` does not. */
+function requireHighLevelServer(server: SupportedMcpServer): void {
+  const candidate = server as { server?: unknown; registerTool?: unknown } | null;
+  if (typeof candidate?.registerTool !== "function" || typeof candidate.server !== "object" || candidate.server === null) {
+    throw new TypeError(
+      "Baton needs a high-level McpServer (from @modelcontextprotocol/sdk/server/mcp.js " +
+        "or @modelcontextprotocol/server); the low-level Server is not supported.",
+    );
+  }
 }
 
 function install(
@@ -1970,7 +1984,10 @@ function install(
   sentSurfaces: SentSurfaces,
   /** Kinds of warning already written, so `createBaton` writes each once and not per request. */
   warned: Set<string>,
+  /** Nothing says where events go (SPEC §11.2 rule 10): check, then add nothing. */
+  unconfigured: boolean,
 ): BatonHandle {
+  requireHighLevelServer(server);
   // The internals both majors keep off their public `.d.ts`, on one named
   // shape rather than an `any` per reach-in, so a future SDK rename is a
   // compile error here instead of a runtime surprise in five places.
@@ -1996,7 +2013,6 @@ function install(
 
   const config =
     resolved.reportMode === "on" ? withServerDisplayName(resolved, supplied, serverName) : resolved;
-  const sink = config.sink ?? new StdoutSink();
   const reports = reportsFor(config);
   // Resolved ONCE and threaded to every consumer below: the wrapper's skip of
   // the annotate tool, the instructions, the registration and the handle. With
@@ -2005,6 +2021,14 @@ function install(
   const annotationToolName = reports
     ? resolveAnnotationToolName(serverName, { ...config, vendorDisplayName: reports.vendorDisplayName })
     : "";
+  const ours = reports
+    ? buildServerInstructions({ vendorDisplayName: reports.vendorDisplayName, annotationToolName })
+    : INTENT_INSTRUCTIONS;
+
+  // The checks that change nothing are above this line; from here on the install
+  // builds a sink and changes the server.
+  if (unconfigured) return inertHandle(new DisabledSink(), "baton-unconfigured");
+  const sink = config.sink ?? new StdoutSink();
   const intentParamMode: IntentParamMode = config.intentParamMode ?? DEFAULT_INTENT_PARAM_MODE;
   const counter = new SessionCounter();
   const fallbackSessionId = `sdk-${uuid7()}`;
@@ -2165,9 +2189,6 @@ function install(
   // §5.1.2). No public setter exists post-construction; see module
   // docstring for why this reach-in has no "preferred path" to fall back
   // from, unlike Python's adapter.
-  const ours = reports
-    ? buildServerInstructions({ vendorDisplayName: reports.vendorDisplayName, annotationToolName })
-    : INTENT_INSTRUCTIONS;
   internals.server._instructions = withVendorInstructions(internals.server, ours, (message) =>
     warnOnce("instructions-length", message),
   );

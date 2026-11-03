@@ -47,6 +47,7 @@
 
 import { stripWhiteSpace } from "./_text.js";
 import type { Sink } from "./sinks.js";
+import { warn } from "./warn.js";
 
 const SWITCH = "BATON_DISABLED";
 
@@ -79,14 +80,6 @@ export function captureDisabled(): string | null {
 /**
  * Say so once, on stderr, never on stdout.
  *
- * ⚠ **`process.emitWarning`, because `console` is BANNED in this package** —
- * `no-console` is an eslint error here, the coarse guard against the fatal
- * case: `console.log` writes to stdout, which is the JSON-RPC stream under
- * stdio transport. `console.error` would have been safe and was the first
- * cut, but carving an exception into a repo-wide rule for one line is worse
- * than using the channel the package already speaks on — `HttpSink`'s buffer
- * warning is the same call.
- *
  * ⚠ **Louder than the Python copy, and that is a divergence rather than an
  * oversight.** Python logs this at INFO, which its default handler drops, so a
  * server that configures no logging prints nothing; it argues explicitly
@@ -101,16 +94,15 @@ export function captureDisabled(): string | null {
  * look is vendor-facing documentation, which is a different piece of work.
  */
 export function logDisabled(switchName: string, surface: string): void {
-  // Guarded like every `process` read in this package — absent on edge and
-  // worker runtimes, where a missing warning channel must not crash a server's
-  // startup. Deliberately NOT shared with `dsn.ts`'s `warn`: that one sweeps
-  // credentials out of its message first, and this one has none to sweep.
-  if (typeof process !== "undefined" && typeof process.emitWarning === "function") {
-    process.emitWarning(
-      `baton: ${switchName} is set, so capture is OFF — ${surface} installed ` +
-        `nothing and will emit no events. Unset it to re-enable.`,
-    );
-  }
+  warn(
+    `baton: ${switchName} is set, so capture is OFF — ${surface} installed ` +
+      `nothing and will emit no events. Unset it to re-enable.`,
+  );
+}
+
+/** SPEC §11.2 rule 10. */
+export function logUnconfigured(surface: string): void {
+  warn(`baton: no DSN (dsn or BATON_DSN), so ${surface} installed nothing and records nothing`);
 }
 
 export class DisabledSink implements Sink {

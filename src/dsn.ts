@@ -326,7 +326,7 @@ function fail(message: string): never {
 
 /** `BATON_DSN`, or undefined — guarded, since `process` is absent on edge and
  * worker runtimes and this module must not crash a server's startup there. */
-function dsnFromEnvironment(): string | undefined {
+export function dsnFromEnvironment(): string | undefined {
   const fromEnv =
     typeof process !== "undefined" ? process.env?.BATON_DSN : undefined;
   // Set-but-empty is how a shell exports a variable it failed to fill.

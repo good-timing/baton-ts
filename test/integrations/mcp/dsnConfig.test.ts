@@ -15,15 +15,17 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { z } from "zod";
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { withBaton } from "../../../src/integrations/mcp/withBaton.js";
+import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
+import { createBaton, withBaton } from "../../../src/integrations/mcp/withBaton.js";
 import {
   resolveBatonConfig,
   withServerDisplayName,
 } from "../../../src/integrations/mcp/config.js";
 import { HttpSink, StdoutSink } from "../../../src/sinks.js";
+import { MAJORS } from "./_majors.js";
 import { DEFAULT_CONSENT_TOKEN } from "../../../src/events.js";
 
 const WORKSPACE = "ten_655b084e118b43f88992ee6357fcc23c";
@@ -81,6 +83,7 @@ async function driveOneToolCall(server: McpServer): Promise<void> {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
   delete process.env.BATON_DSN;
   delete process.env.BATON_TENANT_ID;
 });
@@ -343,13 +346,88 @@ describe("the consent token", () => {
   });
 });
 
-describe("an install with neither", () => {
-  it("names the dsn as the other way to supply a vendorId", () => {
-    // `withBaton(server, {})` used to fail a regex test against `undefined`,
-    // which describes the pattern rather than the missing value.
-    expect(() => withBaton(new McpServer({ name: "x", version: "1.0.0" }), {})).toThrow(
-      /either directly, or via a dsn/,
-    );
+describe("an install where nothing says where events go (SPEC §11.2 rule 10)", () => {
+  let warnings: MockInstance<typeof process.emitWarning>;
+  beforeEach(() => {
+    warnings = vi.spyOn(process, "emitWarning").mockImplementation(() => {});
   });
 
+  function vendorServer(): McpServer {
+    const server = new McpServer({ name: "x", version: "1.0.0" });
+    server.registerTool("echo", { inputSchema: { text: z.string() } }, ({ text }) => ({
+      content: [{ type: "text" as const, text }],
+    }));
+    return server;
+  }
+
+  /** Each tool's advertised params, as a client lists them. */
+  async function listed(server: McpServer): Promise<[string, string[]][]> {
+    const client = (await MAJORS[0]!.connect(server)) as Client;
+    const { tools } = await client.listTools();
+    return tools.map((t) => [t.name, Object.keys(t.inputSchema.properties ?? {})]);
+  }
+
+  const warned = (): string[] => warnings.mock.calls.map((call) => String(call[0]));
+
+  it("warns once, changes nothing on the server, and closes cleanly", async () => {
+    const server = vendorServer();
+    const handle = withBaton(server, {});
+
+    expect(warned()).toEqual([
+      "baton: no DSN (dsn or BATON_DSN), so withBaton installed nothing and records nothing",
+    ]);
+    expect(await listed(server)).toEqual([["echo", ["text"]]]);
+    await expect(handle.aclose()).resolves.toBeUndefined();
+  });
+
+  it("gives createBaton a Baton that wraps nothing", async () => {
+    const baton = createBaton({});
+    const server = vendorServer();
+    baton.wrap(server);
+
+    expect(warnings).toHaveBeenCalledTimes(1);
+    expect(String(warnings.mock.calls[0]![0])).toContain("createBaton installed nothing");
+    expect(await listed(server)).toEqual([["echo", ["text"]]]);
+    await expect(baton.aclose()).resolves.toBeUndefined();
+  });
+
+  it.each([
+    ["a reportMode that is not one", { reportMode: "bogus" as never }, /reportMode/],
+    ["an empty consentToken", { consentToken: "" }, /consentToken/],
+    ["an annotation tool name with a dot", { reportMode: "on" as const, annotationToolName: "a.b" }, /violates/],
+  ])("still throws for %s", (_label, config, message) => {
+    expect(() => withBaton(vendorServer(), config)).toThrow(message);
+    expect(() => createBaton(config)).toThrow(message);
+    expect(warned().join("\n")).not.toContain("installed nothing");
+  });
+
+  it("still throws for instructions over their length cap", () => {
+    const config = { reportMode: "on" as const, vendorDisplayName: "V".repeat(2000) };
+    expect(() => withBaton(vendorServer(), config)).toThrow(/safety cap/);
+    expect(warned().join("\n")).not.toContain("installed nothing");
+    expect(() => createBaton(config).wrap(vendorServer())).toThrow(/safety cap/);
+  });
+
+  it("still throws for a low-level Server", () => {
+    const lowLevel = new Server({ name: "x", version: "1.0.0" }, { capabilities: {} });
+    expect(() => withBaton(lowLevel as never, {})).toThrow(/high-level McpServer/);
+    expect(warned().join("\n")).not.toContain("installed nothing");
+    expect(() => createBaton({}).wrap(lowLevel as never)).toThrow(/high-level McpServer/);
+  });
+
+  it("is not the case once a vendorId is set: events go to stderr", () => {
+    expect(withBaton(vendorServer(), { vendorId: "acme" }).sink).toBeInstanceOf(StdoutSink);
+  });
+
+  it.each([
+    ["a tenantId", { tenantId: "ten_1" }],
+    ["a sink", { sink: new StdoutSink() }],
+  ])("is not the case with %s alone, which still needs a vendorId", (_label, config) => {
+    expect(() => withBaton(vendorServer(), config)).toThrow(/either directly, or via a dsn/);
+  });
+
+  it("is still the case with BATON_TENANT_ID set, so a stale one cannot stop a server", () => {
+    process.env.BATON_TENANT_ID = "ten_1";
+    expect(() => withBaton(vendorServer(), {})).not.toThrow();
+  });
 });

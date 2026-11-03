@@ -13,6 +13,19 @@
   failing the call, as the retired names already were. This matches
   `baton-sdk`.
 
+- **With nothing that says where events go, `withBaton` and `createBaton`
+  warn once and install nothing, instead of throwing (SPEC §11.2 rule 10).**
+  That is: no `dsn`, no `BATON_DSN`, no `vendorId`, no `tenantId` and no
+  sink. `BATON_TENANT_ID` alone does not count, so a stale one cannot stop a
+  server. The server starts as usual, nothing is
+  wrapped or added, and `aclose()` resolves. This is Sentry's rule for a
+  missing DSN: a server a customer runs must not fail to start over an unset
+  variable. A setting whose value is not valid still throws, as before. With
+  a `vendorId` and no DSN, events still go to stderr. The library `Client` is
+  unchanged. This matches `baton-sdk` and the Go SDK. A low-level `Server`
+  now gets a clear `TypeError` naming the high-level `McpServer`, configured
+  or not, where it used to crash reading a missing property.
+
 ## 0.6.4: events are sent in batches
 
 - **`HttpSink` sends events in batches.** It posts up to 100 events in one
