@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.6.6: result capture "off" warns about resource and prompt errors
 
 - **`resultCaptureMode: "off"` now warns that the resource and prompt error
   events keep their message** (SPEC §11.4.4, §11.2 item 6). `withBaton` and
