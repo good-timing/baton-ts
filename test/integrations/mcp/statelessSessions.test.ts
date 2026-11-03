@@ -12,7 +12,7 @@ import { describe, expect, it } from "vitest";
 
 import type { Event } from "../../../src/events.js";
 import { createBaton, withBaton } from "../../../src/integrations/mcp/withBaton.js";
-import { CapturingSink } from "./_majors.js";
+import { CapturingSink, expectNumberedFromOne } from "./_majors.js";
 import { serveHttp } from "../../_http.js";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -30,6 +30,7 @@ function newServer(): McpServer {
 async function serve(
   handle: (req: any, res: any, body: unknown) => Promise<void>,
   calls: number,
+  sessionId?: string,
 ): Promise<void> {
   const http = await serveHttp(async (req, res, body) => {
     if (req.method !== "POST") return void res.writeHead(405).end();
@@ -38,13 +39,25 @@ async function serve(
   try {
     for (let i = 0; i < calls; i += 1) {
       const client = new Client({ name: "caller", version: "1.0.0" });
-      await client.connect(new StreamableHTTPClientTransport(http.url) as any);
+      await client.connect(new StreamableHTTPClientTransport(http.url, sessionId === undefined ? {} : { sessionId }) as any);
       await client.callTool({ name: "lookup", arguments: { name: `user-${String(i)}` } });
       await client.close();
     }
   } finally {
     await http.close();
   }
+}
+
+/** A new server per request, wrapped by `baton`, as a stateless HTTP server does. */
+function perRequest(baton: ReturnType<typeof createBaton>) {
+  return async (req: any, res: any, body: unknown): Promise<void> => {
+    const server = newServer();
+    baton.wrap(server);
+    const transport = new StreamableHTTPServerTransport({});
+    res.on("close", () => void transport.close());
+    await server.connect(transport as any);
+    await transport.handleRequest(req, res, body);
+  };
 }
 
 function assertOneSessionPerCall(events: Event[], calls: number): void {
@@ -85,15 +98,19 @@ describe("stateless HTTP: one session per request (SPEC §3.4 rung 5)", () => {
     const sink = new CapturingSink();
     const baton = createBaton({ ...CONFIG, sink });
 
-    await serve(async (req, res, body) => {
-      const server = newServer();
-      baton.wrap(server);
-      const transport = new StreamableHTTPServerTransport({});
-      res.on("close", () => void transport.close());
-      await server.connect(transport as any);
-      await transport.handleRequest(req, res, body);
-    }, 2);
+    await serve(perRequest(baton), 2);
 
     assertOneSessionPerCall(sink.events, 2);
+  });
+
+  it("createBaton numbers a client's mcp-session-id in order across requests (SPEC §11.2 rule 5)", async () => {
+    const sink = new CapturingSink();
+    const baton = createBaton({ ...CONFIG, sink });
+
+    await serve(perRequest(baton), 2, "client-session");
+
+    const calls = sink.events.filter((e) => e.event_type.startsWith("tool_call_"));
+    expect(calls.map((e) => [e.session_id, e.session_id_origin])).toEqual(Array(4).fill(["client-session", "observed"]));
+    expectNumberedFromOne(sink, "client-session");
   });
 });

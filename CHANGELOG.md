@@ -26,6 +26,17 @@
   now gets a clear `TypeError` naming the high-level `McpServer`, configured
   or not, where it used to crash reading a missing property.
 
+- **`createBaton` numbers a client's session in order across requests.**
+  Each `wrap` made its own sequence counter, so when a client sent the same
+  `mcp-session-id` to per-request servers, every request numbered that
+  session from 1 again, and numbers repeated within one `session_id`
+  (SPEC §11.2 rule 5). One counter and one default scrubber now serve every
+  server a Baton wraps. Off HTTP, a server with no session id of its own
+  still gets its own session, so two connections are never joined into one.
+  The counter keeps one small entry per client session id for the life of
+  the process; on stateless HTTP that id is whatever header the client
+  sends.
+
 ## 0.6.4: events are sent in batches
 
 - **`HttpSink` sends events in batches.** It posts up to 100 events in one

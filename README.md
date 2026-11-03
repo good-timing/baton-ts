@@ -66,7 +66,7 @@ Call `await baton.aclose()` in your own shutdown path, after the HTTP server sto
 
 What a stateless server costs, with either function:
 
-- **Every request is its own session.** The protocol gives a stateless server no session id, so the SDK does not invent a join between two requests. To see one person's requests together, return a principal from `resolvePrincipal` ([Who is calling](#who-is-calling)): the Console lists sessions by person. If your HTTP handler has already authenticated the request, hand the user to the hook as `authInfo`. On `@modelcontextprotocol/sdk` 1.x that is `req.auth`, shown here; on `@modelcontextprotocol/server` 2.x pass `{ authInfo }` when you hand the request to the transport:
+- **Every request is its own session**, unless the client sends an `mcp-session-id` header: then its requests share that session, and `createBaton` numbers them in order across requests. Without one, a stateless server has no session id, and the SDK does not invent a join between two requests. To see one person's requests together, return a principal from `resolvePrincipal` ([Who is calling](#who-is-calling)): the Console lists sessions by person. If your HTTP handler has already authenticated the request, hand the user to the hook as `authInfo`. On `@modelcontextprotocol/sdk` 1.x that is `req.auth`, shown here; on `@modelcontextprotocol/server` 2.x pass `{ authInfo }` when you hand the request to the transport:
 
   ```js
   const baton = createBaton({
@@ -85,7 +85,7 @@ What a stateless server costs, with either function:
   });
   ```
 
-  Signals that need several calls in one session, such as a retry loop, do not fire across requests.
+  Without that header, signals that need several calls in one session, such as a retry loop, do not fire across requests.
 - **The client is named from its `User-Agent`.** A client states its name in the `initialize` handshake, and a per-request server never sees the handshake of the call it is serving. Each event still carries the request's `User-Agent` header in `client_observed`, and your dashboard names the client from that.
 
 ## Without MCP: the library API

@@ -172,7 +172,7 @@ import {
   type ResolvePrincipalHook,
   resolveCaller,
 } from "./principalResolution.js";
-import { SessionCounter } from "./sessionCounter.js";
+import { ServerCounter, SessionCounter } from "./sessionCounter.js";
 import {
   advertiseIntentParamsRequired,
   injectGoalParams,
@@ -1907,7 +1907,7 @@ export function withBaton(server: SupportedMcpServer, supplied: BatonConfig = {}
   }
   const { resolved, unconfigured } = resolveInstallConfig(supplied);
   if (!unconfigured) warnUnusedReportSettings(resolved);
-  const handle = install(server, supplied, resolved, new SentSurfaces(), new Set(), unconfigured);
+  const handle = install(server, supplied, resolved, newBatonState(resolved), unconfigured);
   // After the checks, so an install that fails does not first say it added nothing.
   if (unconfigured) logUnconfigured("withBaton");
   return handle;
@@ -1949,11 +1949,10 @@ export function createBaton(supplied: BatonConfig = {}): Baton {
     sink,
     tenantId: resolveTenantId(resolved.tenantId, resolved.vendorId),
   };
-  const sentSurfaces = new SentSurfaces();
-  const warned = new Set<string>();
+  const state = newBatonState(resolved);
   return {
     wrap: (server) => {
-      install(server, supplied, config, sentSurfaces, warned, unconfigured);
+      install(server, supplied, config, state, unconfigured);
     },
     flush: () => boundedSinkCall(sink, "flush"),
     aclose: () => boundedSinkCall(sink, "aclose"),
@@ -1977,13 +1976,30 @@ function requireHighLevelServer(server: SupportedMcpServer): void {
   }
 }
 
+/** Shared by every server one Baton wraps, so per-request servers act as one:
+ * `createBaton.test.ts`, "numbers one client session across requests". */
+interface BatonState {
+  sentSurfaces: SentSurfaces;
+  /** Kinds of warning already written, so `createBaton` writes each once and not per request. */
+  warned: Set<string>;
+  counter: SessionCounter;
+  scrubber: (value: unknown) => unknown;
+}
+
+function newBatonState(config: BatonConfig): BatonState {
+  return {
+    sentSurfaces: new SentSurfaces(),
+    warned: new Set(),
+    counter: new SessionCounter(),
+    scrubber: config.scrubber ?? new Scrubber().scrub,
+  };
+}
+
 function install(
   server: SupportedMcpServer,
   supplied: BatonConfig,
   resolved: ResolvedBatonConfig,
-  sentSurfaces: SentSurfaces,
-  /** Kinds of warning already written, so `createBaton` writes each once and not per request. */
-  warned: Set<string>,
+  { sentSurfaces, warned, counter: sharedCounter, scrubber }: BatonState,
   /** Nothing says where events go (SPEC §11.2 rule 10): check, then add nothing. */
   unconfigured: boolean,
 ): BatonHandle {
@@ -2030,18 +2046,16 @@ function install(
   if (unconfigured) return inertHandle(new DisabledSink(), "baton-unconfigured");
   const sink = config.sink ?? new StdoutSink();
   const intentParamMode: IntentParamMode = config.intentParamMode ?? DEFAULT_INTENT_PARAM_MODE;
-  const counter = new SessionCounter();
+  // Per server: two connections are never one session (SPEC §3.4), as
+  // `createBaton.test.ts` "never joins two connections that have no session id" checks.
   const fallbackSessionId = `sdk-${uuid7()}`;
+  const counter = new ServerCounter(sharedCounter, fallbackSessionId);
   // Resolved ONCE, here, and read by every emit path below — the tool-call
   // wrapper (via `ctx`), the annotation tool (via `registerAnnotationTool`)
   // and `emitSurface`, which builds its envelope from `config` directly.
   // Two resolutions could disagree, and an annotation landing under a
   // different tenant than the call it annotates is unjoinable.
   const tenantId = resolveTenantId(config.tenantId, config.vendorId);
-  // Default ON, mirroring Python's `install_baton` (`config.scrubber or
-  // Scrubber()`). One instance per install, reused for every event, so its
-  // `counts` accumulate across the session the way Python's does.
-  const scrubber = config.scrubber ?? new Scrubber().scrub;
 
   // Vendor-true baseline, captured BEFORE any Baton mutation below —
   // MUST run before the instructions assignment, or the snapshot would

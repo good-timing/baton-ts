@@ -27,3 +27,20 @@ export class SessionCounter {
     return next;
   }
 }
+
+/** One server's counter: its own fallback session is numbered here, so the entry
+ * goes with the server; every other session through the Baton's shared counter. */
+export class ServerCounter extends SessionCounter {
+  private ownSequence = 0;
+
+  constructor(
+    private readonly shared: SessionCounter,
+    private readonly ownSessionId: string,
+  ) {
+    super();
+  }
+
+  override next(sessionId: string): number {
+    return sessionId === this.ownSessionId ? ++this.ownSequence : this.shared.next(sessionId);
+  }
+}

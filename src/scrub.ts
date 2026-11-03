@@ -124,7 +124,7 @@ function luhnValid(digits: string): boolean {
 /**
  * Stateful recursive scrubber with the default ruleset baked in.
  *
- * Construct one per `withBaton` call and reuse for every event. The
+ * Construct one per `withBaton` or `createBaton` and reuse for every event. The
  * `counts` map accumulates per-category redaction counts across all calls
  * so a downstream report can surface "N emails, M bearer tokens" at render
  * time. Nothing on the wire carries these today — they exist for parity

@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { createBaton, withBaton } from "../../../src/index.js";
 import { SENT_SURFACES_CAP } from "../../../src/integrations/mcp/surface.js";
-import { CapturingSink, CFG, MAJORS, type Major } from "./_majors.js";
+import { CapturingSink, CFG, expectNumberedFromOne, MAJORS, type Major } from "./_majors.js";
 
 const DSN = `https://baton_pk_${"a".repeat(43)}@ingest.example.com/ten_655b084e118b43f88992ee6357fcc23c/echo-server`;
 
@@ -20,13 +20,14 @@ async function serveOneRequest(
   instrument: (server: never) => void,
   toolName = "echo",
   calls = 1,
+  sessionId?: string,
 ): Promise<string[]> {
   const server = major.make();
   major.tool(server, toolName, { text: z.string() }, (args: { text: string }) => ({
     content: [{ type: "text" as const, text: args.text }],
   }));
   instrument(server as never);
-  const client = await major.connect(server);
+  const client = await major.connect(server, sessionId === undefined ? undefined : { sessionId });
   const { tools } = (await client.listTools()) as { tools: { name: string }[] };
   for (let i = 0; i < calls; i++) await client.callTool({ name: toolName, arguments: { text: "hi" } });
   await client.close();
@@ -78,16 +79,28 @@ describe.each(MAJORS)("createBaton on $label", (major) => {
     expect(count(sink, "surface_snapshot")).toBe(3);
   });
 
-  it("gives each request its own session id, shared by that request's events", async () => {
+  it("numbers one client session across requests, never from 1 again (SPEC §11.2 rule 5)", async () => {
+    const sink = new CapturingSink();
+    const baton = createBaton({ ...CFG, sink });
+    for (let i = 0; i < 2; i++) {
+      await serveOneRequest(major, (server) => baton.wrap(server), "echo", 1, "client-session");
+    }
+
+    const calls = sink.events.filter((event) => event.event_type.startsWith("tool_call_"));
+    expect(calls.map((event) => event.session_id)).toEqual(Array(4).fill("client-session"));
+    expectNumberedFromOne(sink, "client-session");
+  });
+
+  it("never joins two connections that have no session id (SPEC §3.4)", async () => {
     const sink = new CapturingSink();
     const baton = createBaton({ ...CFG, sink });
     for (let i = 0; i < 2; i++) await serveOneRequest(major, (server) => baton.wrap(server));
 
     const starts = sink.events.filter((event) => event.event_type === "tool_call_start");
     const ends = sink.events.filter((event) => event.event_type === "tool_call_end");
-    expect(starts[0]!.session_id).toBe(ends[0]!.session_id);
-    expect(starts[1]!.session_id).toBe(ends[1]!.session_id);
+    expect(ends.map((event) => event.session_id)).toEqual(starts.map((event) => event.session_id));
     expect(starts[0]!.session_id).not.toBe(starts[1]!.session_id);
+    for (const id of new Set(sink.events.map((event) => event.session_id))) expectNumberedFromOne(sink, id);
   });
 
   it("builds one HttpSink from a DSN, however many requests it wraps", async () => {

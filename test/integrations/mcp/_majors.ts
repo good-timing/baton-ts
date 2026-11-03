@@ -75,6 +75,12 @@ export function terminal<T extends Event["event_type"]>(
   return event as Extract<Event, { event_type: T }>;
 }
 
+/** A session's events are numbered 1, 2, 3, … in the order they were written. */
+export function expectNumberedFromOne(sink: CapturingSink, sessionId: string): void {
+  const numbers = sink.events.filter((event) => event.session_id === sessionId).map((event) => event.sequence_number);
+  expect(numbers).toEqual(numbers.map((_, i) => i + 1));
+}
+
 export interface Major {
   label: string;
   /** `eagerTools` declares the tools capability at construction, which on v2
