@@ -22,11 +22,11 @@
  * return and the two SDKs hand it over differently.
  */
 
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import type { ResultCaptureMode } from "../../../src/integrations/mcp/errorResult.js";
-import { withBaton } from "../../../src/integrations/mcp/withBaton.js";
-import { MAJORS, CapturingSink, terminal } from "./_majors.js";
+import { createBaton, withBaton } from "../../../src/integrations/mcp/withBaton.js";
+import { CFG, MAJORS, CapturingSink, spyWarnings, terminal } from "./_majors.js";
 
 const SECRET = "row-42-social-security-000-00-0000";
 
@@ -184,5 +184,55 @@ describe("resultCaptureMode validation", () => {
         }),
       ).toThrow(/resultCaptureMode/);
     }
+  });
+});
+
+describe("resultCaptureMode off warns that the resource and prompt error legs keep their message (SPEC §11.4.4)", () => {
+  let warnings: ReturnType<typeof spyWarnings>;
+  beforeEach(() => {
+    warnings = spyWarnings();
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  const config = (mode: ResultCaptureMode) => ({ ...CFG, sink: new CapturingSink(), resultCaptureMode: mode });
+  const server = () => MAJORS[0]!.make() as never;
+  const legWarnings = () => warnings.seen.filter((message) => message.includes("resource_read_error"));
+
+  it("withBaton warns once, naming all four legs", () => {
+    withBaton(server(), config("off"));
+
+    const found = legWarnings();
+    expect(found).toHaveLength(1);
+    for (const leg of ["resource_list_error", "resource_read_error", "prompt_list_error", "prompt_get_error"]) {
+      expect(found[0]).toContain(leg);
+    }
+  });
+
+  it("withBaton does not warn for an install that fails", () => {
+    expect(() => withBaton({} as never, config("off"))).toThrow(TypeError);
+
+    expect(legWarnings()).toEqual([]);
+  });
+
+  it("an install with no DSN, which records nothing, does not warn", () => {
+    withBaton(server(), { resultCaptureMode: "off" });
+    createBaton({ resultCaptureMode: "off" }).wrap(server());
+
+    expect(legWarnings()).toEqual([]);
+  });
+
+  it("createBaton warns once, not once per request", () => {
+    const baton = createBaton(config("off"));
+    baton.wrap(server());
+    baton.wrap(server());
+
+    expect(legWarnings()).toHaveLength(1);
+  });
+
+  it("full: no warning", () => {
+    withBaton(server(), config("full"));
+    createBaton(config("full")).wrap(server());
+
+    expect(legWarnings()).toEqual([]);
   });
 });

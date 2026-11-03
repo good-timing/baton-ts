@@ -121,6 +121,7 @@ import {
 } from "./config.js";
 import { captureDisabled, DisabledSink, logDisabled, logUnconfigured } from "../../optout.js";
 import { capCodePoints, isBlank } from "../../_text.js";
+import { warn } from "../../warn.js";
 import { emit } from "./emit.js";
 import {
   ERROR_BODY_MAX_CODE_POINTS,
@@ -140,6 +141,7 @@ import {
   returnedErrorFields,
   isErrorResult,
   TOOL_ERROR_TYPE,
+  WITHHELD,
 } from "./errorResult.js";
 import { isInputRequired, resumesPausedCall } from "./inputRequired.js";
 import { BatonHandle } from "./handle.js";
@@ -1202,10 +1204,9 @@ function installLifecycleSeam(
     } catch (err) {
       await fire(spec.schemas.error, {
         error_type: errorTypeOf(err),
-        // KEPT under every capture mode: a failed FETCH's message is the
-        // producer's own diagnostic, not anything a resource returned, so
-        // nothing here is result-derived (SPEC §11.4.4). The scrub and the cap
-        // are `scrubLifecyclePayload`'s, in that order.
+        // KEPT under every capture mode (SPEC §11.4.4), though it can quote what
+        // the handler fetched, so `"off"` warns instead: `warnAboutSettings`.
+        // The scrub and the cap are `scrubLifecyclePayload`'s, in that order.
         error_body: messageOf(err),
         duration_ms: elapsed(),
       });
@@ -1906,10 +1907,10 @@ export function withBaton(server: SupportedMcpServer, supplied: BatonConfig = {}
     return inertHandle(supplied.sink ?? new DisabledSink(), "baton-disabled");
   }
   const { resolved, unconfigured } = resolveInstallConfig(supplied);
-  if (!unconfigured) warnUnusedReportSettings(resolved);
   const handle = install(server, supplied, resolved, newBatonState(resolved), unconfigured);
-  // After the checks, so an install that fails does not first say it added nothing.
+  // After the checks, so an install that fails does not first warn about it.
   if (unconfigured) logUnconfigured("withBaton");
+  else warnAboutSettings(resolved);
   return handle;
 }
 
@@ -1942,7 +1943,7 @@ export function createBaton(supplied: BatonConfig = {}): Baton {
   if (resolved.reportMode === "on") deriveAnnotationToolName(resolved.vendorId, supplied.annotationToolName);
   // After every check that needs no server; those that do run on each `wrap`.
   if (unconfigured) logUnconfigured("createBaton");
-  else warnUnusedReportSettings(resolved);
+  else warnAboutSettings(resolved);
   const sink = unconfigured ? new DisabledSink() : (resolved.sink ?? new StdoutSink());
   const config = {
     ...resolved,
@@ -2295,11 +2296,19 @@ function reportsFor(config: ResolvedBatonConfig): { vendorDisplayName: string } 
 }
 
 /** Once per `withBaton` or `createBaton`, not per request. */
-function warnUnusedReportSettings(config: ResolvedBatonConfig): void {
+function warnAboutSettings(config: ResolvedBatonConfig): void {
   if (config.reportMode !== "on" && config.annotationToolName !== undefined) {
     process.stderr.write(
       `baton: annotationToolName=${JSON.stringify(config.annotationToolName)} has no effect ` +
         'with reportMode: "off", because no annotation tool is registered\n',
+    );
+  }
+  if (config.resultCaptureMode === WITHHELD) {
+    warn(
+      'baton: resultCaptureMode "off" does not withhold the message of a failed resource or ' +
+        "prompt request. resource_list_error, resource_read_error, prompt_list_error and " +
+        "prompt_get_error carry that message, which can quote what your handler fetched. " +
+        "Throw a message that names the resource or prompt, not its contents.",
     );
   }
 }

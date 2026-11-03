@@ -171,6 +171,8 @@ Each affected event says so, in its own field (`result_capture: "off"`), rather 
 
 **What is still captured, and it is deliberate:** the tool name, the duration, and whether the call failed — so failure detection, pairing and timing all keep working. The message of an error your handler **throws** is withheld too: thrown messages often echo the data a call was handling.
 
+**What it does not withhold:** the message of a failed resource or prompt request. `resource_list_error`, `resource_read_error`, `prompt_list_error` and `prompt_get_error` keep it under `"off"`, so `withBaton` and `createBaton` print a warning saying so when you set the mode (see [Resources and prompts](#resources-and-prompts)).
+
 **What it costs you:** anything that needs to read a response body. A call that returns `200` with a useless body can no longer be detected, and those calls sit outside the denominator of body-level analysis rather than counting as passes or failures.
 
 ## Failures your handler never saw

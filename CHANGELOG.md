@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- **`resultCaptureMode: "off"` now warns that the resource and prompt error
+  events keep their message** (SPEC §11.4.4, §11.2 item 6). `withBaton` and
+  `createBaton` print one Node warning naming `resource_list_error`,
+  `resource_read_error`, `prompt_list_error` and `prompt_get_error`. The
+  README says the same. Nothing on the wire changes. This matches
+  `baton-sdk`. `withBaton` now prints its settings notices, this one and the
+  `annotationToolName` one, only after the install succeeds.
+
 ## 0.6.5: with no DSN, your server starts
 
 - **`user_goal` is removed from a tool call before the SDK checks its
