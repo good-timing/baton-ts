@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.6.7: the session counter is bounded
 
 - **The session counter is bounded, and an observed session is numbered by
   the clock too** (SPEC §11.2 rule 5). The counter keeps at most 4096
