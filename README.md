@@ -36,7 +36,7 @@ Copy the DSN from **/account**. It packs four values: the collector to send to, 
 
 **Installing changes what your server advertises.** Each tool handler is wrapped, one sentence is added below your server's own `instructions`, and a `user_goal` parameter is added to every tool's schema and stripped again before your handler sees it. With `reportMode: "on"`, an annotation tool is also registered, named from your server's own name (slugged, `<server-name>_annotate`, so `your-vendor-mcp_annotate` here), and the added text tells the agent when to report a problem with it. [What gets injected](https://goodtiming.ai/docs.html#injected-tools).
 
-With no DSN and no sink, events go to `StdoutSink`, which writes to stderr, so a stdio server's stdout stays clean and nothing goes over the network.
+With no DSN and no sink, events go to `StdoutSink`, which writes to stderr, so a stdio server's stdout stays clean and nothing goes over the network. Without a DSN, pass `vendorId` yourself, or `withBaton` throws.
 
 **If you distribute your server, put the DSN in your source.** A stdio server runs on your user's machine, spawned by their MCP client. The official client SDKs pass it a fixed six-variable allowlist (`HOME`, `LOGNAME`, `PATH`, `SHELL`, `TERM`, `USER`), plus whatever that user wrote in their own client config. Nothing from your `.env` is in either list, so a server configured that way captures nothing while appearing to work.
 
@@ -259,8 +259,9 @@ Checking it worked: `handle.sink` is still an object, so finding one there is no
 None of it blocks the quickstart above.
 
 - Only the high-level `McpServer`. The low-level `Server` is not wrapped.
-- **Task-based tools are not wrapped, and are not left alone either.** A 1.x tool registered with an object at `.handler` rather than a function produces no `tool_call_*` events at all, and nothing reports that. It still gets the intent parameters added to its advertised schema, because injection runs before the wrap is skipped and the strip only happens inside the wrapper. So `user_goal` can arrive in your own handler's arguments. Tools on the same server registered the ordinary way are unaffected. ⚠ **The request-level seam above does not rescue this one**: it reports only on tools this package wrapped, so a task-based tool emits nothing even for a rejected argument, where an unknown tool now emits a `tool_call_error`.
+- **Task-based tools are not wrapped.** A 1.x tool registered with an object at `.handler` rather than a function produces no `tool_call_*` events at all, and nothing reports that. It still advertises `user_goal`, which Baton removes from the call before your handler sees it, wherever it can reach the server's `tools/call` handler. Tools on the same server registered the ordinary way are unaffected. ⚠ **The request-level seam above does not rescue this one**: it reports only on tools this package wrapped, so a task-based tool emits nothing even for a rejected argument, where an unknown tool now emits a `tool_call_error`.
 - Intent parameters need a Zod schema. On the 2.x SDK a tool registered with a non-Zod standard schema is still wrapped and still emits `tool_call_*`; it just advertises no intent parameters.
+- `resources/templates/list` sends no events.
 - v2's `createMcpHandler` is tested only for calls that pause for input. A server built per request by your own code is supported: see [A server per request](#a-server-per-request).
 
 ## Wire compatibility

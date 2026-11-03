@@ -323,16 +323,20 @@ interface CallSlot {
    * far enough to decide on one (its own prelude threw — nothing to flush,
    * and NOT a request-side failure). */
   flushTerminal: ((outcome: OuterOutcome) => Promise<void>) | null;
-  /** A stale client's retired names, taken off the request by the seam before
-   * the tool's schema validates it: a strict schema would refuse the call. */
-  retired: RetiredValues;
+  /** Baton's intent params, taken off the request by the seam before the
+   * host's input check or any vendor code sees them (SPEC §5.1.2). */
+  stripped: StrippedParams;
+  /** The tool they were taken from: only its wrapper may take them, so a tool
+   * Baton did not wrap cannot pass them to one it runs in-process. */
+  strippedFor: string | null;
   /** Set by the probe on `validateToolInput`; stays `"unseen"` when the call
    * was refused before the SDK validated it. */
   validation: InputValidation;
 }
 
-type MutableRetiredValues = Partial<Record<(typeof RETIRED_PARAM_NAMES)[number], string | null>>;
-type RetiredValues = Readonly<MutableRetiredValues>;
+const INTENT_PARAM_NAMES = [USER_GOAL_PARAM_NAME, ...RETIRED_PARAM_NAMES] as const;
+type MutableStrippedParams = Partial<Record<(typeof INTENT_PARAM_NAMES)[number], string | null>>;
+type StrippedParams = Readonly<MutableStrippedParams>;
 
 /** Module-scoped rather than per-install, which is safe for one reason worth
  * naming: a slot is only ever read inside the dynamic extent of the dispatch
@@ -477,7 +481,7 @@ async function openCall(
   params: Record<string, unknown>,
   /** What the seam took off the request. Passed in, not read from
    * `callSlots`: the request-side path runs outside its own slot. */
-  retired: RetiredValues,
+  stripped: StrippedParams,
   /** Is there a registry entry for this tool? `false` only from the
    * `tools/call` seam's `unknown_tool` path, and it suppresses one warning
    * whose diagnosis would be wrong there — see `extractGoalParam`. */
@@ -487,19 +491,18 @@ async function openCall(
   await maybeEmitSurfaceSnapshot(ctx);
   const { scrubbedMeta, ...session } = await resolveEnvelopeParts(ctx, extra);
 
-  // Strip the injected goal params IN PLACE, before snapshotting params —
-  // `params` is the SAME object forwarded to the vendor handler, so the
-  // strip keeps user_goal off the tool AND out of the captured `params`
-  // (which must equal the vendor-visible arguments).
+  // The seam has usually stripped them already. Strip IN PLACE for a server it
+  // could not reach: `params` is the SAME object forwarded to the vendor
+  // handler, and the captured `params` must equal the vendor-visible arguments.
   const dispositions = ctx.paramRegistry.get(toolName);
-  const rawIntent = extractGoalParam(params, USER_GOAL_PARAM_NAME, toolName, dispositions, registered);
-  // Guarded because `params` is already stripped in place above.
+  const rawIntent =
+    stripped[USER_GOAL_PARAM_NAME] ??
+    extractGoalParam(params, USER_GOAL_PARAM_NAME, toolName, dispositions, registered);
   const scrubbedIntent = scrubOrNull(ctx.scrubber, rawIntent, USER_GOAL_PARAM_NAME);
-  // `params` still holds them only on a server the seam could not reach.
   const [scrubbedExpected = null, scrubbedWorkflow = null] = RETIRED_PARAM_NAMES.map((name) =>
     dispositions === undefined || dispositions[name] === "native"
       ? null
-      : scrubOrNull(ctx.scrubber, retired[name] ?? popText(params, name), name),
+      : scrubOrNull(ctx.scrubber, stripped[name] ?? popText(params, name), name),
   );
 
   // Resolved AFTER the intent-param strip, so the hook's `arguments` are
@@ -573,16 +576,10 @@ function batonWrap(nameRef: { current: string }, original: AnyHandler, ctx: Wrap
       string,
       unknown
     >;
-    // ⚠ `params` is the SAME object forwarded to the vendor's handler, and
-    // `openCall` strips Baton's injected intent params out of it IN PLACE —
-    // which is what keeps `user_goal` off the tool AND out
-    // of the captured `params`, since those must equal the vendor-visible
-    // arguments. The outer seam's request-side path passes a COPY instead,
-    // for the reason stated there.
     // Handed over once: a tool this handler calls in-process shares the slot.
-    const retired = slot?.retired ?? {};
-    if (slot) slot.retired = {};
-    const { common, session } = await openCall(ctx, toolName, extra, params, retired);
+    const stripped = slot?.strippedFor === toolName ? slot.stripped : {};
+    if (slot) slot.strippedFor = null;
+    const { common, session } = await openCall(ctx, toolName, extra, params, stripped);
 
     /** Emit this call's terminal event, or PARK it for the outer `tools/call`
      * seam when one is running (see `CallSlot`). `replacement` is passed by
@@ -856,25 +853,25 @@ function popText(args: Record<string, unknown>, paramName: string): string | nul
   return typeof raw === "string" && !isBlank(raw) ? raw : null;
 }
 
-/** Take a stale client's retired names off a `tools/call` request, before
- * validation, which a strict schema would fail. Only from a tool Baton injected
- * into: no other tool ever advertised them, so a value there is the vendor's. */
-function stripRetiredParams(
+/** Take Baton's intent params off a `tools/call` request, before the host's
+ * input check and before a tool Baton did not wrap (a 1.x task tool) sees them.
+ * Only from a tool Baton injected into: on any other, a value is the vendor's. */
+function stripIntentParams(
   params: { name?: unknown; arguments?: unknown } | undefined,
   ctx: WrapContext,
-): RetiredValues {
+): StrippedParams {
   const toolName = params?.name;
   const args = params?.arguments;
   if (typeof toolName !== "string") return {};
   if (toolName === ctx.annotationToolName) return {};
   if (typeof args !== "object" || args === null || Array.isArray(args)) return {};
   const dispositions = ctx.paramRegistry.get(toolName);
-  const retired: MutableRetiredValues = {};
-  for (const name of RETIRED_PARAM_NAMES) {
+  const stripped: MutableStrippedParams = {};
+  for (const name of INTENT_PARAM_NAMES) {
     if (dispositions === undefined || dispositions[name] === "native" || !(name in args)) continue;
-    retired[name] = popText(args as Record<string, unknown>, name);
+    stripped[name] = popText(args as Record<string, unknown>, name);
   }
-  return retired;
+  return stripped;
 }
 
 /** Lazy, fail-open surface_snapshot capture — the first tool call after any
@@ -922,7 +919,7 @@ async function maybeEmitSurfaceSnapshot(ctx: WrapContext): Promise<void> {
 
 function declaredIntentParams(vendorSchema: unknown): IntentParamDispositions {
   const declared: IntentParamDispositions = {};
-  for (const name of [USER_GOAL_PARAM_NAME, ...RETIRED_PARAM_NAMES]) {
+  for (const name of INTENT_PARAM_NAMES) {
     if (declaresParam(vendorSchema, name)) declared[name] = "native";
   }
   return declared;
@@ -1517,10 +1514,12 @@ function installToolsCallSeam(
     (handler) =>
       async (...args) => {
         const request = args[0] as { params?: { name?: unknown; arguments?: unknown } } | undefined;
+        const name = request?.params?.name;
         const slot: CallSlot = {
           innerFired: false,
           flushTerminal: null,
-          retired: stripRetiredParams(request?.params, ctx),
+          stripped: stripIntentParams(request?.params, ctx),
+          strippedFor: typeof name === "string" ? name : null,
           validation: "unseen",
         };
         // Reassigned by both the try and the catch before `finally` reads it;
@@ -1681,21 +1680,19 @@ async function emitRequestSideFailure(
   if (entry != null && dispatchTarget(entry)?.[BATON_WRAPPED] !== true) return;
 
   // ⚠ A COPY, unlike the inner wrapper's in-place strip. `openCall` removes
-  // Baton's injected intent params from whatever it is given, and here the
-  // object is the vendor's live `request.params.arguments`, already consumed
-  // by whatever rejected the call. The seam edits the request only where it
-  // must, before validation (`stripRetiredParams`). The strip itself is required: these params ARE
-  // still in the arguments on this path (validation runs above the executor,
-  // and `captureAndInject` spliced the names into the schema), so without it
-  // Baton's own params would land in `tool_call_start.params`, which SPEC
-  // says equals the vendor-visible arguments.
+  // Baton's intent params from whatever it is given, and here the object is
+  // the vendor's live `request.params.arguments`, already consumed by
+  // whatever rejected the call. The seam edits the request only before
+  // validation (`stripIntentParams`). An unknown tool still carries them, and
+  // without this strip they would land in `tool_call_start.params`, which
+  // SPEC says equals the vendor-visible arguments.
   const params = { ...((request?.params?.arguments as Record<string, unknown>) ?? {}) };
   const { common, session } = await openCall(
     ctx,
     toolName,
     args[1] as Extra,
     params,
-    slot.retired,
+    slot.stripped,
     entry != null,
   );
 

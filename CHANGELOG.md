@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+- **`user_goal` is removed from a tool call before the SDK checks its
+  arguments, as SPEC §5.1.2 says, and so never reaches a 1.x task-based
+  tool.** Such a tool (registered with an object at `.handler`) is not
+  wrapped, but it still advertised `user_goal`, and the value used to reach
+  its handler, because only the wrapper removed it. The `tools/call` handler
+  now removes it, as it already did `expected_result` and `overall_task`.
+  The wrapper still removes it on a server whose `tools/call` handler Baton
+  cannot reach. A `user_goal` that is not a string is now dropped rather than
+  failing the call, as the retired names already were. This matches
+  `baton-sdk`.
+
 ## 0.6.4: events are sent in batches
 
 - **`HttpSink` sends events in batches.** It posts up to 100 events in one

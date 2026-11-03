@@ -206,10 +206,10 @@ describe.each(MAJORS.map((m) => [m.label, m] as const))("on %s", (_label, major)
     });
     expect(res.isError).toBeFalsy();
     expect(vendorSaw).toEqual([{ text: "hi" }]);
-    expect(startEvent().payload).toMatchObject({ call_expected: "e", call_workflow: "2: t" });
+    expect(startEvent().payload).toMatchObject({ call_intent: "1: g", call_expected: "e", call_workflow: "2: t" });
   });
 
-  it("gives a tool called in-process none of the outer call's retired names", async () => {
+  it("gives a tool called in-process none of the outer call's intent params", async () => {
     const server = major.make();
     major.tool(server, "b", { name: z.string() }, () => ({
       content: [{ type: "text" as const, text: "b" }],
@@ -223,16 +223,16 @@ describe.each(MAJORS.map((m) => [m.label, m] as const))("on %s", (_label, major)
     const client = await major.connect(server);
     await client.callTool({
       name: "a",
-      arguments: { name: "x", expected_result: "E", overall_task: "1: T" },
+      arguments: { name: "x", user_goal: "1: G", expected_result: "E", overall_task: "1: T" },
     });
 
     const starts = sink.events
       .filter((e) => e.event_type === "tool_call_start")
-      .map((e) => e.payload as { tool_name: string; call_expected: unknown; call_workflow: unknown })
-      .map((p) => [p.tool_name, p.call_expected, p.call_workflow]);
+      .map((e) => e.payload as Record<string, unknown>)
+      .map((p) => [p.tool_name, p.call_intent, p.call_expected, p.call_workflow]);
     expect(starts).toEqual([
-      ["a", "E", "1: T"],
-      ["b", null, null],
+      ["a", "1: G", "E", "1: T"],
+      ["b", null, null, null],
     ]);
   });
 
