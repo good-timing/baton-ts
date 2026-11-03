@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.6.4: events are sent in batches
 
 - **`HttpSink` sends events in batches.** It posts up to 100 events in one
   request to `POST {url}/v0/events/batch` (SPEC §2.5), instead of one event
