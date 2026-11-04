@@ -1,6 +1,12 @@
 # Changelog
 
-## Unreleased: the report tool on your own API
+## 1.0.0: stable from 1.0
+
+**Stable from 1.0.** This package follows semver: a breaking change to the
+public API (README) is a new major. The wire format only grows (SPEC §13).
+Experimental items may change in a minor.
+
+### The report tool on your own API
 
 - **`reportTool({ vendorDisplayName, name })`** returns the annotation tool
   `withBaton` registers on a server of that name: its `name`, `description`,
@@ -10,7 +16,7 @@
   offering the report tool through its own API (SPEC §5.6). Python's
   `report_tool()` is its twin.
 
-## Unreleased: the public API for 1.0
+### The public API for 1.0
 
 **Breaking.** These exports are removed. Nothing on the wire changes.
 
@@ -46,7 +52,7 @@
   They are internal, and `baton-sdk` does not export them. A principal's `form`
   is still typed `PrincipalForm` (`"raw"` or `"hashed"`).
 
-## Unreleased: sinks are written off the vendor's call
+### Sinks are written off the vendor's call
 
 Before, `StdoutSink`, `FileSink`, `MultiSink` and a vendor's own sink were
 awaited inside each tool call, so a slow or stuck sink slowed the vendor.
@@ -96,9 +102,7 @@ the wire changes, and the `Sink` interface is the same.
   pipe. If the pipe is full, `StdoutSink` still pauses the event loop while
   the queue writes to it, though no longer inside a tool call.
 
-## Unreleased: Console settings and labels
-
-### Added
+### Console settings and labels
 
 These are **experimental** and may change in a minor release. They match
 `baton-sdk` 0.9.6.
