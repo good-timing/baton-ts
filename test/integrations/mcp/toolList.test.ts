@@ -3,7 +3,7 @@
 
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
-import { MAJORS, CapturingSink, install } from "./_majors.js";
+import { MAJORS, CapturingSink, install, spyWarnings } from "./_majors.js";
 
 const INTENT_PARAMS = ["user_goal"];
 
@@ -195,5 +195,22 @@ describe.each(MAJORS)("tool list events — $label", (major) => {
     expect(Object.keys(error).sort()).toEqual(["duration_ms", "error_body", "error_type"]);
     expect(error["error_type"]).toBe("Error");
     expect(error["error_body"]).toBe("list is down");
+  });
+
+  it("a list handler's message is kept under resultCaptureMode off", async () => {
+    const sink = new CapturingSink();
+    const server = withLookup() as { server: { _requestHandlers: Map<string, unknown> } };
+    server.server._requestHandlers.set("tools/list", () => {
+      throw new Error("list is down");
+    });
+    const warnings = spyWarnings();
+    install(server, sink, { resultCaptureMode: "off" });
+    warnings.restore();
+    const client = await major.connect(server);
+
+    await expect(client.listTools()).rejects.toThrow(/list is down/);
+
+    expect(warnings.seen.some((message) => message.includes("tool_list_error"))).toBe(true);
+    expect((sink.events[1]!.payload as Record<string, unknown>)["error_body"]).toBe("list is down");
   });
 });

@@ -24,6 +24,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
+import { EventTypeSchema } from "../../../src/events.js";
 import type { ResultCaptureMode } from "../../../src/integrations/mcp/errorResult.js";
 import { createBaton, withBaton } from "../../../src/integrations/mcp/withBaton.js";
 import { CFG, MAJORS, CapturingSink, spyWarnings, terminal } from "./_majors.js";
@@ -187,7 +188,7 @@ describe("resultCaptureMode validation", () => {
   });
 });
 
-describe("resultCaptureMode off warns that the resource and prompt error legs keep their message (SPEC §11.4.4)", () => {
+describe("resultCaptureMode off warns that the tool list, resource and prompt error legs keep their message (SPEC §11.4.4)", () => {
   let warnings: ReturnType<typeof spyWarnings>;
   beforeEach(() => {
     warnings = spyWarnings();
@@ -198,12 +199,14 @@ describe("resultCaptureMode off warns that the resource and prompt error legs ke
   const server = () => MAJORS[0]!.make() as never;
   const legWarnings = () => warnings.seen.filter((message) => message.includes("resource_read_error"));
 
-  it("withBaton warns once, naming all four legs", () => {
+  it("withBaton warns once, naming all five legs", () => {
     withBaton(server(), config("off"));
 
     const found = legWarnings();
     expect(found).toHaveLength(1);
-    for (const leg of ["resource_list_error", "resource_read_error", "prompt_list_error", "prompt_get_error"]) {
+    const legs = EventTypeSchema.options.filter((t) => t.endsWith("_error") && t !== "tool_call_error");
+    expect(legs).toHaveLength(5);
+    for (const leg of legs) {
       expect(found[0]).toContain(leg);
     }
   });

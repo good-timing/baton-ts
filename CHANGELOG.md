@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- **The `resultCaptureMode: "off"` warning names `tool_list_error`** (SPEC
+  §11.4.4, §11.4.5). Your own `tools/list` handler can throw, and its message
+  is sent as it is, the same as for a failed resource or prompt request.
+  Nothing on the wire changes. This matches `baton-sdk` and the Go SDK.
+
 ## 0.6.7: the session counter is bounded
 
 - **The session counter is bounded, and an observed session is numbered by

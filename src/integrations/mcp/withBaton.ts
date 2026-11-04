@@ -2305,10 +2305,10 @@ function warnAboutSettings(config: ResolvedBatonConfig): void {
   }
   if (config.resultCaptureMode === WITHHELD) {
     warn(
-      'baton: resultCaptureMode "off" does not withhold the message of a failed resource or ' +
-        "prompt request. resource_list_error, resource_read_error, prompt_list_error and " +
-        "prompt_get_error carry that message, which can quote what your handler fetched. " +
-        "Throw a message that names the resource or prompt, not its contents.",
+      'baton: resultCaptureMode "off" does not withhold the message of a failed tool list, ' +
+        "resource or prompt request. tool_list_error, resource_list_error, resource_read_error, " +
+        "prompt_list_error and prompt_get_error carry that message, which can include text your " +
+        "handler or middleware threw. Throw a message that does not quote what your code fetched.",
     );
   }
 }
