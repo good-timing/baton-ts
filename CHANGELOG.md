@@ -8,7 +8,7 @@
   `annotateArgs(args)` turns the agent's arguments into `annotate()`
   options, or returns `null` when there is no `what_happened`. For a vendor
   offering the report tool through its own API (SPEC §5.6). Python's
-  `report_tool()` is the same tool.
+  `report_tool()` is its twin.
 
 ## Unreleased: the public API for 1.0
 

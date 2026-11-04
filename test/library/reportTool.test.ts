@@ -123,6 +123,12 @@ describe("reportTool", () => {
     },
   );
 
+  it("says which names to shorten when an explicit name does not fit", () => {
+    expect(() => reportTool({ vendorDisplayName: "A".repeat(2000), name: "acme_report" })).toThrow(
+      /Shorten one of them/,
+    );
+  });
+
   it("gives each tool its own schema", () => {
     (tool().inputSchema.properties as Record<string, unknown>).user_goal = undefined;
 

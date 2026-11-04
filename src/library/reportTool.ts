@@ -1,6 +1,11 @@
 /** The annotation tool as data, for a vendor offering it through its own API (SPEC §5.6). */
 
-import { isReport, TOOL_NAME_PARAM_NAME } from "../integrations/mcp/annotation.js";
+import { isRecord } from "../_object.js";
+import {
+  ANNOTATION_INPUT_SHAPE,
+  isReport,
+  TOOL_NAME_PARAM_NAME,
+} from "../integrations/mcp/annotation.js";
 import {
   toolNameForDisplayName,
   validateAnnotationToolName,
@@ -9,8 +14,10 @@ import {
   buildAnnotationToolDescription,
   buildRefusalText,
   buildServerInstructions,
+  fitsInstructionsCap,
   USER_GOAL_PARAM_NAME,
 } from "../integrations/mcp/llmText.js";
+import { toolInputJsonSchema } from "../integrations/mcp/schemaCompat.js";
 import type { AnnotateOptions } from "./client.js";
 
 /** The tool an MCP adapter registers under `reportMode: "on"`. */
@@ -28,27 +35,19 @@ export interface ReportTool {
 }
 
 function inputSchema(): Record<string, unknown> {
-  return {
-    type: "object",
-    properties: {
-      [USER_GOAL_PARAM_NAME]: { type: "string" },
-      what_happened: { type: "string" },
-      [TOOL_NAME_PARAM_NAME]: { anyOf: [{ type: "string" }, { type: "null" }] },
-      suggested_improvement: { type: "string" },
-      context: { type: "object", propertyNames: { type: "string" }, additionalProperties: {} },
-    },
-    required: [USER_GOAL_PARAM_NAME, TOOL_NAME_PARAM_NAME],
-  };
+  const schema = toolInputJsonSchema(ANNOTATION_INPUT_SHAPE);
+  delete schema.$schema;
+  return { ...schema, required: [...(schema.required as string[]), TOOL_NAME_PARAM_NAME] };
 }
 
 const nonEmptyText = (value: unknown): value is string => typeof value === "string" && value !== "";
 
 const nonEmptyObject = (value: unknown): value is Record<string, unknown> =>
-  typeof value === "object" && value !== null && !Array.isArray(value) && Object.keys(value).length > 0;
+  isRecord(value) && Object.keys(value).length > 0;
 
 function annotateArgs(args: Readonly<Record<string, unknown>>): AnnotateOptions | null {
   const whatHappened = args.what_happened;
-  if (typeof whatHappened !== "string" || !isReport(whatHappened)) return null;
+  if (!isReport(whatHappened)) return null;
   const options: AnnotateOptions = { whatHappened };
   // Sent as written, "" included: SPEC §5.1.1 gives tool_name three states.
   const toolName = args[TOOL_NAME_PARAM_NAME];
@@ -66,14 +65,20 @@ function annotateArgs(args: Readonly<Record<string, unknown>>): AnnotateOptions 
  * `vendorDisplayName`. `name` overrides the name made from it. */
 export function reportTool(options: { vendorDisplayName: string; name?: string }): ReportTool {
   const { vendorDisplayName } = options;
-  const name = options.name ?? toolNameForDisplayName(vendorDisplayName);
-  if (name === undefined) {
+  const derived = options.name ?? toolNameForDisplayName(vendorDisplayName);
+  if (derived === undefined) {
     throw new Error(
       `vendorDisplayName ${JSON.stringify(vendorDisplayName)} gives no usable tool name, ` +
         "or one too long for the instructions. Pass name.",
     );
   }
-  validateAnnotationToolName(name);
+  const name = validateAnnotationToolName(derived);
+  if (!fitsInstructionsCap({ vendorDisplayName, annotationToolName: name })) {
+    throw new Error(
+      `vendorDisplayName and name ${JSON.stringify(name)} are too long together for ` +
+        "the instructions. Shorten one of them.",
+    );
+  }
   return {
     name,
     description: buildAnnotationToolDescription({ vendorDisplayName }),

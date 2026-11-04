@@ -57,12 +57,23 @@ export interface RegisterAnnotationToolOptions {
   resolvePrincipal?: ResolvePrincipalHook | undefined;
 }
 
-/** Advertised as required on the annotate tool by the `tools/list` seam in
- * withBaton.ts, and never enforced: the zod schema keeps it optional. */
+/** Advertised as required on the annotate tool (by the `tools/list` seam in
+ * withBaton.ts, and in `reportTool`'s schema) and never enforced: the zod
+ * schema keeps it optional. */
 export const TOOL_NAME_PARAM_NAME = "tool_name";
 
+export const ANNOTATION_INPUT_SHAPE = {
+  user_goal: z.string(),
+  what_happened: z.string().optional(),
+  // Nullable so a report whose agent sends an explicit null is taken,
+  // not rejected by validation.
+  tool_name: z.string().nullable().optional(),
+  suggested_improvement: z.string().optional(),
+  context: z.record(z.string(), z.unknown()).optional(),
+};
+
 /** SPEC §11.4: an annotation is a report when its account is filled. */
-export function isReport(whatHappened: string | null | undefined): whatHappened is string {
+export function isReport(whatHappened: unknown): whatHappened is string {
   return typeof whatHappened === "string" && !isBlank(whatHappened);
 }
 
@@ -75,20 +86,13 @@ export function registerAnnotationTool(
   const description = buildAnnotationToolDescription({
     vendorDisplayName: options.vendorDisplayName,
   });
+  const refusal = buildRefusalText({ annotationToolName: name });
 
   server.registerTool(
     name,
     {
       description,
-      inputSchema: {
-        user_goal: z.string(),
-        what_happened: z.string().optional(),
-        // Nullable so a report whose agent sends an explicit null is taken,
-        // not rejected by validation.
-        tool_name: z.string().nullable().optional(),
-        suggested_improvement: z.string().optional(),
-        context: z.record(z.string(), z.unknown()).optional(),
-      },
+      inputSchema: ANNOTATION_INPUT_SHAPE,
     },
     async (args: AnnotationArgs, extra: Extra) => {
       // Refused in the handler, not by requiring `what_happened` in the
@@ -102,7 +106,7 @@ export function registerAnnotationTool(
               type: "text" as const,
               text: JSON.stringify({
                 ok: false,
-                error: buildRefusalText({ annotationToolName: name }),
+                error: refusal,
               }),
             },
           ],

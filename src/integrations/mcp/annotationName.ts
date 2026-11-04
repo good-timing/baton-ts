@@ -81,9 +81,13 @@ function pythonStrip(value: string): string {
   return stripEdges(value, PYTHON_SPACE);
 }
 
+function isPlaceholderLiteral(name: string): boolean {
+  return PLACEHOLDER_LITERALS.has(pythonStrip(name).toLowerCase());
+}
+
 function isLibraryPlaceholder(serverName: string, className: string): boolean {
+  if (isPlaceholderLiteral(serverName)) return true;
   const stripped = pythonStrip(serverName);
-  if (PLACEHOLDER_LITERALS.has(stripped.toLowerCase())) return true;
   const stem = stripped.replace(RANDOM_SUFFIX, "");
   return stem !== stripped && stem === className;
 }
@@ -204,21 +208,21 @@ export function annotationToolNameFromServer(
 /** `{slug}_annotate` from a display name, as an adapter derives it from a
  * server of that name, or `undefined` where an adapter would fall back. */
 export function toolNameForDisplayName(vendorDisplayName: string): string | undefined {
-  if (PLACEHOLDER_LITERALS.has(pythonStrip(vendorDisplayName).toLowerCase())) return undefined;
+  if (isPlaceholderLiteral(vendorDisplayName)) return undefined;
   const candidate = toolNameCandidate(vendorDisplayName);
-  if (candidate === undefined) return undefined;
-  return fitsInstructionsCap({ vendorDisplayName, annotationToolName: candidate })
+  return candidate !== undefined &&
+    fitsInstructionsCap({ vendorDisplayName, annotationToolName: candidate })
     ? candidate
     : undefined;
 }
 
-/** Compose and VALIDATE the final tool name: the last step of the ladder, and
- * its one throw site. Reached with a vendor's explicit name or an
+/** The last step of the ladder. Reached with a vendor's explicit name or an
  * already-validated derived one, never with a guess. */
 export function deriveAnnotationToolName(vendorId: string, override?: string): string {
   return validateAnnotationToolName(override || `${vendorId}${SUFFIX}`);
 }
 
+/** The ladder's one throw site. */
 export function validateAnnotationToolName(name: string): string {
   if (!TOOL_NAME_PATTERN.test(name)) {
     throw new Error(
