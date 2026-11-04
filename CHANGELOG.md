@@ -69,7 +69,8 @@ the wire changes, and the `Sink` interface is the same.
 - `BatonHandle.sink` is still the sink you passed. Flush and close through
   `handle.flush()` and `handle.aclose()`: the sink's own `flush()` and
   `aclose()` skip the events still queued.
-- The queue writes one event at a time, as in the Go SDK. A slow sink caps
+- The queue writes one event at a time for each install or client the sink
+  is given to, as in the Go SDK. A slow sink caps
   how fast events are written. A write that never ends holds every event
   behind it. Neither slows the vendor; the queue's bound drops the oldest
   events instead.
@@ -78,7 +79,7 @@ the wire changes, and the `Sink` interface is the same.
   twice; only the copy is in the call's time.
 - **Known gap:** A sink given to several installs or clients gets one queue
   for each. Closing one closes the sink, and the others' queued events are
-  then dropped as after_close.
+  then dropped and counted.
 - **Known gap:** an `HttpSink` inside a `MultiSink` is behind two queues,
   each with its own bound of 1000.
 - **Known gap:** on Linux, Node writes to stderr synchronously when it is a

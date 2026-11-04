@@ -31,9 +31,10 @@ const REFUSAL_BODY_MAX_LEN = 500;
 const REFUSAL_LOG_MS = 60_000;
 
 export interface Sink {
-  /** Hand one event to the sink. Baton calls a sink you write from a queue
-   * for each install or client, one event at a time, never from the vendor's
-   * call: a slow write delays later events, not the vendor. */
+  /** Hand one event to the sink. Baton calls a sink you write from a queue,
+   * one event at a time for each install or client the sink is given to,
+   * never from the vendor's call: a slow write delays later events, not the
+   * vendor. */
   write(event: Event): Promise<void>;
   /** Wait for any buffered events to reach their destination (or be
    * dropped per the sink's policy). No-op for synchronous sinks. */
@@ -57,7 +58,8 @@ export function isSinkClosed(err: unknown): boolean {
 const warnedClosed = new WeakSet<Sink>();
 
 /** SPEC §11.2 rules 7 and 8: dropped, counted under `after_close`, and
- * warned about once per sink. */
+ * warned about once for each sink passed. Baton passes its queue, or an
+ * `HttpSink` that has none, so that is once per queue. */
 export function droppedAfterClose(sink: Sink): void {
   PROCESS_DROPS.add("after_close");
   if (warnedClosed.has(sink)) return;

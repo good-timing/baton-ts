@@ -424,6 +424,14 @@ describe("offTheCall", () => {
     expect(second).not.toBe(first);
   });
 
+  it("keeps a second queue on the same sink open when the first closes", async () => {
+    const sink = new LoggingSink();
+    const first = offTheCall(sink);
+    const second = offTheCall(sink);
+    await first.aclose();
+    await expect(second.write(makeEvent())).resolves.toBeUndefined();
+  });
+
   it("leaves an HttpSink alone, which already queues", () => {
     const http = new HttpSink("https://collector.example", { apiKey: "k" });
     expect(offTheCall(http)).toBe(http);
