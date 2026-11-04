@@ -415,15 +415,13 @@ describe("at process exit", () => {
 });
 
 describe("offTheCall", () => {
-  it("gives a sink one queue, also while it closes, and a new one after", async () => {
-    const sink = new LoggingSink(20);
+  it("gives one sink a new queue each time, one for each install or client", () => {
+    const sink = new LoggingSink();
     const first = offTheCall(sink);
-    expect(offTheCall(sink)).toBe(first);
-    await first.write(makeEvent());
-    const closing = first.aclose();
-    expect(offTheCall(sink)).toBe(first);
-    await closing;
-    expect(offTheCall(sink)).not.toBe(first);
+    const second = offTheCall(sink);
+    expect(first).toBeInstanceOf(QueuedSink);
+    expect(second).toBeInstanceOf(QueuedSink);
+    expect(second).not.toBe(first);
   });
 
   it("leaves an HttpSink alone, which already queues", () => {
@@ -437,7 +435,7 @@ describe("offTheCall", () => {
     expect(offTheCall(http)).toBe(http);
   });
 
-  it("queues a MultiSink, an HttpSink subclass with its own write, and the vendor's own sink, once", () => {
+  it("queues a MultiSink, an HttpSink subclass with its own write, and the vendor's own sink, but not a queue", () => {
     class OwnWrite extends HttpSink {
       override write(event: Event): Promise<void> {
         return super.write(event);

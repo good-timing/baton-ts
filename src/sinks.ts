@@ -31,9 +31,9 @@ const REFUSAL_BODY_MAX_LEN = 500;
 const REFUSAL_LOG_MS = 60_000;
 
 export interface Sink {
-  /** Hand one event to the sink. Baton calls a sink you write from its own
-   * queue, one event at a time, never from the vendor's call: a slow write
-   * delays later events, not the vendor. */
+  /** Hand one event to the sink. Baton calls a sink you write from a queue
+   * for each install or client, one event at a time, never from the vendor's
+   * call: a slow write delays later events, not the vendor. */
   write(event: Event): Promise<void>;
   /** Wait for any buffered events to reach their destination (or be
    * dropped per the sink's policy). No-op for synchronous sinks. */
@@ -434,8 +434,6 @@ export class QueuedSink implements Sink {
       warn(`baton: closed with ${unwritten} event(s) not yet written to the sink.`);
     }
     await callWithin(this.inner, "aclose", Math.max(0, ms - (performance.now() - start)));
-    // Only now: an install during close shares this queue rather than write beside it.
-    queues.delete(this.inner);
   }
 
   private async drain(): Promise<void> {
@@ -492,19 +490,12 @@ export class QueuedSink implements Sink {
   }
 }
 
-/** One per sink, so a sink given to several installs is still written one event at a time. */
-const queues = new WeakMap<Sink, QueuedSink>();
-
-/** HttpSink already queues; any other sink is put behind a `QueuedSink`. */
+/** HttpSink already queues; any other sink gets a new `QueuedSink`, one for
+ * each install or client. */
 export function offTheCall(sink: Sink): Sink {
   // An HttpSink subclass that keeps HttpSink's write still only queues.
   if (sink instanceof QueuedSink || (sink instanceof HttpSink && sink.write === HttpSink.prototype.write)) return sink;
-  let queue = queues.get(sink);
-  if (queue === undefined) {
-    queue = new QueuedSink(sink);
-    queues.set(sink, queue);
-  }
-  return queue;
+  return new QueuedSink(sink);
 }
 
 // =============================================================================

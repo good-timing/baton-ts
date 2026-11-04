@@ -40,7 +40,7 @@
 
 Before, `StdoutSink`, `FileSink`, `MultiSink` and a vendor's own sink were
 awaited inside each tool call, so a slow or stuck sink slowed the vendor.
-Now every sink but `HttpSink` (which already queued) sits behind one queue,
+Now every sink but `HttpSink` (which already queued) sits behind a queue,
 as in the Go SDK. The tool call only adds the event to the queue. Nothing on
 the wire changes, and the `Sink` interface is the same.
 
@@ -64,9 +64,8 @@ the wire changes, and the `Sink` interface is the same.
   and a `FileSink` get every event still queued, written at once. For any
   other sink or stream those events may be lost, and Baton says how many on
   stderr. Call `aclose()` first.
-- One sink given to several installs gets one queue, so it is still written
-  one event at a time. An `HttpSink`, or a subclass that keeps its `write`,
-  gets no queue: it already has one.
+- Each install or client has its own queue. An `HttpSink`, or a subclass
+  that keeps its `write`, gets no queue: it already has one.
 - `BatonHandle.sink` is still the sink you passed. Flush and close through
   `handle.flush()` and `handle.aclose()`: the sink's own `flush()` and
   `aclose()` skip the events still queued.
@@ -77,6 +76,9 @@ the wire changes, and the `Sink` interface is the same.
 - **Known gap:** the copy is made inside the tool call, and a JSON sink
   encodes the event again when it writes, so a large result is encoded
   twice; only the copy is in the call's time.
+- **Known gap:** A sink given to several installs or clients gets one queue
+  for each. Closing one closes the sink, and the others' queued events are
+  then dropped as after_close.
 - **Known gap:** an `HttpSink` inside a `MultiSink` is behind two queues,
   each with its own bound of 1000.
 - **Known gap:** on Linux, Node writes to stderr synchronously when it is a
