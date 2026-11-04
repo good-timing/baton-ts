@@ -314,14 +314,13 @@ None of it blocks the quickstart above.
 - **Task-based tools are not wrapped.** A 1.x tool registered with an object at `.handler` rather than a function produces no `tool_call_*` events at all, and nothing reports that. It still advertises `user_goal`, which Baton removes from the call before your handler sees it, wherever it can reach the server's `tools/call` handler. Tools on the same server registered the ordinary way are unaffected. ⚠ **The request-level seam above does not rescue this one**: it reports only on tools this package wrapped, so a task-based tool emits nothing even for a rejected argument, where an unknown tool now emits a `tool_call_error`.
 - Intent parameters need a Zod schema. On the 2.x SDK a tool registered with a non-Zod standard schema is still wrapped and still emits `tool_call_*`; it just advertises no intent parameters.
 - `resources/templates/list` sends no events.
-- No Console settings (experimental, SPEC §2.6): no `labels` and no `capture`. Capture settings come from your config only.
 - v2's `createMcpHandler` is tested only for calls that pause for input. A server built per request by your own code is supported: see [A server per request](#a-server-per-request).
 
 ## What is public
 
 The public API is the exports of `@goodtiming/baton-sdk`, its only entry point.
 
-These are **experimental** and may change in a minor release: `EventSchema`, and `ClientReportEvent` with `ClientReportPayload`. [SPEC §13](https://github.com/good-timing/baton/blob/main/docs/SPEC.md#stability-from-10) lists what is experimental on the wire.
+These are **experimental** and may change in a minor release: `settings` and `settingsRefreshMs`, `labels` on `Principal` and `Organization`, the events' `labels` and `capture` with the `CaptureObserved` type, `EventSchema`, and `ClientReportEvent` with `ClientReportPayload`. [SPEC §13](https://github.com/good-timing/baton/blob/main/docs/SPEC.md#stability-from-10) lists what is experimental on the wire.
 
 The event types are built with zod. `EventSchema` may change with a zod major; the event types may not, so 1.x moves to a new zod major only if they stay the same.
 
