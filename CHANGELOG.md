@@ -48,9 +48,10 @@ the wire changes, and the `Sink` interface is the same.
   counted `buffer_full`, with one warning (SPEC §11.2 rule 3).
 - A sink that throws loses that event, counted `write_failed`, with one
   warning; the next event is still written.
-- The queue holds a copy of each event, so a params or result object the
-  vendor changes after the call is written as it was. An event that cannot be
-  copied is dropped and counted `encode_failed`, with one warning.
+- The queue holds a JSON copy of each event, so a params or result object
+  the vendor changes after the call is written as it was, as a sink writing
+  JSON would write it. An event JSON cannot hold, such as one with a
+  `BigInt`, is dropped and counted `encode_failed`, with one warning.
 - `flush()` waits for the events recorded before it. `aclose()` writes what
   waits, still taking events recorded meanwhile, then closes the sink; what
   close has no time for is counted `unsent_at_close`. Both keep SPEC §11.2
@@ -59,12 +60,12 @@ the wire changes, and the `Sink` interface is the same.
   disk no longer stops the event loop.
 - A `surface_snapshot` counts as sent once it is queued. A sink that then
   fails to write it counts it `write_failed`; it is not sent again.
-- At `process.exit()` with no `aclose()`, Baton hands the sink every event
-  still queued without waiting. `StdoutSink` writes them at once; for any
-  other sink some may be lost, and Baton says how many on stderr. Call
-  `aclose()` first.
+- At `process.exit()` with no `aclose()`, `StdoutSink` and `FileSink` get
+  every event still queued, written at once. For any other sink those events
+  are lost, and Baton says how many on stderr. Call `aclose()` first.
 - One sink given to several installs gets one queue, so it is still written
-  one event at a time.
+  one event at a time. An `HttpSink`, or a subclass that keeps its `write`,
+  gets no queue: it already has one.
 - `BatonHandle.sink` is still the sink you passed. Flush and close through
   `handle.flush()` and `handle.aclose()`: the sink's own `flush()` and
   `aclose()` skip the events still queued.

@@ -29,7 +29,7 @@ import {
 import { parseDsn, selectDsn } from "../dsn.js";
 import { captureDisabled, DisabledSink, logDisabled } from "../optout.js";
 import { Scrubber } from "../scrub.js";
-import { boundedSinkCall, HttpSink, offTheCall, safeWrite, type Sink } from "../sinks.js";
+import { boundedSinkCall, droppedAfterClose, HttpSink, offTheCall, safeWrite, type Sink } from "../sinks.js";
 import { PROCESS_DROPS } from "../drops.js";
 import { printable } from "../warn.js";
 import { uuid7 } from "../uuid7.js";
@@ -230,7 +230,6 @@ function paramsOf(args: readonly unknown[]): Record<string, unknown> {
 /** What a client holds that its traces read. */
 class Core {
   closed = false;
-  private closedWarned = false;
   // A snapshot describes the server, so it takes no block's session,
   // principal or client: SPEC §11.5.1's join must not count it.
   private readonly surfaceSessionId = uuid7();
@@ -271,11 +270,9 @@ class Core {
   live(): boolean {
     if (this.disabled) return false;
     if (!this.closed) return true;
-    PROCESS_DROPS.add("after_close");
-    if (!this.closedWarned) {
-      this.closedWarned = true;
-      process.stderr.write("baton: Client is closed; further events are dropped.\n");
-    }
+    // Keyed on the sink, so an event its queue refused while closing and one
+    // refused here share one warning (SPEC §11.2 rule 7).
+    droppedAfterClose(this.sink);
     return false;
   }
 

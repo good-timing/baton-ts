@@ -16,6 +16,7 @@
  * - `MultiSink` — every event to each of several sinks.
  */
 
+import { appendFileSync } from "node:fs";
 import { open, type FileHandle } from "node:fs/promises";
 import { capCodePoints, escapeForLog } from "./_text.js";
 import { MAX_TIMER_MS, raceDeadline, SHUTDOWN_FLUSH_TIMEOUT_MS, TIMED_OUT } from "./deadline.js";
@@ -30,9 +31,9 @@ const REFUSAL_BODY_MAX_LEN = 500;
 const REFUSAL_LOG_MS = 60_000;
 
 export interface Sink {
-  /** Hand one event to the sink. Baton calls it from its own queue, one
-   * event at a time, never from the vendor's call; a sink may still take as
-   * long as it needs. */
+  /** Hand one event to the sink. Baton calls a sink you write from its own
+   * queue, one event at a time, never from the vendor's call, so it may take
+   * as long as it needs. */
   write(event: Event): Promise<void>;
   /** Wait for any buffered events to reach their destination (or be
    * dropped per the sink's policy). No-op for synchronous sinks. */
@@ -272,6 +273,8 @@ export class MultiSink implements Sink {
 // =============================================================================
 
 const QUEUE_BOUND = 1000;
+/** Events written before the writer gives the event loop a turn. */
+const WRITES_PER_TURN = 100;
 /** The part of close's budget kept for the inner sink's own close. */
 const CLOSE_GRACE_MS = 250;
 
@@ -289,15 +292,28 @@ let exitHooked = false;
 function hookExit(): void {
   if (exitHooked) return;
   exitHooked = true;
-  process.on("exit", () => {
-    try {
-      let unsure = 0;
-      for (const sink of withUnwrittenEvents) unsure += sink.handOffAtExit();
-      if (unsure > 0) stderrLine(`baton: process exiting; ${unsure} event(s) may not have been written.`);
-    } catch {
-      // A throw here would turn the vendor's clean exit into a crash.
-    }
-  });
+  try {
+    process.on("exit", () => {
+      try {
+        let unsure = 0;
+        for (const sink of withUnwrittenEvents) unsure += sink.handOffAtExit();
+        if (unsure > 0) stderrLine(`baton: process exiting; ${unsure} event(s) may not have been written.`);
+      } catch {
+        // A throw here would turn the vendor's clean exit into a crash.
+      }
+    });
+  } catch {
+    // A runtime with no `process.on` has no exit to hook.
+  }
+}
+
+/** Writes before it returns, for the sinks that can: at exit nothing can be awaited. */
+function writeNow(sink: Sink, event: Event): boolean {
+  const line = JSON.stringify(event) + "\n";
+  if (sink instanceof StdoutSink) sink["stream"].write(line);
+  else if (sink instanceof FileSink) appendFileSync(sink["path"], line);
+  else return false;
+  return true;
 }
 
 /** Holds events for `inner` and writes them one at a time, in order, after
@@ -313,7 +329,9 @@ export class QueuedSink implements Sink {
   /** A flush waits until `settled`, the events written or lost, reaches `taken` as it was. */
   private taken = 0;
   private settled = 0;
-  /** `settled` when a flush waited its whole budget: until a write ends, later flushes return at once. */
+  /** Writes that returned, so a dropped event does not look like progress. */
+  private ended = 0;
+  /** `ended` when a flush waited its whole budget: until a write ends, later flushes return at once. */
   private stuckAt: number | null = null;
   private waiters: { upTo: number; resolve: () => void }[] = [];
   private overflowWarned = false;
@@ -327,17 +345,16 @@ export class QueuedSink implements Sink {
     return this.queue.length + this.inFlight;
   }
 
-  /** Starts a write of every waiting event without waiting for it. A
-   * `StdoutSink` writes before its call returns; for any other sink, answers
-   * how many events may be lost. */
+  /** Writes what waits to a `StdoutSink` or `FileSink` at once; answers how
+   * many events may not be written. */
   handOffAtExit(): number {
-    const unsure = this.inner instanceof StdoutSink ? 0 : this.unwritten;
     this.abandoned = true;
+    let unsure = this.inFlight;
     for (const event of this.queue.splice(0)) {
       try {
-        this.inner.write(event).catch(() => undefined);
+        if (!writeNow(this.inner, event)) unsure++;
       } catch {
-        // A sink that throws at once must not stop the rest.
+        unsure++;
       }
     }
     return unsure;
@@ -346,10 +363,11 @@ export class QueuedSink implements Sink {
   async write(event: Event): Promise<void> {
     if (this.closed) throw new SinkClosedError("the sink is closed");
     // A copy, because the sink writes later: by then the vendor may have
-    // changed a params or result object the event still points at.
+    // changed a params or result object the event still points at. JSON,
+    // so the copy is what a sink that writes JSON would have written.
     let copy: Event;
     try {
-      copy = structuredClone(event);
+      copy = JSON.parse(JSON.stringify(event)) as Event;
     } catch (err) {
       PROCESS_DROPS.add("encode_failed");
       if (!this.copyWarned) {
@@ -388,13 +406,13 @@ export class QueuedSink implements Sink {
 
   /** Waits for the events written before it, not for later ones (SPEC §11.2 rule 7). */
   private async flushWithin(ms: number): Promise<void> {
-    if (this.closed || this.stuckAt === this.settled) return;
+    if (this.closed || this.stuckAt === this.ended) return;
     const full = shutdownBudgetMs(this.inner);
     const budget = Math.min(ms, full);
     const start = performance.now();
     // A wait cut short by the caller's deadline does not show the write is stuck.
     if ((await raceDeadline(this.settledUpTo(this.taken), budget)) === TIMED_OUT && budget >= full) {
-      this.stuckAt = this.settled;
+      this.stuckAt = this.ended;
     }
     await callWithin(this.inner, "flush", Math.max(0, budget - (performance.now() - start)));
   }
@@ -407,7 +425,6 @@ export class QueuedSink implements Sink {
   /** Takes events until the queue is empty, as `HttpSink` does, so an event
    * recorded while close runs is not refused. */
   private async close(ms: number): Promise<void> {
-    queues.delete(this.inner);
     const start = performance.now();
     const deadline = start + ms - Math.min(CLOSE_GRACE_MS, ms / 2);
     let timedOut = false;
@@ -424,11 +441,14 @@ export class QueuedSink implements Sink {
       warn(`baton: closed with ${unwritten} event(s) not yet written to the sink.`);
     }
     await callWithin(this.inner, "aclose", Math.max(0, ms - (performance.now() - start)));
+    // Only now: an install during close shares this queue rather than write beside it.
+    queues.delete(this.inner);
   }
 
   private async drain(): Promise<void> {
     try {
       let event: Event | undefined;
+      let written = 0;
       while (!this.abandoned && (event = this.queue.shift()) !== undefined) {
         this.inFlight = 1;
         try {
@@ -437,8 +457,11 @@ export class QueuedSink implements Sink {
           if (!this.abandoned) this.lose(err);
         } finally {
           this.inFlight = 0;
+          this.ended++;
           this.settle();
         }
+        // A sink that answers at once would otherwise hold the event loop for the whole queue.
+        if (++written % WRITES_PER_TURN === 0) await new Promise<void>((resolve) => later(resolve));
       }
     } catch {
       // Only `lose` can get here, after it counted the event: a warning
@@ -454,7 +477,7 @@ export class QueuedSink implements Sink {
   }
 
   private lose(err: unknown): void {
-    if (isSinkClosed(err)) return droppedAfterClose(this.inner);
+    if (isSinkClosed(err)) return droppedAfterClose(this);
     PROCESS_DROPS.add("write_failed");
     if (this.failWarned) return;
     this.failWarned = true;
@@ -481,7 +504,8 @@ const queues = new WeakMap<Sink, QueuedSink>();
 
 /** HttpSink already queues; any other sink is put behind a `QueuedSink`. */
 export function offTheCall(sink: Sink): Sink {
-  if (sink instanceof QueuedSink || Object.getPrototypeOf(sink) === HttpSink.prototype) return sink;
+  // An HttpSink subclass that keeps HttpSink's write still only queues.
+  if (sink instanceof QueuedSink || (sink instanceof HttpSink && sink.write === HttpSink.prototype.write)) return sink;
   let queue = queues.get(sink);
   if (queue === undefined) {
     queue = new QueuedSink(sink);

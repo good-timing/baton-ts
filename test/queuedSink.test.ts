@@ -6,8 +6,12 @@ import { z } from "zod";
 import { PROCESS_DROPS, type DropReason } from "../src/drops.js";
 import type { Event } from "../src/events.js";
 import { withBaton } from "../src/integrations/mcp/withBaton.js";
-import { callWithin, HttpSink, MultiSink, offTheCall, QueuedSink, safeWrite, SinkClosedError, StdoutSink, type Sink } from "../src/sinks.js";
+import { callWithin, FileSink, HttpSink, MultiSink, offTheCall, QueuedSink, safeWrite, SinkClosedError, StdoutSink, type Sink } from "../src/sinks.js";
 import { makeEvent } from "./_sink.js";
+import { mkdtempSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { Client as LibraryClient } from "../src/library/client.js";
 
 const never = (): Promise<void> => new Promise(() => {});
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
@@ -225,6 +229,22 @@ describe("what the queue holds", () => {
     expect(seen).toEqual([{ city: "Oslo" }]);
   });
 
+  it("copies as JSON: a function is left out and toJSON is used, as a sink writing JSON would", async () => {
+    const seen: unknown[] = [];
+    const queue = new QueuedSink({
+      write: async (event) => {
+        seen.push((event.payload as { params?: unknown }).params);
+      },
+      flush: () => Promise.resolve(),
+      aclose: () => Promise.resolve(),
+    });
+    const event = makeEvent();
+    (event.payload as { params?: unknown }).params = { run: () => 1, price: { toJSON: () => "9.99" } };
+    await queue.write(event);
+    await queue.flush();
+    expect(seen).toEqual([{ price: "9.99" }]);
+  });
+
   it("drops an event it cannot copy as encode_failed, warns once, and writes the next", async () => {
     const seen = warnings();
     const encodeFailed = countOf("encode_failed");
@@ -232,7 +252,7 @@ describe("what the queue holds", () => {
     const queue = new QueuedSink(inner);
     for (const n of [1, 2]) {
       const event = makeEvent({ sequence_number: n });
-      (event.payload as { params?: unknown }).params = { run: () => n };
+      (event.payload as { params?: unknown }).params = { big: BigInt(n) };
       await queue.write(event);
     }
     await queue.write(makeEvent({ sequence_number: 3 }));
@@ -266,6 +286,36 @@ describe("close", () => {
 });
 
 describe("the queue's writer", () => {
+  it("gives the event loop a turn every 100 writes", async () => {
+    const inner = new LoggingSink();
+    const queue = new QueuedSink(inner);
+    for (let i = 0; i < 300; i++) await queue.write(makeEvent());
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(inner.log).toHaveLength(100);
+    await queue.flush();
+  });
+
+  it("returns at once from a flush on a stuck write, even when the full queue drops events", async () => {
+    warnings();
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
+    try {
+      const queue = new QueuedSink(stuckSink());
+      await queue.write(makeEvent());
+      await new Promise((resolve) => setImmediate(resolve));
+      void queue.flush();
+      await vi.advanceTimersByTimeAsync(3000);
+      for (let i = 0; i < 1005; i++) await queue.write(makeEvent());
+      let done = false;
+      void queue.flush().then(() => {
+        done = true;
+      });
+      await vi.advanceTimersByTimeAsync(1);
+      expect(done).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("goes on when a warning throws, with the event it was writing counted write_failed", async () => {
     vi.spyOn(process, "emitWarning").mockImplementation(() => {
       throw new Error("warning handler broke");
@@ -301,20 +351,48 @@ describe("at process exit", () => {
     expect(lines.map((line) => (JSON.parse(line) as Event).sequence_number)).toEqual([1, 2]);
   });
 
-  it("answers how many events another sink may not have written", async () => {
-    const queue = new QueuedSink(new LoggingSink(10));
+  it("appends what waits to a FileSink's file before it returns", async () => {
+    const path = join(mkdtempSync(join(tmpdir(), "baton-exit-")), "events.jsonl");
+    const queue = new QueuedSink(new FileSink(path));
+    await queue.write(makeEvent({ sequence_number: 1 }));
+    await queue.write(makeEvent({ sequence_number: 2 }));
+    expect(queue.handOffAtExit()).toBe(0);
+    expect(readFileSync(path, "utf8").trimEnd().split("\n")).toHaveLength(2);
+  });
+
+  it("does not start writes on another sink, and answers how many may be lost", async () => {
+    const inner = new LoggingSink(10);
+    const queue = new QueuedSink(inner);
     await queue.write(makeEvent());
     await queue.write(makeEvent());
     expect(queue.handOffAtExit()).toBe(2);
+    await sleep(30);
+    expect(inner.log).toEqual([]);
+  });
+
+  it("does not break a write when process.on throws", async () => {
+    vi.resetModules();
+    vi.spyOn(process, "on").mockImplementation(() => {
+      throw new Error("no exit hooks here");
+    });
+    const fresh = await import("../src/sinks.js");
+    const inner = new LoggingSink();
+    const queue = new fresh.QueuedSink(inner);
+    await queue.write(makeEvent({ sequence_number: 1 }));
+    await queue.flush();
+    expect(inner.log).toEqual(["write 1", "flush"]);
   });
 });
 
 describe("offTheCall", () => {
-  it("gives a sink one queue, and a new one after that queue closed", async () => {
-    const sink = new LoggingSink();
+  it("gives a sink one queue, also while it closes, and a new one after", async () => {
+    const sink = new LoggingSink(20);
     const first = offTheCall(sink);
     expect(offTheCall(sink)).toBe(first);
-    await first.aclose();
+    await first.write(makeEvent());
+    const closing = first.aclose();
+    expect(offTheCall(sink)).toBe(first);
+    await closing;
     expect(offTheCall(sink)).not.toBe(first);
   });
 
@@ -323,11 +401,21 @@ describe("offTheCall", () => {
     expect(offTheCall(http)).toBe(http);
   });
 
-  it("queues a MultiSink, a subclass of HttpSink, and the vendor's own sink, once", () => {
+  it("leaves alone an HttpSink subclass that keeps HttpSink's write", () => {
     class OwnHttp extends HttpSink {}
+    const http = new OwnHttp("https://collector.example", { apiKey: "k" });
+    expect(offTheCall(http)).toBe(http);
+  });
+
+  it("queues a MultiSink, an HttpSink subclass with its own write, and the vendor's own sink, once", () => {
+    class OwnWrite extends HttpSink {
+      override write(event: Event): Promise<void> {
+        return super.write(event);
+      }
+    }
     const sinks: Sink[] = [
       new MultiSink([new LoggingSink()]),
-      new OwnHttp("https://collector.example", { apiKey: "k" }),
+      new OwnWrite("https://collector.example", { apiKey: "k" }),
       new LoggingSink(),
     ];
     for (const sink of sinks) {
@@ -335,5 +423,32 @@ describe("offTheCall", () => {
       expect(queued).toBeInstanceOf(QueuedSink);
       expect(offTheCall(queued)).toBe(queued);
     }
+  });
+});
+
+describe("the library Client after close", () => {
+  it("warns once for events refused while its sink closes and after", async () => {
+    const seen = warnings();
+    vi.spyOn(process.stderr, "write").mockImplementation((line: string | Uint8Array) => {
+      seen.push(String(line));
+      return true;
+    });
+    const afterClose = countOf("after_close");
+    const client = new LibraryClient({
+      vendorId: "acme",
+      sink: {
+        write: () => Promise.resolve(),
+        flush: () => Promise.resolve(),
+        aclose: () => sleep(50),
+      },
+    });
+    const closing = client.aclose();
+    await sleep(20);
+    client.trace({ toolName: "during" }, () => "ok");
+    await closing;
+    client.trace({ toolName: "after" }, () => "ok");
+    await sleep(0);
+    expect(afterClose()).toBeGreaterThanOrEqual(2);
+    expect(seen.filter((w) => w.includes("closed"))).toHaveLength(1);
   });
 });
