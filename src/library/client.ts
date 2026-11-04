@@ -630,8 +630,9 @@ export class Client {
 
   /** Flush, then close the sink. Later events are dropped. */
   aclose(): Promise<void> {
-    this.#core.closed = true;
-    this.#closing ??= boundedSinkCall(this.#core.sink, "aclose");
+    this.#closing ??= boundedSinkCall(this.#core.sink, "aclose").then(() => {
+      this.#core.closed = true;
+    });
     return this.#closing;
   }
 }

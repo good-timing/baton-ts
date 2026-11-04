@@ -48,9 +48,13 @@ the wire changes, and the `Sink` interface is the same.
   counted `buffer_full`, with one warning (SPEC §11.2 rule 3).
 - A sink that throws loses that event, counted `write_failed`, with one
   warning; the next event is still written.
+- The queue holds a copy of each event, so a params or result object the
+  vendor changes after the call is written as it was. An event that cannot be
+  copied is dropped and counted `encode_failed`, with one warning.
 - `flush()` waits for the events recorded before it. `aclose()` writes what
-  waits, then closes the sink; what close has no time for is counted
-  `unsent_at_close`. Both keep SPEC §11.2 rule 7's time limit.
+  waits, still taking events recorded meanwhile, then closes the sink; what
+  close has no time for is counted `unsent_at_close`. Both keep SPEC §11.2
+  rule 7's time limit.
 - `FileSink` writes with async file calls instead of `writeSync`, so a slow
   disk no longer stops the event loop.
 - A `surface_snapshot` counts as sent once it is queued. A sink that then
@@ -68,6 +72,8 @@ the wire changes, and the `Sink` interface is the same.
   events are written, and a write that never ends holds every event behind
   it, as in the Go SDK. Neither slows the vendor; the queue's bound drops the
   oldest events instead.
+- **Known gap:** an `HttpSink` inside a `MultiSink` is behind two queues,
+  each with its own bound of 1000.
 - **Known gap:** on Linux, Node writes to stderr synchronously when it is a
   pipe. If the pipe is full, `StdoutSink` still pauses the event loop while
   the queue writes to it, though no longer inside a tool call.

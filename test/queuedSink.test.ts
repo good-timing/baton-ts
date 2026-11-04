@@ -206,6 +206,90 @@ describe("a sink behind Baton's queue", () => {
   });
 });
 
+describe("what the queue holds", () => {
+  it("writes the event as it was, not as the vendor later changed it", async () => {
+    const seen: unknown[] = [];
+    const queue = new QueuedSink({
+      write: async (event) => {
+        seen.push((event.payload as { params?: unknown }).params);
+      },
+      flush: () => Promise.resolve(),
+      aclose: () => Promise.resolve(),
+    });
+    const params = { city: "Oslo" };
+    const event = makeEvent();
+    (event.payload as { params?: unknown }).params = params;
+    await queue.write(event);
+    params.city = "changed";
+    await queue.flush();
+    expect(seen).toEqual([{ city: "Oslo" }]);
+  });
+
+  it("drops an event it cannot copy as encode_failed, warns once, and writes the next", async () => {
+    const seen = warnings();
+    const encodeFailed = countOf("encode_failed");
+    const inner = new LoggingSink();
+    const queue = new QueuedSink(inner);
+    for (const n of [1, 2]) {
+      const event = makeEvent({ sequence_number: n });
+      (event.payload as { params?: unknown }).params = { run: () => n };
+      await queue.write(event);
+    }
+    await queue.write(makeEvent({ sequence_number: 3 }));
+    await queue.flush();
+    expect(encodeFailed()).toBe(2);
+    expect(inner.log).toEqual(["write 3", "flush"]);
+    expect(seen.filter((w) => w.includes("could not be copied"))).toHaveLength(1);
+  });
+});
+
+describe("close", () => {
+  it("takes an event recorded while it writes what waits, and refuses one after", async () => {
+    const inner = new LoggingSink(20);
+    const queue = new QueuedSink(inner);
+    await queue.write(makeEvent({ sequence_number: 1 }));
+    const closing = queue.aclose();
+    await sleep(5);
+    await queue.write(makeEvent({ sequence_number: 2 }));
+    await closing;
+    expect(inner.log).toEqual(["write 1", "write 2", "close"]);
+    await expect(queue.write(makeEvent())).rejects.toThrow(SinkClosedError);
+  });
+
+  it("on a queue never written to, closes the sink at once", async () => {
+    const inner = new LoggingSink();
+    const started = performance.now();
+    await new QueuedSink(inner).aclose();
+    expect(performance.now() - started).toBeLessThan(100);
+    expect(inner.log).toEqual(["close"]);
+  });
+});
+
+describe("the queue's writer", () => {
+  it("goes on when a warning throws, with the event it was writing counted write_failed", async () => {
+    vi.spyOn(process, "emitWarning").mockImplementation(() => {
+      throw new Error("warning handler broke");
+    });
+    const writeFailed = countOf("write_failed");
+    const written: number[] = [];
+    const queue = new QueuedSink({
+      write: async (event) => {
+        if (event.sequence_number === 1) throw new Error("disk full");
+        written.push(event.sequence_number);
+      },
+      flush: () => Promise.resolve(),
+      aclose: () => Promise.resolve(),
+    });
+    await queue.write(makeEvent({ sequence_number: 1 }));
+    await queue.write(makeEvent({ sequence_number: 2 }));
+    await sleep(10);
+    await queue.write(makeEvent({ sequence_number: 3 }));
+    await queue.flush();
+    expect(writeFailed()).toBe(1);
+    expect(written).toEqual([2, 3]);
+  });
+});
+
 describe("at process exit", () => {
   it("hands a StdoutSink what waits, which it writes at once", async () => {
     const lines: string[] = [];

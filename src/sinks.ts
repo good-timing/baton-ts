@@ -318,6 +318,7 @@ export class QueuedSink implements Sink {
   private waiters: { upTo: number; resolve: () => void }[] = [];
   private overflowWarned = false;
   private failWarned = false;
+  private copyWarned = false;
   private closeOnce: Promise<void> | undefined;
 
   constructor(readonly inner: Sink) {}
@@ -344,7 +345,20 @@ export class QueuedSink implements Sink {
 
   async write(event: Event): Promise<void> {
     if (this.closed) throw new SinkClosedError("the sink is closed");
-    this.queue.push(event);
+    // A copy, because the sink writes later: by then the vendor may have
+    // changed a params or result object the event still points at.
+    let copy: Event;
+    try {
+      copy = structuredClone(event);
+    } catch (err) {
+      PROCESS_DROPS.add("encode_failed");
+      if (!this.copyWarned) {
+        this.copyWarned = true;
+        warn(`baton: an event could not be copied and was dropped. Later ones are not logged: ${printable(err)}`);
+      }
+      return;
+    }
+    this.queue.push(copy);
     this.taken++;
     if (this.queue.length > QUEUE_BOUND) {
       this.queue.shift();
@@ -390,12 +404,18 @@ export class QueuedSink implements Sink {
     return this.closeOnce;
   }
 
+  /** Takes events until the queue is empty, as `HttpSink` does, so an event
+   * recorded while close runs is not refused. */
   private async close(ms: number): Promise<void> {
-    this.closed = true;
     queues.delete(this.inner);
     const start = performance.now();
-    const drainMs = ms - Math.min(CLOSE_GRACE_MS, ms / 2);
-    if ((await raceDeadline(this.settledUpTo(this.taken), drainMs)) === TIMED_OUT) {
+    const deadline = start + ms - Math.min(CLOSE_GRACE_MS, ms / 2);
+    let timedOut = false;
+    while (this.settled < this.taken && !timedOut) {
+      timedOut = (await raceDeadline(this.settledUpTo(this.taken), deadline - performance.now())) === TIMED_OUT;
+    }
+    this.closed = true;
+    if (timedOut) {
       const unwritten = this.unwritten;
       this.abandoned = true;
       this.queue.length = 0;
@@ -407,19 +427,30 @@ export class QueuedSink implements Sink {
   }
 
   private async drain(): Promise<void> {
-    let event: Event | undefined;
-    while (!this.abandoned && (event = this.queue.shift()) !== undefined) {
-      this.inFlight = 1;
-      try {
-        await this.inner.write(event);
-      } catch (err) {
-        if (!this.abandoned) this.lose(err);
+    try {
+      let event: Event | undefined;
+      while (!this.abandoned && (event = this.queue.shift()) !== undefined) {
+        this.inFlight = 1;
+        try {
+          await this.inner.write(event);
+        } catch (err) {
+          if (!this.abandoned) this.lose(err);
+        } finally {
+          this.inFlight = 0;
+          this.settle();
+        }
       }
-      this.inFlight = 0;
-      this.settle();
+    } catch {
+      // Only `lose` can get here, after it counted the event: a warning
+      // that throws must not stop the queue.
+    } finally {
+      this.draining = false;
+      if (this.queue.length === 0) withUnwrittenEvents.delete(this);
+      else if (!this.abandoned) {
+        this.draining = true;
+        later(() => void this.drain());
+      }
     }
-    this.draining = false;
-    if (this.queue.length === 0) withUnwrittenEvents.delete(this);
   }
 
   private lose(err: unknown): void {
