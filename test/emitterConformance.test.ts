@@ -176,6 +176,14 @@ function withoutNulls(payload: Record<string, unknown>): Record<string, unknown>
   return Object.fromEntries(Object.entries(payload).filter(([, v]) => v !== null));
 }
 
+/** `withoutNulls` for the envelope, keeping the exempt keys: their values may
+ * be null on one side only, and their keys are still compared. */
+function envelopeWithoutNulls(envelope: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(envelope).filter(([k, v]) => v !== null || ENVELOPE_ALLOWED_TO_DIFFER.has(k)),
+  );
+}
+
 /**
  * Payload fields allowed to differ, per event type. Everything else in the
  * payload must be deep-equal to the Python vector.
@@ -378,8 +386,8 @@ describe("cross-SDK emitter conformance (Phase 3)", () => {
   });
 
   it.each(CASES)("$name: envelope matches the Python vector field-for-field", ({ name }) => {
-    const event = JSON.parse(JSON.stringify(emitted.get(name)!)) as Record<string, unknown>;
-    const reference = vector(name);
+    const event = envelopeWithoutNulls(JSON.parse(JSON.stringify(emitted.get(name)!)) as Record<string, unknown>);
+    const reference = envelopeWithoutNulls(vector(name));
 
     // Key set first — a missing or extra envelope field is the failure this
     // test most needs to catch, and comparing values alone would miss an

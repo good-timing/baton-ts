@@ -6,7 +6,8 @@
  * Everything here checks against `baton-spec` (the neutral schema repo, not this
  * repo's own copy of anything):
  *  1. Every real, Python-captured vector in `baton-spec/vectors/*.json`
- *     parses through our Zod schemas byte-for-byte (same keys, same values).
+ *     parses through our Zod schemas byte-for-byte (same keys, same values),
+ *     less the experimental members this SDK does not send.
  *  2. `events.schema.json` (ajv) accepts the vectors AND events built from our
  *     own Zod schemas — proving our defaults also produce schema-valid output,
  *     not just our own re-serialization of someone else's example. Built BOTH
@@ -45,6 +46,10 @@ const ajv = new Ajv2020({ strict: false });
 addFormats(ajv);
 const validate = ajv.compile(schema);
 
+/** Experimental envelope members (SPEC §11.4) that this SDK does not send, so
+ * its strict envelope schema does not model them. */
+const EXPERIMENTAL_NOT_SENT = ["labels", "capture"];
+
 describe("baton-spec conformance", () => {
   it.each(vectorFiles)("vector %s validates against events.schema.json", (file) => {
     const data = JSON.parse(readFileSync(path.join(vectorsDir, file), "utf-8"));
@@ -53,7 +58,8 @@ describe("baton-spec conformance", () => {
   });
 
   it.each(vectorFiles)("vector %s round-trips byte-identical through EventSchema", (file) => {
-    const data = JSON.parse(readFileSync(path.join(vectorsDir, file), "utf-8"));
+    const data = JSON.parse(readFileSync(path.join(vectorsDir, file), "utf-8")) as Record<string, unknown>;
+    for (const key of EXPERIMENTAL_NOT_SENT) delete data[key];
     const parsed = EventSchema.parse(data);
     // JSON round-trip, not just Zod's parsed object — proves our
     // serialization shape (key set, null-vs-undefined, nesting) matches
