@@ -201,11 +201,25 @@ export function annotationToolNameFromServer(
   return candidate;
 }
 
+/** `{slug}_annotate` from a display name, as an adapter derives it from a
+ * server of that name, or `undefined` where an adapter would fall back. */
+export function toolNameForDisplayName(vendorDisplayName: string): string | undefined {
+  if (PLACEHOLDER_LITERALS.has(pythonStrip(vendorDisplayName).toLowerCase())) return undefined;
+  const candidate = toolNameCandidate(vendorDisplayName);
+  if (candidate === undefined) return undefined;
+  return fitsInstructionsCap({ vendorDisplayName, annotationToolName: candidate })
+    ? candidate
+    : undefined;
+}
+
 /** Compose and VALIDATE the final tool name: the last step of the ladder, and
  * its one throw site. Reached with a vendor's explicit name or an
  * already-validated derived one, never with a guess. */
 export function deriveAnnotationToolName(vendorId: string, override?: string): string {
-  const name = override || `${vendorId}${SUFFIX}`;
+  return validateAnnotationToolName(override || `${vendorId}${SUFFIX}`);
+}
+
+export function validateAnnotationToolName(name: string): string {
   if (!TOOL_NAME_PATTERN.test(name)) {
     throw new Error(
       `Annotation tool name ${JSON.stringify(name)} violates the cross-runtime ` +

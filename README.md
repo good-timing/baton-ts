@@ -122,6 +122,26 @@ app.use((req, res, next) =>
 
 Capture never throws into your code. Only the constructor throws, on a bad config. Call `await baton.aclose()` at shutdown.
 
+### Agent reports on your own API
+
+`withBaton` gives agents a report tool, so an agent can tell you when a call went wrong or no tool covers what the user asked. On your own API, offer the same tool with `reportTool`. It has the name, description and input schema `withBaton` registers on a server with that name, so an agent reads the same words.
+
+```ts
+import { reportTool } from "@goodtiming/baton-sdk";
+
+const tool = reportTool({ vendorDisplayName: "Acme" });
+// Offer tool.name, tool.description and tool.inputSchema to the agent.
+// Serving MCP yourself? Send tool.instructions in place of INTENT_INSTRUCTIONS.
+
+// When the agent calls it:
+const options = tool.annotateArgs(args);
+if (options === null) return { ok: false, error: tool.refusal };
+await baton.annotate(options);
+return { ok: true };
+```
+
+`annotateArgs` returns `null` when the agent sent no `what_happened`. Send `tool.refusal` back and nothing to Baton, because a call with no account is not a report. Call it inside the same `session(...)` block as the calls it is about, or use `await trace.annotate(options)` for one traced call.
+
 ## PII scrubbing
 
 **On by default**, a rule-for-rule port of the Python SDK's ruleset: email, `Bearer` values, `sk-*` and `AKIA*` keys, JWTs, phone numbers, Luhn-checked card numbers, plus force-redaction on sensitive field names. Pass `identityScrub` to opt out, or supply your own `(value: unknown) => unknown`.

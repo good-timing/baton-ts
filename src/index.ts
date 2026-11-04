@@ -121,6 +121,8 @@ export type {
   TraceOptions,
 } from "./library/client.js";
 export type { ListToolsOptions } from "./library/surface.js";
+export { reportTool } from "./library/reportTool.js";
+export type { ReportTool } from "./library/reportTool.js";
 export type { HeaderInput } from "./integrations/mcp/clientObserved.js";
 // The injected params' names and wording, for a vendor adding them to its own API.
 export { INTENT_INSTRUCTIONS, INTENT_PARAMS } from "./integrations/mcp/llmText.js";

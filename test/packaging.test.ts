@@ -46,6 +46,7 @@ describe("public surface", () => {
       "identityScrub",
       "principalFromOAuthEmail",
       "principalFromOAuthSub",
+      "reportTool",
       "withBaton",
     ]);
   });
@@ -96,6 +97,7 @@ describe("public surface", () => {
         "Principal",
         "PrincipalForm",
         "PrincipalResolutionContext",
+        "ReportTool",
         "ResolvePrincipalHook",
         "ResultCaptureMode",
         "SDK_VERSION",
@@ -112,6 +114,7 @@ describe("public surface", () => {
         "identityScrub",
         "principalFromOAuthEmail",
         "principalFromOAuthSub",
+        "reportTool",
         "withBaton",
       ].sort(),
     );

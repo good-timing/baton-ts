@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased: the report tool on your own API
+
+- **`reportTool({ vendorDisplayName, name })`** returns the annotation tool
+  `withBaton` registers on a server of that name: its `name`, `description`,
+  `inputSchema`, `refusal` text and `reportMode: "on"` `instructions`. Its
+  `annotateArgs(args)` turns the agent's arguments into `annotate()`
+  options, or returns `null` when there is no `what_happened`. For a vendor
+  offering the report tool through its own API (SPEC §5.6). Python's
+  `report_tool()` is the same tool.
+
 ## Unreleased: the public API for 1.0
 
 **Breaking.** These exports are removed. Nothing on the wire changes.

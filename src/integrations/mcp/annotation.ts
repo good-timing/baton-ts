@@ -20,7 +20,7 @@ import type { Sink } from "../../sinks.js";
 import { deriveAnnotationToolName } from "./annotationName.js";
 import { emit } from "./emit.js";
 import { type ResolvePrincipalHook, resolveCaller } from "./principalResolution.js";
-import { buildAnnotationToolDescription } from "./llmText.js";
+import { buildAnnotationToolDescription, buildRefusalText } from "./llmText.js";
 import { extraMeta, observeTransport, type Extra } from "./mcpTypes.js";
 import type { SupportedMcpServer } from "./withBaton.js";
 import { observeClient } from "./clientObserved.js";
@@ -102,16 +102,7 @@ export function registerAnnotationTool(
               type: "text" as const,
               text: JSON.stringify({
                 ok: false,
-                error:
-                  `${name} is reactive-only on this server. Call it only AFTER ` +
-                  "a tool call returns an unhelpful, empty, failed or " +
-                  "contradictory result, or when no tool covers what the user " +
-                  "asked for. What the user is trying to do is already recorded " +
-                  "on each tool call, so no pre-call annotation is needed — " +
-                  "nothing was lost. If a tool call really went wrong, or no " +
-                  "tool covers the request, call this again and say " +
-                  "what_happened. If neither is true, do NOT re-send: that " +
-                  "would file a report for a call that did not go wrong.",
+                error: buildRefusalText({ annotationToolName: name }),
               }),
             },
           ],

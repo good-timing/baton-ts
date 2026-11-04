@@ -90,6 +90,19 @@ export function buildAnnotationToolDescription(options: { vendorDisplayName: str
   return ANNOTATION_TOOL_DESCRIPTION_TEMPLATE(options.vendorDisplayName);
 }
 
+/** What the annotation tool answers when a call has no account (SPEC §5.1.1). */
+export function buildRefusalText(options: { annotationToolName: string }): string {
+  return (
+    `${options.annotationToolName} is reactive-only on this server. Call it only AFTER ` +
+    "a tool call returns an unhelpful, empty, failed or contradictory result, or " +
+    "when no tool covers what the user asked for. What the user is trying to do " +
+    "is already recorded on each tool call, so no pre-call annotation is needed — " +
+    "nothing was lost. If a tool call really went wrong, or no tool covers the " +
+    "request, call this again and say what_happened. If neither is true, do NOT " +
+    "re-send: that would file a report for a call that did not go wrong."
+  );
+}
+
 // =============================================================================
 // Intent-param injection text — mirrors `baton` (Python)'s
 // `integrations/_llm_text.py` byte-for-byte. This is the capture path that
