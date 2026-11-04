@@ -211,7 +211,7 @@ Three things can differ by audience.
 |---|---|---|
 | `results` | Whether results and error messages are sent, as `resultCaptureMode` does | The next call |
 | `goal` | Whether the `user_goal` Baton adds is required or optional. A tool that declares its own `user_goal` keeps it as it is. | The next `tools/list` |
-| `reports` | Whether the caller sees the report tool | The next `tools/list` |
+| `reports` | Whether the caller sees the report tool. A report from a caller with reports off, such as one from an older tool list, is still recorded. | The next `tools/list` |
 
 The SDK reads the settings every 60 seconds, in the background: a read never delays startup or a call. Set `settingsRefreshMs` to change that, down to 15000. Until the first read succeeds, and while nothing is saved, the values in your config apply. Once settings are read, each event says which ones it ran under, in `capture`. One `createBaton` reads them once for every server it wraps.
 

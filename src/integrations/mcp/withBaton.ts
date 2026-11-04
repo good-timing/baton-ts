@@ -1934,15 +1934,20 @@ export function withBaton(server: SupportedMcpServer, supplied: BatonConfig = {}
 /** Stops the settings read when the vendor closes. */
 class SettingsHandle extends BatonHandle {
   constructor(
-    handle: BatonHandle,
+    private readonly inner: BatonHandle,
     private readonly settings: CaptureSettings,
   ) {
-    super(handle);
+    super(inner);
+  }
+
+  // The inner handle holds the queue in front of the sink.
+  override flush(): Promise<void> {
+    return this.inner.flush();
   }
 
   override async aclose(): Promise<void> {
     this.settings.stop();
-    await super.aclose();
+    await this.inner.aclose();
   }
 }
 
