@@ -23,7 +23,7 @@
  * through something other than MCP: `client.session()` and `client.trace()`
  * take callbacks, and `client.wrap()` traces a function.
  *
- * Pre-1.0 — public API not yet stable.
+ * Stable from 1.0: see "What is public" in the README, and SPEC §13.
  */
 
 export { SDK_VERSION } from "./version.js";

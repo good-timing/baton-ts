@@ -196,6 +196,7 @@ export const ClientReportPayloadSchema = z
     dropped: z.record(z.string(), z.number().int().nonnegative()),
   })
   .strict();
+/** @experimental May change in a minor release. */
 export type ClientReportPayload = z.infer<typeof ClientReportPayloadSchema>;
 
 // =============================================================================
@@ -645,6 +646,7 @@ export const ClientReportEventSchema = z
     payload: ClientReportPayloadSchema,
   })
   .strict();
+/** @experimental May change in a minor release. */
 export type ClientReportEvent = z.infer<typeof ClientReportEventSchema>;
 
 // ⚠ The lifecycle events carry the SAME `envelopeShape` as the five
