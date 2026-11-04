@@ -96,6 +96,31 @@ the wire changes, and the `Sink` interface is the same.
   pipe. If the pipe is full, `StdoutSink` still pauses the event loop while
   the queue writes to it, though no longer inside a tool call.
 
+## Unreleased: Console settings and labels
+
+### Added
+
+These are **experimental** and may change in a minor release. They match
+`baton-sdk` 0.9.6.
+
+- **Labels on callers.** `labels` on a `Principal` or an `Organization` takes
+  up to 20 names, sent on every event the caller makes as `labels` (SPEC
+  §11.4). Send only names you are happy for Baton to see. The library API's
+  `client.session({ principal })` sends them too.
+- **Capture settings from the Console.** With `settings: "console"` the SDK
+  reads the settings saved on the Console's Capture page every
+  `settingsRefreshMs` (60000 by default, at least 15000), and they can differ
+  by label, client or a share of callers (SPEC §2.6). `results` applies to the
+  next call. `goal` and `reports` apply to the next `tools/list`, where a
+  caller with reports off does not see the report tool. Each event says which
+  settings it ran under in `capture`. Until the first read succeeds, and when
+  nothing is saved, the config's own values apply. A read never delays startup
+  or a call. One `createBaton()` reads once for all its servers. Needs a DSN.
+- **`reportMode` is `"on"` by default with `settings: "console"`.** It stays
+  `"off"` by default otherwise. Set `reportMode: "off"` for no report tool. The
+  Console then cannot turn reports on.
+- **The `CaptureObserved` type**, the events' `capture` member.
+
 ## 0.6.8: the off warning names tool_list_error
 
 - **The `resultCaptureMode: "off"` warning names `tool_list_error`** (SPEC

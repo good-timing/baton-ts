@@ -19,7 +19,8 @@ import { roundMetaCoordinates } from "../../metaCoordinates.js";
 import type { Sink } from "../../sinks.js";
 import { deriveAnnotationToolName } from "./annotationName.js";
 import { emit } from "./emit.js";
-import { type ResolvePrincipalHook, resolveCaller } from "./principalResolution.js";
+import { type ResolvePrincipalHook, callerEnvelope, resolveCaller } from "./principalResolution.js";
+import type { CaptureSettings } from "./captureSettings.js";
 import { buildAnnotationToolDescription, buildRefusalText } from "./llmText.js";
 import { extraMeta, observeTransport, type Extra } from "./mcpTypes.js";
 import type { SupportedMcpServer } from "./withBaton.js";
@@ -55,6 +56,7 @@ export interface RegisterAnnotationToolOptions {
   /** The vendor's identity resolver — the SAME one the tool-call wrapper
    * holds. */
   resolvePrincipal?: ResolvePrincipalHook | undefined;
+  captureSettings?: CaptureSettings | undefined;
 }
 
 /** Advertised as required on the annotate tool (by the `tools/list` seam in
@@ -131,9 +133,12 @@ export function registerAnnotationTool(
       // answers per call rather than per install. Wiring one path and not the
       // other would put an annotation and the calls it describes under two
       // different actors, which is unjoinable downstream.
+      const client = observeClient(extra, { server, scrubber: options.scrubber });
       const caller = await resolveCaller(
         options.resolvePrincipal,
         { extra, toolName: name, arguments: args },
+        options.captureSettings,
+        client,
       );
 
       await emit(options.sink, () =>
@@ -144,11 +149,10 @@ export function registerAnnotationTool(
           sequence_number: options.counter.nextFor(session),
           captured_at: new Date().toISOString(),
           consent_token: options.consentToken,
-          principal: caller.principal,
-          organization: caller.organization,
+          ...callerEnvelope(caller),
           transport_observed: observeTransport(extra),
           session_id_origin: session.origin,
-          client_observed: observeClient(extra, { server, scrubber: options.scrubber }),
+          client_observed: client,
           runtime_meta: scrubbedMeta,
           payload: {
             // The agent-facing `user_goal` is stored as the wire key `intent`.

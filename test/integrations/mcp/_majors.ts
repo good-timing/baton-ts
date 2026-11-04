@@ -125,8 +125,8 @@ export interface Major {
    * authenticated call without standing up an OAuth server.
    *
    * `sessionId`, when given, is the id the server's transport reports, as a
-   * stateful HTTP transport does. */
-  connect(server: any, options?: { authInfo?: unknown; sessionId?: string }): Promise<any>;
+   * stateful HTTP transport does. `clientName` is the name the client declares. */
+  connect(server: any, options?: { authInfo?: unknown; sessionId?: string; clientName?: string }): Promise<any>;
   /** Register a static resource. The two majors agree here, which is itself
    * worth keeping in ONE place: a future divergence lands on the interface
    * rather than in whichever test noticed. */
@@ -192,7 +192,7 @@ const V1: Major = {
     withAuthInfo(clientTransport, options?.authInfo);
     holdAnswers(serverTransport);
     if (options?.sessionId !== undefined) serverTransport.sessionId = options.sessionId;
-    const client = new ClientV1({ name: "test-client", version: "1.0.0" });
+    const client = new ClientV1({ name: options?.clientName ?? "test-client", version: "1.0.0" });
     await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
     return client;
   },
@@ -225,7 +225,7 @@ const V2: Major = {
     withAuthInfo(clientTransport, options?.authInfo);
     holdAnswers(serverTransport);
     if (options?.sessionId !== undefined) serverTransport.sessionId = options.sessionId;
-    const client = new ClientV2({ name: "test-client", version: "1.0.0" });
+    const client = new ClientV2({ name: options?.clientName ?? "test-client", version: "1.0.0" });
     await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
     return client;
   },

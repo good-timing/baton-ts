@@ -172,8 +172,12 @@ import { observeClient } from "./clientObserved.js";
 import { resolveSessionId, type ResolvedSession } from "./sessionResolution.js";
 import {
   type ResolvePrincipalHook,
+  type ResolvedCaller,
+  callerEnvelope,
   resolveCaller,
 } from "./principalResolution.js";
+import type { CaptureSettings } from "./captureSettings.js";
+import { PerCallerSurface } from "./perCaller.js";
 import { ServerCounter, SessionCounter } from "./sessionCounter.js";
 import {
   advertiseIntentParamsRequired,
@@ -206,10 +210,10 @@ interface WrapContext {
   scrubber: (value: unknown) => unknown;
   annotationToolName: string;
   intentParamMode: IntentParamMode;
-  /** Whether result-derived data is withheld (SPEC §11.4). Validated once at
-   * the config door, like `intentParamMode`, so nothing downstream re-checks
-   * it. */
-  resultCaptureMode: ResultCaptureMode;
+  /** The config's `resultCaptureMode` (SPEC §11.4), validated once at the
+   * config door. A call runs under the one `openCall` returns, which Console
+   * settings can change. */
+  configResultCaptureMode: ResultCaptureMode;
   paramRegistry: Map<string, IntentParamDispositions>;
   /** Vendor-true JSON Schema for the surface snapshot, in whatever spelling
    * THIS server actually puts on the wire. */
@@ -226,6 +230,9 @@ interface WrapContext {
    * resolutions could disagree, and an annotation naming a different actor
    * than the call it describes is worse than one naming nobody. */
   resolvePrincipal: ResolvePrincipalHook | undefined;
+  /** Under `settings: "console"`; shared by every server one `createBaton` wraps. */
+  captureSettings: CaptureSettings | undefined;
+  perCaller: PerCallerSurface | undefined;
   surfaceState: SurfaceState;
   emitSurface: (
     sessionId: string,
@@ -488,7 +495,7 @@ async function openCall(
    * `tools/call` seam's `unknown_tool` path, and it suppresses one warning
    * whose diagnosis would be wrong there — see `extractGoalParam`. */
   registered = true,
-): Promise<{ common: Record<string, unknown>; session: ResolvedSession }> {
+): Promise<{ common: Record<string, unknown>; session: ResolvedSession; resultCaptureMode: ResultCaptureMode }> {
   // Snapshot BEFORE tool_call_start, from inside openCall so every caller inherits the order.
   await maybeEmitSurfaceSnapshot(ctx);
   const { scrubbedMeta, ...session } = await resolveEnvelopeParts(ctx, extra);
@@ -510,10 +517,14 @@ async function openCall(
   // Resolved AFTER the intent-param strip, so the hook's `arguments` are
   // exactly what the vendor's own handler receives — Baton's injected
   // params are never a caller's input and must not look like one.
+  const client = observeClient(extra, ctx);
   const caller = await resolveCaller(
     ctx.resolvePrincipal,
     { extra, toolName, arguments: params },
+    ctx.captureSettings,
+    client,
   );
+  const resultCaptureMode = caller.settings?.resultCaptureMode ?? ctx.configResultCaptureMode;
 
   const common = {
     tenant_id: ctx.tenantId,
@@ -524,16 +535,15 @@ async function openCall(
     // it. `surface_snapshot` is deliberately not among them: it describes the
     // SERVER and is captured outside any call, so it has no caller, transport
     // or client to name.
-    principal: caller.principal,
-    organization: caller.organization,
+    ...callerEnvelope(caller),
     transport_observed: observeTransport(extra),
     session_id_origin: session.origin,
-    client_observed: observeClient(extra, ctx),
+    client_observed: client,
     runtime_meta: scrubbedMeta,
     call_id: uuid7(),
   };
 
-  if (resumesPausedCall(extra)) return { common, session };
+  if (resumesPausedCall(extra)) return { common, session, resultCaptureMode };
   await emit(ctx.sink, () =>
     ToolCallStartEventSchema.parse({
       ...common,
@@ -550,7 +560,7 @@ async function openCall(
       },
     }),
   );
-  return { common, session };
+  return { common, session, resultCaptureMode };
 }
 
 /** `nameRef` is read on every call, not captured: v2's `update({name})`
@@ -581,7 +591,7 @@ function batonWrap(nameRef: { current: string }, original: AnyHandler, ctx: Wrap
     // Handed over once: a tool this handler calls in-process shares the slot.
     const stripped = slot?.strippedFor === toolName ? slot.stripped : {};
     if (slot) slot.strippedFor = null;
-    const { common, session } = await openCall(ctx, toolName, extra, params, stripped);
+    const { common, session, resultCaptureMode } = await openCall(ctx, toolName, extra, params, stripped);
 
     /** Emit this call's terminal event, or PARK it for the outer `tools/call`
      * seam when one is running (see `CallSlot`). `replacement` is passed by
@@ -674,7 +684,7 @@ function batonWrap(nameRef: { current: string }, original: AnyHandler, ctx: Wrap
             // SPEC §11.4.3(1): the MCP SDK has no tool-error class to mark a
             // raised message public, so under "off" every one is withheld.
             ...resultDerivedFields(
-              ctx.resultCaptureMode,
+              resultCaptureMode,
               () => messageOf(err),
               null,
               (text) => errorBody(ctx, text),
@@ -742,7 +752,7 @@ function batonWrap(nameRef: { current: string }, original: AnyHandler, ctx: Wrap
           // nothing on the wire has; the loss is deliberate and worth
           // knowing when debugging one of these.
           ...resultDerivedFields(
-            ctx.resultCaptureMode,
+            resultCaptureMode,
             () => (outcome.raised ? messageOf(outcome.err) : errorText(outcome.result)),
             // ⚠ `null` on the `raised` lane, never `undefined`, and the
             // union is what forces the branch rather than a comment: the
@@ -787,7 +797,7 @@ function batonWrap(nameRef: { current: string }, original: AnyHandler, ctx: Wrap
             // `ToolCallErrorPayloadSchema` in `events.ts` holds that claim and
             // names the test that enforces it.
             ...returnedErrorFields(
-              ctx.resultCaptureMode,
+              resultCaptureMode,
               result,
               (text) => errorBody(ctx, text),
               ctx.scrubber,
@@ -809,7 +819,7 @@ function batonWrap(nameRef: { current: string }, original: AnyHandler, ctx: Wrap
           payload: {
             tool_name: toolName,
             duration_ms: durationMs,
-            ...endResultFields(ctx.resultCaptureMode, result, ctx.scrubber),
+            ...endResultFields(resultCaptureMode, result, ctx.scrubber),
           },
         }),
       (outcome) => failedAbove(outcome, OUTPUT_SCHEMA_MISMATCH),
@@ -1140,6 +1150,8 @@ interface LifecycleSpec {
   /** The `*_start` payload's `params` member, or `{}` where the family has
    * none. */
   startParams: (params: Record<string, unknown>) => Record<string, unknown>;
+  /** The result as this caller is served it. */
+  rewriteResult?: (ctx: WrapContext, result: unknown, caller: ResolvedCaller) => unknown;
 }
 
 function installLifecycleSeam(
@@ -1148,6 +1160,7 @@ function installLifecycleSeam(
   spec: LifecycleSpec,
 ): void {
   installRequestSeam(lowLevel, spec.method, spec.seamTag, (handler) => async (...args) => {
+    ctx.perCaller?.followSettings();
     const request = args[0] as { params?: Record<string, unknown> } | undefined;
     const requestParams = request?.params ?? {};
     const extra = args[1] as Extra;
@@ -1183,10 +1196,14 @@ function installLifecycleSeam(
     const startedAt = performance.now();
     const elapsed = (): number => Math.round(performance.now() - startedAt);
     try {
-      const result = await handler(...args);
+      const served = await handler(...args);
       // Unlike tools, this seam wraps the SDK's pause handling, so a pause the
       // SDK then fails throws into the catch below.
-      if (isInputRequired(result)) return result;
+      if (isInputRequired(served)) return served;
+      const result =
+        opened !== null && spec.rewriteResult !== undefined
+          ? spec.rewriteResult(ctx, served, opened.caller)
+          : served;
       await fire(spec.schemas.end, {
         ...(spec.countKey === undefined ? {} : { count: countOf(result, spec.countKey) }),
         duration_ms: elapsed(),
@@ -1222,16 +1239,20 @@ async function openLifecycleCall(
   common: Record<string, unknown>;
   session: ResolvedSession;
   subject: Record<string, unknown>;
+  caller: ResolvedCaller;
 } | null> {
   try {
     const { scrubbedMeta, ...session } = await resolveEnvelopeParts(ctx, extra);
-    const caller = await resolveCaller(ctx.resolvePrincipal, {
-      extra,
-      toolName: null,
-      arguments: {},
-    });
+    const client = observeClient(extra, ctx);
+    const caller = await resolveCaller(
+      ctx.resolvePrincipal,
+      { extra, toolName: null, arguments: {} },
+      ctx.captureSettings,
+      client,
+    );
     return {
       session,
+      caller,
       subject:
         spec.subjectKey === undefined
           ? {}
@@ -1241,11 +1262,10 @@ async function openLifecycleCall(
         vendor_id: ctx.vendorId,
         session_id: session.sessionId,
         consent_token: ctx.consentToken,
-        principal: caller.principal,
-        organization: caller.organization,
+        ...callerEnvelope(caller),
         transport_observed: observeTransport(extra),
         session_id_origin: session.origin,
-        client_observed: observeClient(extra, ctx),
+        client_observed: client,
         runtime_meta: scrubbedMeta,
       },
     };
@@ -1339,6 +1359,7 @@ const LIFECYCLE_SPECS: readonly LifecycleSpec[] = [
     },
     countKey: "tools",
     startParams: NO_PARAMS,
+    rewriteResult: (ctx, result, caller) => ctx.perCaller?.toolsFor(result, caller) ?? result,
   },
 ];
 
@@ -1505,6 +1526,7 @@ function installToolsCallSeam(
     TOOLS_CALL_SEAM,
     (handler) =>
       async (...args) => {
+        ctx.perCaller?.followSettings();
         const request = args[0] as { params?: { name?: unknown; arguments?: unknown } } | undefined;
         const name = request?.params?.name;
         const slot: CallSlot = {
@@ -1679,7 +1701,7 @@ async function emitRequestSideFailure(
   // without this strip they would land in `tool_call_start.params`, which
   // SPEC says equals the vendor-visible arguments.
   const params = { ...((request?.params?.arguments as Record<string, unknown>) ?? {}) };
-  const { common, session } = await openCall(
+  const { common, session, resultCaptureMode } = await openCall(
     ctx,
     toolName,
     args[1] as Extra,
@@ -1726,7 +1748,7 @@ async function emitRequestSideFailure(
         ...(failureKind === undefined ? {} : { failure_kind: failureKind }),
         ...requestSideFailureFields(
           failureKind,
-          ctx.resultCaptureMode,
+          resultCaptureMode,
           text,
           outcome.raised ? null : outcome.result,
           (value) => errorBody(ctx, value),
@@ -1902,7 +1924,26 @@ export function withBaton(server: SupportedMcpServer, supplied: BatonConfig = {}
   // After the checks, so an install that fails does not first warn about it.
   if (unconfigured) logUnconfigured("withBaton");
   else warnAboutSettings(resolved);
-  return handle;
+  const settings = resolved.captureSettings;
+  if (settings === undefined) return handle;
+  // Last, so an install that fails reads no settings: "a failed install reads no settings".
+  settings.start();
+  return new SettingsHandle(handle, settings);
+}
+
+/** Stops the settings read when the vendor closes. */
+class SettingsHandle extends BatonHandle {
+  constructor(
+    handle: BatonHandle,
+    private readonly settings: CaptureSettings,
+  ) {
+    super(handle);
+  }
+
+  override async aclose(): Promise<void> {
+    this.settings.stop();
+    await super.aclose();
+  }
 }
 
 /** One Baton for a process that builds a new `McpServer` for every request.
@@ -1942,12 +1983,17 @@ export function createBaton(supplied: BatonConfig = {}): Baton {
     tenantId: resolveTenantId(resolved.tenantId, resolved.vendorId),
   };
   const state = newBatonState(resolved);
+  // One read for every server this Baton wraps.
+  resolved.captureSettings?.start();
   return {
     wrap: (server) => {
       install(server, supplied, config, state, unconfigured);
     },
     flush: () => boundedSinkCall(sink, "flush"),
-    aclose: () => boundedSinkCall(sink, "aclose"),
+    aclose: () => {
+      resolved.captureSettings?.stop();
+      return boundedSinkCall(sink, "aclose");
+    },
   };
 }
 
@@ -2171,9 +2217,11 @@ function install(
     scrubber,
     annotationToolName,
     intentParamMode,
-    resultCaptureMode: config.resultCaptureMode ?? "full",
+    configResultCaptureMode: config.resultCaptureMode ?? "full",
     paramRegistry: new Map(),
     resolvePrincipal: config.resolvePrincipal,
+    captureSettings: config.captureSettings,
+    perCaller: undefined,
     vendorToolJsonSchema,
     bustSchemaMemo,
     dropSubagentClause,
@@ -2186,9 +2234,28 @@ function install(
   // §5.1.2). No public setter exists post-construction; see module
   // docstring for why this reach-in has no "preferred path" to fall back
   // from, unlike Python's adapter.
-  internals.server._instructions = withVendorInstructions(internals.server, ours, (message) =>
-    warnOnce("instructions-length", message),
-  );
+  const writeInstructions = (text: string): void => {
+    internals.server._instructions = withVendorInstructions(internals.server, text, (message) =>
+      warnOnce("instructions-length", message),
+    );
+  };
+  writeInstructions(ours);
+  if (config.captureSettings !== undefined) {
+    ctx.perCaller = new PerCallerSurface({
+      settings: config.captureSettings,
+      intentParamMode,
+      annotationToolName,
+      instructions: ours,
+      writeInstructions: (text) => {
+        writeInstructions(text);
+        const native = [...ctx.paramRegistry].find(([, d]) => d[USER_GOAL_PARAM_NAME] === "native");
+        if (native !== undefined) dropSubagentClause(native[0]);
+      },
+      injectsGoal: (name) => ctx.paramRegistry.get(name)?.[USER_GOAL_PARAM_NAME] === "injected",
+    });
+    // Now, not at the first request: `initialize` passes no seam of ours.
+    ctx.perCaller.followSettings();
+  }
 
   // Before any tool registers: on a server with no tools yet, the first
   // registration is what makes the SDK install its `tools/list` handler, and
@@ -2219,8 +2286,10 @@ function install(
   );
 
   // The lifecycle seams (SPEC §11.4.4, §11.4.5) — unconditional, like the
-  // seam above, because what they capture is not configurable. Install order
-  // does not matter: `installRequestSeam` wraps a handler registered later.
+  // seam above, because what they capture is not configurable. After the
+  // `tools/list` seam, so they wrap it and the per-caller rewrite sees the
+  // advertised `required`: consoleSettings.test.ts, "two callers in different
+  // audiences see different tool lists".
   installLifecycleSeams(internals.server, ctx);
 
   const resolvedAnnotationToolName = !reports ? "" : registerAnnotationTool(server, {
@@ -2231,6 +2300,7 @@ function install(
     vendorDisplayName: reports.vendorDisplayName,
     consentToken: ctx.consentToken,
     resolvePrincipal: ctx.resolvePrincipal,
+    captureSettings: ctx.captureSettings,
     fallbackSessionId: ctx.fallbackSessionId,
     scrubber: ctx.scrubber,
     // The RESOLVED name, never `config.annotationToolName`: handing over the

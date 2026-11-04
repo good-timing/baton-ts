@@ -195,6 +195,32 @@ Each affected event says so, in its own field (`result_capture: "off"`), rather 
 
 **What it costs you:** anything that needs to read a response body. A call that returns `200` with a useless body can no longer be detected, and those calls sit outside the denominator of body-level analysis rather than counting as passes or failures.
 
+## Settings from the Console
+
+**Change what is captured without a redeploy.** With `settings: "console"`, the SDK reads the settings saved on the Console's Capture page, and each caller gets the settings of the first audience that matches it. An audience can match on the caller's labels, the app it runs in (such as `claude-code`), a share of your callers, or several of these, and then all of them must match.
+
+```ts
+withBaton(server, { dsn, settings: "console" });
+```
+
+On a hosted server, `BATON_DSN` in the environment works here too. Pass `{ settings: "console" }` without a `dsn`. There is no environment variable for `settings` itself, so turning it on is a change to your code.
+
+Three things can differ by audience.
+
+| Setting | What it changes | When it applies |
+|---|---|---|
+| `results` | Whether results and error messages are sent, as `resultCaptureMode` does | The next call |
+| `goal` | Whether the `user_goal` Baton adds is required or optional. A tool that declares its own `user_goal` keeps it as it is. | The next `tools/list` |
+| `reports` | Whether the caller sees the report tool | The next `tools/list` |
+
+The SDK reads the settings every 60 seconds, in the background: a read never delays startup or a call. Set `settingsRefreshMs` to change that, down to 15000. Until the first read succeeds, and while nothing is saved, the values in your config apply. Once settings are read, each event says which ones it ran under, in `capture`. One `createBaton` reads them once for every server it wraps.
+
+`reportMode` is `"on"` by default here, so the Console decides who sees the report tool. Set `reportMode: "off"` to keep it off for everyone. The report sentence in your server's instructions stays while any audience has reports on. A client reads the instructions when it connects, so a change reaches new connections only.
+
+Labels come from your `resolvePrincipal` hook, as `labels` on the `Principal` or the `Organization` it returns. Up to 20 per caller, sent on every event, so send only names you are happy for Baton to see. A share of callers is picked by the principal's id, or the company's when there is no principal, so the same person always lands in the same group. A caller with neither is never in a share.
+
+These settings, `labels` and `capture` are **experimental** and may change in a minor release.
+
 ## Failures your handler never saw
 
 A wrapper around your tool executor only sees calls that reach it. Three kinds

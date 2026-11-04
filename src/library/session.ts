@@ -4,6 +4,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import {
   NO_CALLER,
   callerFor,
+  wireLabels,
   type OrganizationWire,
   type PrincipalWire,
 } from "../identity.js";
@@ -27,6 +28,7 @@ export interface LibrarySession {
   readonly origin: "observed" | "minted";
   readonly principal: PrincipalWire | null;
   readonly organization: OrganizationWire | null;
+  readonly labels: readonly string[];
   readonly clientObserved: ClientObserved | null;
   readonly runtimeMeta: Record<string, unknown> | null;
 }
@@ -38,6 +40,7 @@ export function sessionEnvelope(session: LibrarySession): Record<string, unknown
     transport_observed: TRANSPORT_LIBRARY,
     principal: session.principal,
     organization: session.organization,
+    labels: wireLabels(session.labels),
     client_observed: session.clientObserved,
     runtime_meta: session.runtimeMeta,
   };

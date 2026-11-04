@@ -78,6 +78,7 @@ describe("public surface", () => {
         "Baton",
         "BatonConfig",
         "BatonHandle",
+        "CaptureObserved",
         "Client",
         "ClientOptions",
         "Event",

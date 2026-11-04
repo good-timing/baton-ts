@@ -97,7 +97,7 @@ describe("callerFor", () => {
   it("never throws, though the value's getters may", () => {
     const hostile = new Proxy({}, { has: () => { throw new Error("vendor bug"); } });
     const seen: string[] = [];
-    expect(callerFor(hostile, (key) => seen.push(key))).toEqual({ principal: null, organization: null });
+    expect(callerFor(hostile, (key) => seen.push(key))).toEqual({ principal: null, organization: null, labels: [] });
     expect(seen).toEqual(["unreadable"]);
   });
 });

@@ -229,6 +229,18 @@ export const ClientObservedSchema = z
   })
   .strict();
 
+/** Which collector settings a call ran under (SPEC §11.4, §2.6). A member
+ * with no value is left out. */
+export const CaptureObservedSchema = z
+  .object({
+    settings_version: z.number().int().min(1).optional(),
+    audience: z.string().optional(),
+    overlay: z.string().optional(),
+  })
+  .strict();
+/** @experimental May change in a minor release. */
+export type CaptureObserved = z.infer<typeof CaptureObservedSchema>;
+
 /** The principal as emitted — `{id, source, form}`, all three REQUIRED
  * together, plus an optional `display_name` (SPEC §11.4). The runtime shape
  * of `identity.PrincipalWire`.
@@ -320,6 +332,10 @@ const envelopeShape = {
   agent_runtime: z.string().default("unknown"),
   principal: PrincipalWireSchema.nullable().default(null),
   organization: PrincipalWireSchema.nullable().default(null),
+  // No length rules here: zod counts UTF-16 units, SPEC §11.4 code points.
+  // `cleanLabels` applies them.
+  labels: z.array(z.string()).nullable().default(null),
+  capture: CaptureObservedSchema.nullable().default(null),
   transport_observed: z.string().nullable().default(null),
   session_id_origin: z.string().nullable().default(null),
   client_observed: ClientObservedSchema.nullable().default(null),

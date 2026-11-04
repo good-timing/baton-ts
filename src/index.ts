@@ -31,6 +31,7 @@ export { SDK_VERSION } from "./version.js";
 export type {
   Event,
   EventType,
+  CaptureObserved,
   ToolCallStartEvent,
   ToolCallStartPayload,
   ToolCallEndEvent,

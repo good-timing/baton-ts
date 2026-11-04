@@ -37,10 +37,37 @@ export const DISPLAY_NAME_MAX_LEN = 128;
  * of the principal still ships, because a bad label is no reason to lose a
  * good id. Mirrors Python's `wire_display_name`. */
 export function wireDisplayName(value: unknown): string | null {
-  if (typeof value !== "string" || exceedsCodePoints(value, DISPLAY_NAME_MAX_LEN)) return null;
+  return usableText(value, DISPLAY_NAME_MAX_LEN) ? value : null;
+}
+
+/** SPEC §11.4's rule for `display_name` and labels. Mirrors Python's `usable_text`. */
+function usableText(value: unknown, maxCodePoints: number): value is string {
+  if (typeof value !== "string" || exceedsCodePoints(value, maxCodePoints)) return false;
   // U+0000: Postgres text refuses it, costing a collector the whole event.
-  if (LONE_SURROGATE.test(value) || value.includes("\u0000") || isBlank(value)) return null;
-  return value;
+  return !LONE_SURROGATE.test(value) && !value.includes("\u0000") && !isBlank(value);
+}
+
+export const LABELS_MAX = 20;
+export const LABEL_MAX_LEN = 64;
+/** How many a resolver's labels are read up to, so an endless iterable cannot hang a call. */
+const LABELS_READ_MAX = 1000;
+
+/** The envelope's `labels`: `null`, never an empty list (SPEC §11.4). */
+export function wireLabels(labels: readonly string[]): readonly string[] | null {
+  return labels.length > 0 ? labels : null;
+}
+
+/** The usable labels, in the order given, without repeats, at most
+ * `LABELS_MAX` (SPEC §11.4). Mirrors Python's `clean_labels`. */
+export function cleanLabels(values: Iterable<unknown>): string[] {
+  const kept = new Set<string>();
+  for (const value of values) {
+    if (usableText(value, LABEL_MAX_LEN)) {
+      kept.add(value);
+      if (kept.size === LABELS_MAX) break;
+    }
+  }
+  return [...kept];
 }
 
 export type PrincipalForm = typeof PRINCIPAL_FORM_HASHED | typeof PRINCIPAL_FORM_RAW;
@@ -77,6 +104,11 @@ export interface Principal {
   /** The company this principal belongs to. Sent as `organization`, and
    * dropped alone when unusable (SPEC §11.4). */
   organization?: Organization | null | undefined;
+  /** @experimental May change in a minor release.
+   *
+   * As `Organization.labels`. A principal's labels and its organization's
+   * are sent together. */
+  labels?: readonly string[] | undefined;
 }
 
 /** The company or workspace the caller belongs to, as the vendor sees it.
@@ -86,6 +118,12 @@ export interface Organization {
   organizationId: string;
   form?: PrincipalForm | undefined;
   displayName?: string | null | undefined;
+  /** @experimental May change in a minor release.
+   *
+   * Your names for the groups this caller is in, for Console settings to
+   * match (SPEC §11.4). Baton sees them, so use group names or keys you keep,
+   * never raw ids. */
+  labels?: readonly string[] | undefined;
 }
 
 function usableId(id: unknown): id is string {
@@ -153,14 +191,15 @@ export type OrganizationWire = PrincipalWire;
 // string through. Typed this way, adding a source is a compile error in one
 // place — here, where the registry is.
 
-/** The envelope's `principal` and `organization`. Either, both or neither
- * may be set: SPEC §11.4 keeps them independent. */
+/** The envelope's `principal`, `organization` and `labels`. Either, both or
+ * neither identity may be set: SPEC §11.4 keeps them independent. */
 export interface CallerWire {
   principal: PrincipalWire | null;
   organization: OrganizationWire | null;
+  labels: readonly string[];
 }
 
-export const NO_CALLER: CallerWire = Object.freeze({ principal: null, organization: null });
+export const NO_CALLER: CallerWire = Object.freeze({ principal: null, organization: null, labels: [] });
 
 /** Told why `callerFor` dropped or rewrote something. `key` is fixed text, so
  * a caller can report each kind of problem once; `message` may hold part of
@@ -190,7 +229,11 @@ function readCaller(result: unknown, warn: CallerWarning): CallerWire {
   // missing or blank person still keeps the company; otherwise an `Organization`.
   if (!("principalId" in result) && !("organization" in result)) {
     if ("organizationId" in result) {
-      return { principal: null, organization: identityFor(result, "organization", warn) };
+      return {
+        principal: null,
+        organization: identityFor(result, "organization", warn),
+        labels: labelsOf([result], warn),
+      };
     }
     if (typeof (result as { userId?: unknown }).userId === "string") {
       warn(
@@ -210,7 +253,28 @@ function readCaller(result: unknown, warn: CallerWarning): CallerWire {
   return {
     principal: identityFor(result, "principal", warn),
     organization: nested == null ? null : identityFor(nested, "organization", warn),
+    labels: labelsOf([result, nested], warn),
   };
+}
+
+function labelsOf(sources: unknown[], warn: CallerWarning): string[] {
+  const labels: unknown[] = [];
+  for (const source of sources) {
+    try {
+      const given = (source as { labels?: unknown } | null | undefined)?.labels;
+      if (typeof given === "string" || typeof (given as Iterable<unknown> | null | undefined)?.[Symbol.iterator] !== "function") {
+        continue;
+      }
+      let read = 0;
+      for (const label of given as Iterable<unknown>) {
+        labels.push(label);
+        if (++read === LABELS_READ_MAX) break;
+      }
+    } catch {
+      warn("labels", "labels could not be read — sending the ones read before the failure.");
+    }
+  }
+  return cleanLabels(labels);
 }
 
 function identityFor(

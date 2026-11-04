@@ -7,8 +7,20 @@ import { dsnFromEnvironment, parseDsn, selectDsn, VENDOR_ID_PATTERN } from "../.
 import { displayNameFromServer } from "./annotationName.js";
 import type { ResolvePrincipalHook } from "./principalResolution.js";
 import { DEFAULT_CONSENT_TOKEN } from "../../events.js";
+import { MAX_TIMER_MS } from "../../deadline.js";
 import { RESULT_CAPTURE_MODES, type ResultCaptureMode } from "./errorResult.js";
 import { HttpSink, type Sink } from "../../sinks.js";
+import {
+  CaptureSettings,
+  DEFAULT_SETTINGS_REFRESH_MS,
+  INTENT_PARAM_MODES,
+  MIN_SETTINGS_REFRESH_MS,
+  REPORT_MODES,
+  RESULT_CAPTURE_MODE_SET,
+  SETTINGS_MODES,
+  SettingsFetcher,
+  type SettingsMode,
+} from "./captureSettings.js";
 
 // Vendor IDs are the annotation-tool-name prefix — same pattern Python
 // validates against. They are NOT the tenant id: see `BatonConfig.tenantId`,
@@ -22,17 +34,6 @@ import { HttpSink, type Sink } from "../../sinks.js";
 // same move, for the same reason.
 export { VENDOR_ID_PATTERN } from "../../dsn.js";
 
-// Per-tool intent-param injection modes (mirrors baton-proxy's
-// BATON_INTENT_PARAM and Python's VendorConfig.intent_param_mode).
-const INTENT_PARAM_MODES = new Set(["optional", "required"]);
-const REPORT_MODES = new Set(["on", "off"]);
-// What the vendor may ask us to do with tool RESULT data (SPEC §11.4).
-// `"full"` never reaches the wire — absence is what means captured.
-//
-// DERIVED from the registry, never restated: a hand-written copy makes the
-// guarantee "two lists happen to agree", so a mode could be accepted here that
-// the emitter has no payload shape for.
-const RESULT_CAPTURE_MODE_SET: ReadonlySet<string> = new Set(RESULT_CAPTURE_MODES);
 export interface BatonConfig {
   /** The packed connection string from /account — one value carrying the
    * ingest host, the workspace, the server and the key that binds them.
@@ -128,11 +129,33 @@ export interface BatonConfig {
    * `reportMode: "on"`, and warns if set without it. */
   annotationToolName?: string;
   /** Whether the agent is given a tool to report a call that went wrong.
-   * `"off"` (the default) registers no annotation tool, and Baton's server
+   * Unset, it is `"on"` with `settings: "console"` and `"off"` otherwise.
+   * `"off"` registers no annotation tool, and Baton's server
    * instructions are `INTENT_INSTRUCTIONS` alone, below your own. Each call's
    * goal still arrives through `user_goal`. `"on"` registers the tool and
    * serves its instructions. */
   reportMode?: "on" | "off";
+  /** @experimental May change in a minor release.
+   *
+   * Where capture settings come from. `"local"` (default): the values in
+   * this config, and Baton is never asked. `"console"`: the settings saved on
+   * the Console's Capture page, read from the collector every
+   * `settingsRefreshMs`, so they can differ by label, client or a share of
+   * callers (SPEC §2.6). Needs a `dsn`. Until the first read succeeds, and
+   * whenever nothing is saved, this config's values apply. A read never
+   * delays startup or a call.
+   *
+   * `results` (`resultCaptureMode`) is applied per call. `goal`
+   * (`intentParamMode`) and `reports` (`reportMode`) are applied per
+   * `tools/list`. With `reportMode: "off"` no annotation tool is registered,
+   * so the Console can hide reports from some callers only when they are on
+   * here. */
+  settings?: SettingsMode;
+  /** @experimental May change in a minor release.
+   *
+   * How often `settings: "console"` reads the saved settings, in
+   * milliseconds. Default 60000, at least 15000. */
+  settingsRefreshMs?: number;
   /** Per-tool intent-param injection (mirrors baton-extmcp's vendor-neutral
    * naming). `"required"` (default) injects a `user_goal` string param on
    * every wrapped tool's advertised schema and ADVERTISES it as required in
@@ -266,6 +289,8 @@ export function resolveInstallConfig(config: BatonConfig): {
 export interface ResolvedBatonConfig extends BatonConfig {
   vendorId: string;
   consentToken: string;
+  /** Not yet reading; set only under `settings: "console"`. */
+  captureSettings?: CaptureSettings;
 }
 
 /**
@@ -278,8 +303,8 @@ export interface ResolvedBatonConfig extends BatonConfig {
  * may hold one config and hand it to two servers, and an install that rewrote
  * its argument would make the second inherit the first's resolution.
  *
- * ⚠ **The parsed key is NOT kept on the returned config.** It reaches the sink
- * and stops there. Python retains its `dsn` string on the config and pays for
+ * ⚠ **The parsed key is NOT kept on the returned config.** It reaches the sink,
+ * and the settings read under `settings: "console"`, and stops there. Python retains its `dsn` string on the config and pays for
  * it — `repr(VendorConfig)` prints the bearer, which is one of the leaks
  * parked for that repo — and nothing here reads the string after parsing, so
  * this arm simply does not import the problem.
@@ -307,6 +332,11 @@ export function resolveBatonConfig(config: BatonConfig): ResolvedBatonConfig {
       consentToken: config.consentToken ?? DEFAULT_CONSENT_TOKEN,
     };
     validateBatonConfig(defaulted);
+    if (defaulted.settings === "console") {
+      throw new Error(
+        'BatonConfig.settings: "console" reads the Capture page with the dsn\'s key, so it needs a dsn.',
+      );
+    }
     return defaulted;
   }
 
@@ -334,6 +364,7 @@ export function resolveBatonConfig(config: BatonConfig): ResolvedBatonConfig {
     // below and be REFUSED there, rather than be quietly replaced by the
     // default it was deliberately not left as.
     consentToken: config.consentToken ?? DEFAULT_CONSENT_TOKEN,
+    ...(config.reportMode === undefined && config.settings === "console" ? { reportMode: "on" as const } : {}),
   };
 
   // Validated BEFORE the sink is built. The ordering is parity with Python,
@@ -352,6 +383,20 @@ export function resolveBatonConfig(config: BatonConfig): ResolvedBatonConfig {
     // The origin is scheme + authority; `HttpSink` appends `/v0/events/batch`
     // itself, exactly as it does for an explicitly-constructed sink.
     sink: new HttpSink(dsn.origin, { apiKey: dsn.key }),
+    ...(identity.settings === "console"
+      ? {
+          captureSettings: new CaptureSettings(
+            dsn.vendorId,
+            new SettingsFetcher({
+              origin: dsn.origin,
+              apiKey: dsn.key,
+              tenantId: dsn.tenantId,
+              vendorId: dsn.vendorId,
+              refreshMs: identity.settingsRefreshMs ?? DEFAULT_SETTINGS_REFRESH_MS,
+            }),
+          ),
+        }
+      : {}),
   };
 }
 
@@ -452,6 +497,21 @@ export function validateBatonConfig(config: BatonConfig): asserts config is Reso
     throw new Error(
       `BatonConfig.resultCaptureMode ${JSON.stringify(config.resultCaptureMode)} must be one of ` +
         `${JSON.stringify([...RESULT_CAPTURE_MODES].sort())}.`,
+    );
+  }
+  if (config.settings !== undefined && !(SETTINGS_MODES as readonly string[]).includes(config.settings)) {
+    throw new Error(
+      `BatonConfig.settings ${JSON.stringify(config.settings)} must be one of ${JSON.stringify(SETTINGS_MODES)}.`,
+    );
+  }
+  const refresh: unknown = config.settingsRefreshMs;
+  if (
+    refresh !== undefined &&
+    (typeof refresh !== "number" || !(refresh >= MIN_SETTINGS_REFRESH_MS && refresh <= MAX_TIMER_MS))
+  ) {
+    throw new Error(
+      `BatonConfig.settingsRefreshMs must be a number of milliseconds from ${String(MIN_SETTINGS_REFRESH_MS)} ` +
+        `to ${String(MAX_TIMER_MS)}.`,
     );
   }
   if (config.scrubber !== undefined && typeof config.scrubber !== "function") {

@@ -51,6 +51,7 @@ describe("resolveCaller", () => {
     expect(await resolveCaller(() => returned as Principal | Organization, call)).toEqual({
       principal,
       organization,
+      labels: [],
     });
   });
 });

@@ -9,9 +9,18 @@
  * The TypeScript half of Python's `integrations/identity_adapter.py`.
  */
 
-import { type CallerWire, type Organization, type Principal, NO_CALLER, callerFor } from "../../identity.js";
+import {
+  type CallerWire,
+  type Organization,
+  type Principal,
+  NO_CALLER,
+  callerFor,
+  wireLabels,
+} from "../../identity.js";
+import type { ClientObserved } from "./clientObserved.js";
 import { raceDeadline, TIMED_OUT } from "../../deadline.js";
 import { warn } from "../../warn.js";
+import type { CallSettings, CaptureSettings } from "./captureSettings.js";
 import {
   type AuthInfo,
   type Extra,
@@ -107,18 +116,62 @@ function warnOnce(key: string, message: string): void {
   warn(`baton: resolvePrincipal ${message}`);
 }
 
-/** Run a vendor's hook and turn its answer into the envelope's `principal`
- * and `organization`.
+/** The caller as wire objects, and the capture settings it runs under. */
+export interface ResolvedCaller extends CallerWire {
+  /** `undefined` means the config's values. */
+  settings?: CallSettings;
+}
+
+/** The envelope's `principal`, `organization`, `labels` and `capture`. */
+export function callerEnvelope(caller: ResolvedCaller): Record<string, unknown> {
+  return {
+    principal: caller.principal,
+    organization: caller.organization,
+    labels: wireLabels(caller.labels),
+    capture: caller.settings?.capture ?? null,
+  };
+}
+
+let settingsWarned = false;
+
+/** The envelope's `principal`, `organization` and labels for one request,
+ * and with `settings` the capture settings it runs under (SPEC §2.6).
  *
  * ⚠ **Never throws.** A hook that raises, returns the wrong shape, or returns
  * `null` yields an anonymous request, not a failed one — `principal` and
  * `organization` are additive analytics, and a vendor's own bug in their
- * resolver may not fail their request (SPEC §11.2 fail-open).
+ * resolver may not fail their request (SPEC §11.2 fail-open). Settings that
+ * fail to apply leave the config's values.
  *
  * A hook that has not answered within `HOOK_TIMEOUT_MS` is given up on, which
  * cannot bound one that blocks synchronously.
  */
 export async function resolveCaller(
+  hook: ResolvePrincipalHook | undefined,
+  call: { extra: Extra; toolName: string | null; arguments: Record<string, unknown> },
+  settings?: CaptureSettings,
+  client: ClientObserved | null = null,
+): Promise<ResolvedCaller> {
+  const caller = await resolveIdentity(hook, call);
+  if (settings === undefined) return caller;
+  try {
+    const identity = caller.principal ?? caller.organization;
+    const callSettings = settings.forCaller({
+      labels: caller.labels,
+      clientName: client?.info?.name ?? null,
+      shareKey: identity?.id ?? null,
+    });
+    return callSettings === undefined ? caller : { ...caller, settings: callSettings };
+  } catch {
+    if (!settingsWarned) {
+      settingsWarned = true;
+      warn("baton: applying capture settings failed; this request uses the config's values");
+    }
+    return caller;
+  }
+}
+
+async function resolveIdentity(
   hook: ResolvePrincipalHook | undefined,
   call: { extra: Extra; toolName: string | null; arguments: Record<string, unknown> },
 ): Promise<CallerWire> {
