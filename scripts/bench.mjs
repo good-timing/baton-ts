@@ -39,6 +39,13 @@ async function withCollector(mode, use) {
   }
 }
 
+/** Emitted, delivered and lost for `m`'s calls, a tool_call_start and a tool_call_end each. */
+async function losses(port, m) {
+  const emitted = 2 * (m.warmup + m.calls);
+  const got = await delivered(port, m.collector);
+  return { emitted, delivered: got, lost: emitted - got };
+}
+
 async function delivered(port, mode) {
   if (mode === "down") return 0;
   const response = await fetch(`http://127.0.0.1:${port}/_received?lists=0`, { signal: AbortSignal.timeout(10000) });
@@ -46,12 +53,17 @@ async function delivered(port, mode) {
   return (counts.tool_call_start ?? 0) + (counts.tool_call_end ?? 0);
 }
 
-/** A client of the bench server, and Baton's handle on it, or null when `port` is null. */
-async function echoClient(port) {
+/** A client of the bench server, with the large tool when `resultBytes` is set,
+ * and Baton's handle on it, or null when `port` is null. */
+async function echoClient(port, resultBytes = 0) {
   const server = new McpServer({ name: "bench", version: "1.0.0" });
   server.registerTool("echo", { inputSchema: { text: z.string() } }, async ({ text }) => ({
     content: [{ type: "text", text }],
   }));
+  if (resultBytes) {
+    const text = "hello ".repeat(Math.floor(resultBytes / 6) + 1).slice(0, resultBytes);
+    server.registerTool("large", {}, async () => ({ content: [{ type: "text", text }] }));
+  }
   const handle = port === null ? null : withBaton(server, {
     vendorId: "v",
     vendorDisplayName: "V",
@@ -63,20 +75,22 @@ async function echoClient(port) {
   return { client, handle };
 }
 
+const echoCall = { name: "echo", arguments: { text: "hello" } };
+
 /** Each call's ms, with `concurrency` calls in flight at once. */
-async function timedCalls(client, calls, concurrency) {
+async function timedCalls(client, calls, concurrency, call = echoCall) {
   const times = [];
   let left = calls;
   const worker = async () => {
     while (left > 0) {
       left -= 1;
       const started = performance.now();
-      const result = await client.callTool({ name: "echo", arguments: { text: "hello" } });
+      const result = await client.callTool(call);
       // A real server reads each call from a socket, so I/O runs between calls.
       // The in-memory transport only queues microtasks, which never let it run.
       await new Promise((resolve) => setImmediate(resolve));
       times.push(performance.now() - started);
-      if (result.isError) throw new Error(`echo failed: ${JSON.stringify(result.content)}`);
+      if (result.isError) throw new Error(`${call.name} failed: ${JSON.stringify(result.content)}`);
     }
   };
   await Promise.all(Array.from({ length: concurrency }, worker));
@@ -88,21 +102,43 @@ function pct(samples, p) {
   return ordered[Math.min(ordered.length - 1, Math.floor((p / 100) * ordered.length))];
 }
 
+/** The call times on a server without Baton, then on one with it, and what
+ * Baton adds to them. */
+async function added(m, port, call) {
+  const figures = {};
+  const result = {};
+  for (const [name, to] of [["plain", null], ["baton", port]]) {
+    const { client, handle } = await echoClient(to, m.result_bytes);
+    await timedCalls(client, m.warmup, 1, call);
+    figures[name] = await timedCalls(client, m.calls, m.concurrency, call);
+    await client.close();
+    await handle?.aclose();
+  }
+  for (const name of ["plain", "baton"]) {
+    for (const p of [50, 99]) result[`${name}_p${p}_ms`] = pct(figures[name], p);
+  }
+  for (const p of [50, 99]) result[`added_p${p}_ms`] = result[`baton_p${p}_ms`] - result[`plain_p${p}_ms`];
+  return result;
+}
+
 async function overhead(m) {
+  return withCollector(m.collector, (port) => added(m, port, echoCall));
+}
+
+const largeCall = { name: "large", arguments: {} };
+
+async function largeResult(m) {
   return withCollector(m.collector, async (port) => {
-    const figures = {};
-    for (const [name, to] of [["plain", null], ["baton", port]]) {
-      const { client, handle } = await echoClient(to);
-      await timedCalls(client, m.warmup, 1);
-      figures[name] = await timedCalls(client, m.calls, m.concurrency);
-      await client.close();
-      await handle?.aclose();
-    }
-    const result = {};
-    for (const name of ["plain", "baton"]) {
-      for (const p of [50, 99]) result[`${name}_p${p}_ms`] = pct(figures[name], p);
-    }
-    for (const p of [50, 99]) result[`added_p${p}_ms`] = result[`baton_p${p}_ms`] - result[`plain_p${p}_ms`];
+    const result = { ...(await added(m, port, largeCall)), ...(await losses(port, m)) };
+    // Read on a second Baton server, untimed, so the full GCs stay out of the
+    // timed calls. Its events come after the count above.
+    const { client, handle } = await echoClient(port, m.result_bytes);
+    await timedCalls(client, m.warmup, 1, largeCall);
+    const before = liveHeap();
+    await timedCalls(client, m.calls, m.concurrency, largeCall);
+    result.heap_growth_bytes = liveHeap() - before;
+    await client.close();
+    await handle.aclose();
     return result;
   });
 }
@@ -118,16 +154,12 @@ async function load(m) {
     started = performance.now();
     await handle.aclose();
     const closing = performance.now() - started;
-    const emitted = 2 * (m.warmup + m.calls);
-    const got = await delivered(port, m.collector);
     return {
+      ...(await losses(port, m)),
       wall_ms: wall,
       call_p50_ms: pct(times, 50),
       call_p99_ms: pct(times, 99),
       close_ms: closing,
-      emitted,
-      delivered: got,
-      lost: emitted - got,
     };
   });
 }
@@ -158,7 +190,7 @@ async function memory(m) {
   });
 }
 
-const runners = { overhead, burst: load, outage_hang: load, outage_down: load, memory, memory_outage: memory };
+const runners = { overhead, large_result: largeResult, burst: load, outage_hang: load, outage_down: load, memory, memory_outage: memory };
 const measures = {};
 const maxRssBytes = () => process.resourceUsage().maxRSS * 1024;
 let peak = 0;
