@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.0.0: stable from 1.0
+## 1.0.0: the public API, sinks off the call, Console settings and the report tool
 
 **Stable from 1.0.** This package follows semver: a breaking change to the
 public API (README) is a new major. The wire format only grows (SPEC §13).

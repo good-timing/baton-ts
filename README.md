@@ -1,6 +1,6 @@
 # @goodtiming/baton-sdk
 
-**Stable from 1.0.** This package follows [semver](https://semver.org). [What is public](#what-is-public) lists the public API and what in it is experimental. The wire format only grows: nothing is removed or changes meaning ([SPEC §13](https://github.com/good-timing/baton/blob/main/docs/SPEC.md#stability-from-10)).
+**Stable from 1.0.** This package follows [semver](https://semver.org). [What is public](#what-is-public) lists the public API and what in it is experimental. The wire format only grows: nothing is removed or changes meaning, except what SPEC marks experimental ([SPEC §13](https://github.com/good-timing/baton/blob/main/docs/SPEC.md#stability-from-10)).
 
 MCP standardizes how agents discover and call your tools. It does not capture *why* a call happened or whether it helped the user. Baton instruments those interactions on the vendor side by wrapping your MCP server. It captures intent, the tool calls, expected outcomes and observed outcomes, plus friction signals, and hands each one to a sink.
 
@@ -314,6 +314,7 @@ None of it blocks the quickstart above.
 - **Task-based tools are not wrapped.** A 1.x tool registered with an object at `.handler` rather than a function produces no `tool_call_*` events at all, and nothing reports that. It still advertises `user_goal`, which Baton removes from the call before your handler sees it, wherever it can reach the server's `tools/call` handler. Tools on the same server registered the ordinary way are unaffected. ⚠ **The request-level seam above does not rescue this one**: it reports only on tools this package wrapped, so a task-based tool emits nothing even for a rejected argument, where an unknown tool now emits a `tool_call_error`.
 - Intent parameters need a Zod schema. On the 2.x SDK a tool registered with a non-Zod standard schema is still wrapped and still emits `tool_call_*`; it just advertises no intent parameters.
 - `resources/templates/list` sends no events.
+- No Console settings (experimental, SPEC §2.6): no `labels` and no `capture`. Capture settings come from your config only.
 - v2's `createMcpHandler` is tested only for calls that pause for input. A server built per request by your own code is supported: see [A server per request](#a-server-per-request).
 
 ## What is public
