@@ -171,7 +171,7 @@ The hook runs on every tool call, every `tools/list` request and every resource 
 
 The id is sent exactly as your hook returns it, so the hook decides what is safe to send. To send a pseudonym instead, hash the id inside your hook and return `form: "hashed"` with it.
 
-If your users belong to your customers' companies, return the company too, so you can filter by it:
+If your users belong to your customers' companies, return the company too. Each event then carries it:
 
 ```ts
 { principalId: "u_123", organization: { organizationId: "org_acme", displayName: "Acme" } }
