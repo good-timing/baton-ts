@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.6.8: the off warning names tool_list_error
 
 - **The `resultCaptureMode: "off"` warning names `tool_list_error`** (SPEC
   §11.4.4, §11.4.5). Your own `tools/list` handler can throw, and its message
