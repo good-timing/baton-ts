@@ -6,9 +6,9 @@ import { z } from "zod";
 import { PROCESS_DROPS, type DropReason } from "../src/drops.js";
 import type { Event } from "../src/events.js";
 import { withBaton } from "../src/integrations/mcp/withBaton.js";
-import { callWithin, FileSink, HttpSink, MultiSink, offTheCall, QueuedSink, safeWrite, SinkClosedError, StdoutSink, type Sink } from "../src/sinks.js";
+import { FileSink, HttpSink, MultiSink, offTheCall, QueuedSink, safeWrite, SinkClosedError, StdoutSink, type Sink } from "../src/sinks.js";
 import { makeEvent } from "./_sink.js";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Client as LibraryClient } from "../src/library/client.js";
@@ -157,9 +157,14 @@ describe("a sink behind Baton's queue", () => {
     const queue = new QueuedSink(inner);
     for (let i = 0; i < 3; i++) await queue.write(makeEvent());
 
-    const started = performance.now();
-    await callWithin(queue, "aclose", 100);
-    expect(performance.now() - started).toBeLessThan(500);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
+    try {
+      const closing = queue.aclose();
+      await vi.advanceTimersByTimeAsync(3000);
+      await closing;
+    } finally {
+      vi.useRealTimers();
+    }
     expect(unsent()).toBe(3);
     expect(inner.closed).toBe(true);
     expect(seen.filter((w) => w.includes("3 event(s) not yet written"))).toHaveLength(1);
@@ -341,14 +346,39 @@ describe("the queue's writer", () => {
 });
 
 describe("at process exit", () => {
-  it("hands a StdoutSink what waits, which it writes at once", async () => {
-    const lines: string[] = [];
-    const stream = { write: (line: string) => lines.push(line) } as unknown as NodeJS.WritableStream;
-    const queue = new QueuedSink(new StdoutSink({ stream }));
+  it("writes what waits to a StdoutSink on stderr at once, in one write", async () => {
+    const writes: string[] = [];
+    vi.spyOn(process.stderr, "write").mockImplementation((chunk: string | Uint8Array) => {
+      writes.push(String(chunk));
+      return true;
+    });
+    const queue = new QueuedSink(new StdoutSink());
     await queue.write(makeEvent({ sequence_number: 1 }));
     await queue.write(makeEvent({ sequence_number: 2 }));
     expect(queue.handOffAtExit()).toBe(0);
+    expect(writes).toHaveLength(1);
+    const lines = writes[0]!.trimEnd().split("\n");
     expect(lines.map((line) => (JSON.parse(line) as Event).sequence_number)).toEqual([1, 2]);
+  });
+
+  it("counts what waits for a StdoutSink on any other stream, which may write later", async () => {
+    const lines: string[] = [];
+    const stream = { write: (line: string) => lines.push(line) } as unknown as NodeJS.WritableStream;
+    const queue = new QueuedSink(new StdoutSink({ stream }));
+    await queue.write(makeEvent());
+    await queue.write(makeEvent());
+    expect(queue.handOffAtExit()).toBe(2);
+    expect(lines).toEqual([]);
+  });
+
+  it("writes nothing to a sink the vendor already closed", async () => {
+    const path = join(mkdtempSync(join(tmpdir(), "baton-exit-")), "events.jsonl");
+    const file = new FileSink(path);
+    const queue = new QueuedSink(file);
+    await queue.write(makeEvent());
+    await file.aclose();
+    expect(queue.handOffAtExit()).toBe(0);
+    expect(existsSync(path)).toBe(false);
   });
 
   it("appends what waits to a FileSink's file before it returns", async () => {
@@ -450,5 +480,31 @@ describe("the library Client after close", () => {
     await sleep(0);
     expect(afterClose()).toBeGreaterThanOrEqual(2);
     expect(seen.filter((w) => w.includes("closed"))).toHaveLength(1);
+  });
+});
+
+describe("FileSink", () => {
+  it("rejects, not throws, on an event it cannot encode", () => {
+    const sink = new FileSink(join(mkdtempSync(join(tmpdir(), "baton-file-")), "events.jsonl"));
+    const event = makeEvent();
+    (event.payload as { params?: unknown }).params = { big: BigInt(1) };
+    let result: Promise<void> | undefined;
+    expect(() => {
+      result = sink.write(event);
+    }).not.toThrow();
+    return expect(result).rejects.toThrow(TypeError);
+  });
+});
+
+describe("the copy-failure warning", () => {
+  it("names the error, not the event's content", async () => {
+    const seen = warnings();
+    const queue = new QueuedSink(new LoggingSink());
+    const event = makeEvent();
+    (event.payload as { params?: unknown }).params = { secret_key_name: BigInt(1) };
+    await queue.write(event);
+    const warning = seen.find((w) => w.includes("could not be copied"));
+    expect(warning).toContain("TypeError");
+    expect(warning).not.toContain("BigInt");
   });
 });

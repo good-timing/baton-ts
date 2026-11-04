@@ -114,7 +114,6 @@ function shutdownBudgetMs(sink: Sink): number {
 export function callWithin(sink: Sink, method: "flush" | "aclose", ms: number): Promise<void> {
   if (sink[method] === HttpSink.prototype[method]) return (sink as HttpSink)[`${method}Within`](ms);
   if (sink[method] === MultiSink.prototype[method]) return (sink as MultiSink)[`${method}Within`](ms);
-  if (sink[method] === QueuedSink.prototype[method]) return (sink as QueuedSink)[`${method}Within`](ms);
   return sink[method]();
 }
 
@@ -195,15 +194,15 @@ export class FileSink implements Sink {
 
   constructor(private readonly path: string) {}
 
-  write(event: Event): Promise<void> {
-    if (this.closed) return Promise.reject(new SinkClosedError("FileSink is closed"));
+  async write(event: Event): Promise<void> {
+    if (this.closed) throw new SinkClosedError("FileSink is closed");
     const line = JSON.stringify(event) + "\n";
     const written = this.last.then(async () => {
       this.file ??= await open(this.path, "a");
       await this.file.appendFile(line);
     });
     this.last = written.catch(() => undefined);
-    return written;
+    await written;
   }
 
   async flush(): Promise<void> {
@@ -307,12 +306,17 @@ function hookExit(): void {
   }
 }
 
-/** Writes before it returns, for the sinks that can: at exit nothing can be awaited. */
-function writeNow(sink: Sink, event: Event): boolean {
-  const line = JSON.stringify(event) + "\n";
-  if (sink instanceof StdoutSink) sink["stream"].write(line);
-  else if (sink instanceof FileSink) appendFileSync(sink["path"], line);
-  else return false;
+/** Writes `events` before it returns, for the sinks that can: at exit nothing
+ * can be awaited. False for any other sink, or a stream that may write later. */
+function writeNow(sink: Sink, events: Event[]): boolean {
+  const lines = events.map((event) => JSON.stringify(event) + "\n").join("");
+  if (sink instanceof StdoutSink) {
+    const stream = sink["stream"];
+    if (stream !== process.stdout && stream !== process.stderr) return false;
+    if (!sink["closed"]) stream.write(lines);
+  } else if (sink instanceof FileSink) {
+    if (!sink["closed"]) appendFileSync(sink["path"], lines);
+  } else return false;
   return true;
 }
 
@@ -349,15 +353,14 @@ export class QueuedSink implements Sink {
    * many events may not be written. */
   handOffAtExit(): number {
     this.abandoned = true;
-    let unsure = this.inFlight;
-    for (const event of this.queue.splice(0)) {
-      try {
-        if (!writeNow(this.inner, event)) unsure++;
-      } catch {
-        unsure++;
-      }
+    const waiting = this.queue.splice(0);
+    let written = false;
+    try {
+      written = waiting.length === 0 || writeNow(this.inner, waiting);
+    } catch {
+      // Counted below as not written.
     }
-    return unsure;
+    return this.inFlight + (written ? 0 : waiting.length);
   }
 
   async write(event: Event): Promise<void> {
@@ -372,7 +375,8 @@ export class QueuedSink implements Sink {
       PROCESS_DROPS.add("encode_failed");
       if (!this.copyWarned) {
         this.copyWarned = true;
-        warn(`baton: an event could not be copied and was dropped. Later ones are not logged: ${printable(err)}`);
+        // Only the error's name: its message can quote the event's own text.
+        warn(`baton: an event could not be copied and was dropped (${(err as Error)?.name ?? "Error"}). Later ones are not logged.`);
       }
       return;
     }
@@ -395,30 +399,18 @@ export class QueuedSink implements Sink {
     }
   }
 
-  flush(): Promise<void> {
-    return this.flushWithin(Infinity);
+  /** Waits for the events written before it, not for later ones (SPEC §11.2 rule 7). */
+  async flush(): Promise<void> {
+    if (this.closed || this.stuckAt === this.ended) return;
+    const budget = shutdownBudgetMs(this.inner);
+    const start = performance.now();
+    if ((await raceDeadline(this.settledUpTo(this.taken), budget)) === TIMED_OUT) this.stuckAt = this.ended;
+    await callWithin(this.inner, "flush", Math.max(0, budget - (performance.now() - start)));
   }
 
   /** A second call waits for the first (SPEC §11.2 rule 7). */
   aclose(): Promise<void> {
-    return this.acloseWithin(Infinity);
-  }
-
-  /** Waits for the events written before it, not for later ones (SPEC §11.2 rule 7). */
-  private async flushWithin(ms: number): Promise<void> {
-    if (this.closed || this.stuckAt === this.ended) return;
-    const full = shutdownBudgetMs(this.inner);
-    const budget = Math.min(ms, full);
-    const start = performance.now();
-    // A wait cut short by the caller's deadline does not show the write is stuck.
-    if ((await raceDeadline(this.settledUpTo(this.taken), budget)) === TIMED_OUT && budget >= full) {
-      this.stuckAt = this.ended;
-    }
-    await callWithin(this.inner, "flush", Math.max(0, budget - (performance.now() - start)));
-  }
-
-  private acloseWithin(ms: number): Promise<void> {
-    this.closeOnce ??= this.close(Math.min(ms, shutdownBudgetMs(this.inner)));
+    this.closeOnce ??= this.close(shutdownBudgetMs(this.inner));
     return this.closeOnce;
   }
 

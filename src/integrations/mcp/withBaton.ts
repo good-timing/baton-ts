@@ -907,11 +907,7 @@ async function maybeEmitSurfaceSnapshot(ctx: WrapContext): Promise<void> {
     requiredParamNames: requiredParamNames(ctx.intentParamMode),
     instructionsSuffix: instructionsSuffixServed(ctx.annotationToolName, ctx.servedInstructions()),
   });
-  try {
-    await ctx.emitSurface(ctx.fallbackSessionId, digest, { ...snapshot, seam_augmentations: seam });
-  } catch (err) {
-    process.stderr.write(`baton: surface snapshot capture failed: ${String(err)}\n`);
-  }
+  await ctx.emitSurface(ctx.fallbackSessionId, digest, { ...snapshot, seam_augmentations: seam });
 }
 
 function declaredIntentParams(vendorSchema: unknown): IntentParamDispositions {

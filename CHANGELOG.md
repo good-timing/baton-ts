@@ -60,9 +60,10 @@ the wire changes, and the `Sink` interface is the same.
   disk no longer stops the event loop.
 - A `surface_snapshot` counts as sent once it is queued. A sink that then
   fails to write it counts it `write_failed`; it is not sent again.
-- At `process.exit()` with no `aclose()`, `StdoutSink` and `FileSink` get
-  every event still queued, written at once. For any other sink those events
-  are lost, and Baton says how many on stderr. Call `aclose()` first.
+- At `process.exit()` with no `aclose()`, a `StdoutSink` on stdout or stderr
+  and a `FileSink` get every event still queued, written at once. For any
+  other sink or stream those events may be lost, and Baton says how many on
+  stderr. Call `aclose()` first.
 - One sink given to several installs gets one queue, so it is still written
   one event at a time. An `HttpSink`, or a subclass that keeps its `write`,
   gets no queue: it already has one.
@@ -73,6 +74,9 @@ the wire changes, and the `Sink` interface is the same.
   events are written, and a write that never ends holds every event behind
   it, as in the Go SDK. Neither slows the vendor; the queue's bound drops the
   oldest events instead.
+- **Known gap:** the copy is made inside the tool call, and a JSON sink
+  encodes the event again when it writes, so a large result is encoded
+  twice; only the copy is in the call's time.
 - **Known gap:** an `HttpSink` inside a `MultiSink` is behind two queues,
   each with its own bound of 1000.
 - **Known gap:** on Linux, Node writes to stderr synchronously when it is a
