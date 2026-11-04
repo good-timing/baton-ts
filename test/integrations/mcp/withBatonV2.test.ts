@@ -20,6 +20,7 @@ import { withBaton } from "../../../src/integrations/mcp/withBaton.js";
 import { CLIENT_INFO_META_KEY } from "../../../src/integrations/mcp/clientObserved.js";
 import type { Event } from "../../../src/events.js";
 import type { Sink } from "../../../src/sinks.js";
+import { holdAnswers } from "./_majors.js";
 
 class CapturingSink implements Sink {
   readonly events: Event[] = [];
@@ -59,6 +60,7 @@ function registerTools(server: McpServer): void {
 
 async function connectClient(server: McpServer): Promise<Client> {
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  holdAnswers(serverTransport);
   const client = new Client({ name: "test-client", version: "1.0.0" });
   await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
   return client;

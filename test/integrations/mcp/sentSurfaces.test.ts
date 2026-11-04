@@ -21,11 +21,4 @@ describe("SentSurfaces", () => {
     expect(sent.wasSent("h0")).toBe(true);
     expect(sent.wasSent("asked")).toBe(false);
   });
-
-  it("forgets an unmarked hash", () => {
-    const sent = new SentSurfaces();
-    sent.mark("h");
-    sent.unmark("h");
-    expect(sent.wasSent("h")).toBe(false);
-  });
 });

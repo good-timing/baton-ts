@@ -41,6 +41,7 @@ import { withBaton } from "../src/integrations/mcp/withBaton.js";
 import type { Event } from "../src/events.js";
 import { TOOL_ERROR_TYPE } from "../src/integrations/mcp/errorResult.js";
 import type { Sink } from "../src/sinks.js";
+import { holdAnswers } from "./integrations/mcp/_majors.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const vectorsDir = path.join(here, "..", "baton-spec", "vectors");
@@ -268,6 +269,7 @@ function specServer(): McpServer {
 
 async function connectSpecClient(server: McpServer): Promise<Client> {
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  holdAnswers(serverTransport);
   const client = new Client({ name: "spec-scenario", version: "1.0.0" });
   await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
   return client;
@@ -484,6 +486,7 @@ describe("cross-SDK emitter conformance (Phase 3)", () => {
 
     const [clientTransport, serverTransport] =
       InMemoryTransport.createLinkedPair();
+    holdAnswers(serverTransport);
     const client = new Client({ name: "parity-scenario", version: "1.0.0" });
     await Promise.all([
       server.connect(serverTransport),

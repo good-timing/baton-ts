@@ -197,15 +197,15 @@ describe("Client.listTools", () => {
     expect(snapshot!.runtime_meta).toBeNull();
   });
 
-  it("never rejects over a failed write, and sends it on the next list", async () => {
-    vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+  it("never rejects over a failed write, and counts it write_failed", async () => {
+    vi.spyOn(process, "emitWarning").mockImplementation(() => {});
     const { sink, client } = setup();
     sink.failNext = 1;
+    const before = PROCESS_DROPS.total().write_failed ?? 0;
     const served = await client.listTools(TOOLS);
     expect(served).toHaveLength(2);
     expect(await snapshots(client, sink)).toHaveLength(0);
-    await client.listTools(TOOLS);
-    expect(await snapshots(client, sink)).toHaveLength(1);
+    expect((PROCESS_DROPS.total().write_failed ?? 0) - before).toBe(1);
   });
 
   it("returns a list it cannot read as it came", async () => {

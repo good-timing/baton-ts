@@ -9,7 +9,7 @@ import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/cli
 import { z } from "zod";
 import { describe, expect, it } from "vitest";
 import { createBaton } from "../../../src/integrations/mcp/withBaton.js";
-import { CapturingSink, CFG, install } from "./_majors.js";
+import { CapturingSink, CFG, holdAnswers, install, nextTurn } from "./_majors.js";
 
 const CONFIG = { ...CFG, reportMode: "off" as const };
 
@@ -88,7 +88,11 @@ async function overModernHttp(sink: CapturingSink, build: () => McpServer, elici
     return server;
   });
   const transport = new StreamableHTTPClientTransport(new URL("http://localhost/mcp"), {
-    fetch: (url, init) => handler.fetch(new Request(url, init)),
+    fetch: async (url, init) => {
+      const answer = await handler.fetch(new Request(url, init));
+      await nextTurn();
+      return answer;
+    },
   });
   const client = newClient({ versionNegotiation: { mode: { pin: "2026-07-28" } } }, elicitation);
   await client.connect(transport);
@@ -99,6 +103,7 @@ async function overLegacyShim(sink: CapturingSink, build: () => McpServer, elici
   const server = build();
   install(server, sink, { reportMode: "off" });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  holdAnswers(serverTransport);
   const client = newClient({}, elicitation);
   await server.connect(serverTransport);
   await client.connect(clientTransport);

@@ -7,7 +7,9 @@ import { boundedSinkCall, type Sink } from "../../sinks.js";
  * scope for this package.
  */
 export class BatonHandle {
+  /** The sink the vendor passed, or the default one. */
   readonly sink: Sink;
+  readonly #queue: Sink;
   readonly vendorId: string;
   /** The install's own session id: what stdio and in-memory calls, and the
    * surface snapshot, carry when no session id resolves. A call over HTTP
@@ -20,11 +22,14 @@ export class BatonHandle {
 
   constructor(options: {
     sink: Sink;
+    /** What Baton writes to, in front of `sink`. */
+    queue?: Sink;
     vendorId: string;
     sessionId: string;
     annotationToolName: string;
   }) {
     this.sink = options.sink;
+    this.#queue = options.queue ?? options.sink;
     this.vendorId = options.vendorId;
     this.sessionId = options.sessionId;
     this.annotationToolName = options.annotationToolName;
@@ -33,11 +38,11 @@ export class BatonHandle {
   /** Flush any pending events held by the sink. Never rejects; returns within
    * the shutdown budget (SPEC §11.2 rule 7). */
   async flush(): Promise<void> {
-    await boundedSinkCall(this.sink, "flush");
+    await boundedSinkCall(this.#queue, "flush");
   }
 
   /** Flush and release sink resources, on the same terms as `flush()`. */
   async aclose(): Promise<void> {
-    await boundedSinkCall(this.sink, "aclose");
+    await boundedSinkCall(this.#queue, "aclose");
   }
 }

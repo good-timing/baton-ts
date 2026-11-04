@@ -16,7 +16,7 @@
  * - `MultiSink` — every event to each of several sinks.
  */
 
-import { closeSync, openSync, writeSync } from "node:fs";
+import { open, type FileHandle } from "node:fs/promises";
 import { capCodePoints, escapeForLog } from "./_text.js";
 import { MAX_TIMER_MS, raceDeadline, SHUTDOWN_FLUSH_TIMEOUT_MS, TIMED_OUT } from "./deadline.js";
 import { PROCESS_DROPS } from "./drops.js";
@@ -30,9 +30,9 @@ const REFUSAL_BODY_MAX_LEN = 500;
 const REFUSAL_LOG_MS = 60_000;
 
 export interface Sink {
-  /** Hand one event to the sink. Resolves once the sink has accepted it
-   * (which may mean buffered, not yet shipped). MUST NOT block the
-   * producer on slow downstream destinations. */
+  /** Hand one event to the sink. Baton calls it from its own queue, one
+   * event at a time, never from the vendor's call; a sink may still take as
+   * long as it needs. */
   write(event: Event): Promise<void>;
   /** Wait for any buffered events to reach their destination (or be
    * dropped per the sink's policy). No-op for synchronous sinks. */
@@ -99,6 +99,7 @@ function shutdownBudgetMs(sink: Sink): number {
   try {
     // MultiSink runs its sinks side by side, so it needs the longest budget.
     if (sink instanceof MultiSink) return Math.max(...sink["sinks"].map(shutdownBudgetMs));
+    if (sink instanceof QueuedSink) return shutdownBudgetMs(sink.inner);
     const budget: unknown = sink instanceof HttpSink ? sink["shutdownFlushTimeoutMs"] : undefined;
     if (isTimerMs(budget)) return budget;
   } catch {
@@ -112,6 +113,7 @@ function shutdownBudgetMs(sink: Sink): number {
 export function callWithin(sink: Sink, method: "flush" | "aclose", ms: number): Promise<void> {
   if (sink[method] === HttpSink.prototype[method]) return (sink as HttpSink)[`${method}Within`](ms);
   if (sink[method] === MultiSink.prototype[method]) return (sink as MultiSink)[`${method}Within`](ms);
+  if (sink[method] === QueuedSink.prototype[method]) return (sink as QueuedSink)[`${method}Within`](ms);
   return sink[method]();
 }
 
@@ -184,28 +186,37 @@ export class StdoutSink implements Sink {
  * an unused sink creates no file. Each line reaches the file before `write`
  * resolves, so `tail -f` sees it at once. */
 export class FileSink implements Sink {
-  private fd: number | null = null;
+  private file: FileHandle | null = null;
+  private closeOnce: Promise<void> | undefined;
+  /** Writes run one after another: two at once on one file can interleave. */
+  private last: Promise<unknown> = Promise.resolve();
   private closed = false;
 
   constructor(private readonly path: string) {}
 
-  async write(event: Event): Promise<void> {
-    if (this.closed) throw new SinkClosedError("FileSink is closed");
-    // Synchronous so concurrent writes land in call order: async writes on
-    // one fd go through the libuv thread pool and can interleave.
-    this.fd ??= openSync(this.path, "a");
-    writeSync(this.fd, JSON.stringify(event) + "\n");
+  write(event: Event): Promise<void> {
+    if (this.closed) return Promise.reject(new SinkClosedError("FileSink is closed"));
+    const line = JSON.stringify(event) + "\n";
+    const written = this.last.then(async () => {
+      this.file ??= await open(this.path, "a");
+      await this.file.appendFile(line);
+    });
+    this.last = written.catch(() => undefined);
+    return written;
   }
 
-  async flush(): Promise<void> {}
+  async flush(): Promise<void> {
+    await this.last;
+  }
 
-  async aclose(): Promise<void> {
-    if (this.closed) return;
+  /** A second call waits for the first (SPEC §11.2 rule 7). */
+  aclose(): Promise<void> {
     this.closed = true;
-    if (this.fd !== null) {
-      closeSync(this.fd);
-      this.fd = null;
-    }
+    this.closeOnce ??= this.last.then(async () => {
+      await this.file?.close();
+      this.file = null;
+    });
+    return this.closeOnce;
   }
 }
 
@@ -254,6 +265,198 @@ export class MultiSink implements Sink {
     if (errors.length === 1 || errors.every(isSinkClosed)) throw errors[0];
     throw new AggregateError(errors, "MultiSink fan-out failures");
   }
+}
+
+// =============================================================================
+// QueuedSink — every sink but HttpSink, written after the vendor's call
+// =============================================================================
+
+const QUEUE_BOUND = 1000;
+/** The part of close's budget kept for the inner sink's own close. */
+const CLOSE_GRACE_MS = 250;
+
+/** Later than a microtask, so the vendor's call goes on before the write. */
+const later = (run: () => void): void => {
+  if (typeof setImmediate === "function") setImmediate(run);
+  else setTimeout(run, 0);
+};
+
+const withUnwrittenEvents = new Set<QueuedSink>();
+let exitHooked = false;
+
+/** `process.exit()` gives no time to wait, so what waits is handed over at
+ * once and the rest is written straight out (SPEC §11.2 rule 7). */
+function hookExit(): void {
+  if (exitHooked) return;
+  exitHooked = true;
+  process.on("exit", () => {
+    try {
+      let unsure = 0;
+      for (const sink of withUnwrittenEvents) unsure += sink.handOffAtExit();
+      if (unsure > 0) stderrLine(`baton: process exiting; ${unsure} event(s) may not have been written.`);
+    } catch {
+      // A throw here would turn the vendor's clean exit into a crash.
+    }
+  });
+}
+
+/** Holds events for `inner` and writes them one at a time, in order, after
+ * the call that recorded them has gone on, so a slow, stuck or failing sink
+ * never slows the vendor (SPEC §11.2 rules 3 and 8). */
+export class QueuedSink implements Sink {
+  private readonly queue: Event[] = [];
+  private closed = false;
+  private draining = false;
+  /** Set when close ran out of time: what was left is already counted. */
+  private abandoned = false;
+  private inFlight = 0;
+  /** A flush waits until `settled`, the events written or lost, reaches `taken` as it was. */
+  private taken = 0;
+  private settled = 0;
+  /** `settled` when a flush waited its whole budget: until a write ends, later flushes return at once. */
+  private stuckAt: number | null = null;
+  private waiters: { upTo: number; resolve: () => void }[] = [];
+  private overflowWarned = false;
+  private failWarned = false;
+  private closeOnce: Promise<void> | undefined;
+
+  constructor(readonly inner: Sink) {}
+
+  private get unwritten(): number {
+    return this.queue.length + this.inFlight;
+  }
+
+  /** Starts a write of every waiting event without waiting for it. A
+   * `StdoutSink` writes before its call returns; for any other sink, answers
+   * how many events may be lost. */
+  handOffAtExit(): number {
+    const unsure = this.inner instanceof StdoutSink ? 0 : this.unwritten;
+    this.abandoned = true;
+    for (const event of this.queue.splice(0)) {
+      try {
+        this.inner.write(event).catch(() => undefined);
+      } catch {
+        // A sink that throws at once must not stop the rest.
+      }
+    }
+    return unsure;
+  }
+
+  async write(event: Event): Promise<void> {
+    if (this.closed) throw new SinkClosedError("the sink is closed");
+    this.queue.push(event);
+    this.taken++;
+    if (this.queue.length > QUEUE_BOUND) {
+      this.queue.shift();
+      this.settle();
+      PROCESS_DROPS.add("buffer_full");
+      if (!this.overflowWarned) {
+        this.overflowWarned = true;
+        warn(`baton: the sink's queue is full (${QUEUE_BOUND}); oldest events dropped. Further overflows will be silent.`);
+      }
+    }
+    withUnwrittenEvents.add(this);
+    hookExit();
+    if (!this.draining) {
+      this.draining = true;
+      later(() => void this.drain());
+    }
+  }
+
+  flush(): Promise<void> {
+    return this.flushWithin(Infinity);
+  }
+
+  /** A second call waits for the first (SPEC §11.2 rule 7). */
+  aclose(): Promise<void> {
+    return this.acloseWithin(Infinity);
+  }
+
+  /** Waits for the events written before it, not for later ones (SPEC §11.2 rule 7). */
+  private async flushWithin(ms: number): Promise<void> {
+    if (this.closed || this.stuckAt === this.settled) return;
+    const full = shutdownBudgetMs(this.inner);
+    const budget = Math.min(ms, full);
+    const start = performance.now();
+    // A wait cut short by the caller's deadline does not show the write is stuck.
+    if ((await raceDeadline(this.settledUpTo(this.taken), budget)) === TIMED_OUT && budget >= full) {
+      this.stuckAt = this.settled;
+    }
+    await callWithin(this.inner, "flush", Math.max(0, budget - (performance.now() - start)));
+  }
+
+  private acloseWithin(ms: number): Promise<void> {
+    this.closeOnce ??= this.close(Math.min(ms, shutdownBudgetMs(this.inner)));
+    return this.closeOnce;
+  }
+
+  private async close(ms: number): Promise<void> {
+    this.closed = true;
+    queues.delete(this.inner);
+    const start = performance.now();
+    const drainMs = ms - Math.min(CLOSE_GRACE_MS, ms / 2);
+    if ((await raceDeadline(this.settledUpTo(this.taken), drainMs)) === TIMED_OUT) {
+      const unwritten = this.unwritten;
+      this.abandoned = true;
+      this.queue.length = 0;
+      withUnwrittenEvents.delete(this);
+      PROCESS_DROPS.add("unsent_at_close", unwritten);
+      warn(`baton: closed with ${unwritten} event(s) not yet written to the sink.`);
+    }
+    await callWithin(this.inner, "aclose", Math.max(0, ms - (performance.now() - start)));
+  }
+
+  private async drain(): Promise<void> {
+    let event: Event | undefined;
+    while (!this.abandoned && (event = this.queue.shift()) !== undefined) {
+      this.inFlight = 1;
+      try {
+        await this.inner.write(event);
+      } catch (err) {
+        if (!this.abandoned) this.lose(err);
+      }
+      this.inFlight = 0;
+      this.settle();
+    }
+    this.draining = false;
+    if (this.queue.length === 0) withUnwrittenEvents.delete(this);
+  }
+
+  private lose(err: unknown): void {
+    if (isSinkClosed(err)) return droppedAfterClose(this.inner);
+    PROCESS_DROPS.add("write_failed");
+    if (this.failWarned) return;
+    this.failWarned = true;
+    warn(`baton: the sink failed to write an event; it was dropped. Later failures are not logged: ${printable(err)}`);
+  }
+
+  private settle(): void {
+    this.settled++;
+    this.waiters = this.waiters.filter((w) => {
+      if (w.upTo > this.settled) return true;
+      w.resolve();
+      return false;
+    });
+  }
+
+  private settledUpTo(upTo: number): Promise<void> {
+    if (this.settled >= upTo) return Promise.resolve();
+    return new Promise((resolve) => this.waiters.push({ upTo, resolve }));
+  }
+}
+
+/** One per sink, so a sink given to several installs is still written one event at a time. */
+const queues = new WeakMap<Sink, QueuedSink>();
+
+/** HttpSink already queues; any other sink is put behind a `QueuedSink`. */
+export function offTheCall(sink: Sink): Sink {
+  if (sink instanceof QueuedSink || Object.getPrototypeOf(sink) === HttpSink.prototype) return sink;
+  let queue = queues.get(sink);
+  if (queue === undefined) {
+    queue = new QueuedSink(sink);
+    queues.set(sink, queue);
+  }
+  return queue;
 }
 
 // =============================================================================

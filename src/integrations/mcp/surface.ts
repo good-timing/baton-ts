@@ -95,10 +95,6 @@ export class SentSurfaces {
       this.hashes.delete(this.hashes.values().next().value as string);
     }
   }
-
-  unmark(digest: string): void {
-    this.hashes.delete(digest);
-  }
 }
 
 /** The as-served delta Baton added on top of the vendor-true surface —

@@ -36,6 +36,42 @@
   They are internal, and `baton-sdk` does not export them. A principal's `form`
   is still typed `PrincipalForm` (`"raw"` or `"hashed"`).
 
+## Unreleased: sinks are written after the vendor's call
+
+Before, `StdoutSink`, `FileSink`, `MultiSink` and a vendor's own sink were
+awaited inside each tool call, so a slow or stuck sink slowed the vendor.
+Now every sink but `HttpSink` (which already queued) sits behind one queue,
+as in the Go SDK. The tool call only adds the event to the queue. Nothing on
+the wire changes, and the `Sink` interface is the same.
+
+- The queue holds 1000 events. When it is full, the oldest is dropped and
+  counted `buffer_full`, with one warning (SPEC §11.2 rule 3).
+- A sink that throws loses that event, counted `write_failed`, with one
+  warning; the next event is still written.
+- `flush()` waits for the events recorded before it. `aclose()` writes what
+  waits, then closes the sink; what close has no time for is counted
+  `unsent_at_close`. Both keep SPEC §11.2 rule 7's time limit.
+- `FileSink` writes with async file calls instead of `writeSync`, so a slow
+  disk no longer stops the event loop.
+- A `surface_snapshot` counts as sent once it is queued. A sink that then
+  fails to write it counts it `write_failed`; it is not sent again.
+- At `process.exit()` with no `aclose()`, Baton hands the sink every event
+  still queued without waiting. `StdoutSink` writes them at once; for any
+  other sink some may be lost, and Baton says how many on stderr. Call
+  `aclose()` first.
+- One sink given to several installs gets one queue, so it is still written
+  one event at a time.
+- `BatonHandle.sink` is still the sink you passed. Flush and close through
+  `handle.flush()` and `handle.aclose()`: the sink's own `flush()` and
+  `aclose()` skip the events still queued.
+- A one-at-a-time queue means a sink whose every write is slow caps how fast
+  events are written, and a write that never ends holds every event behind
+  it, as in the Go SDK. Neither slows the vendor; the queue's bound drops the
+  oldest events instead.
+- **Known gap:** on Linux, Node writes to stderr synchronously when it is a
+  pipe. If the pipe is full, `StdoutSink` still pauses the event loop while
+  the queue writes to it, though no longer inside a tool call.
+
 ## 0.6.8: the off warning names tool_list_error
 
 - **The `resultCaptureMode: "off"` warning names `tool_list_error`** (SPEC

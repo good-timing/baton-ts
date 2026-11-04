@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -76,6 +76,25 @@ describe("FileSink", () => {
     const [first, ...rest] = readFileSync(path, "utf8").trimEnd().split("\n");
     expect(first).toBe("earlier");
     expect(rest.map((line) => (JSON.parse(line) as Event).sequence_number)).toEqual([0, 1, 2, 3, 4]);
+  });
+
+  it("opens the file again on the next write after a failed open", async () => {
+    const dir = join(mkdtempSync(join(tmpdir(), "baton-filesink-")), "later");
+    const sink = new FileSink(join(dir, "events.jsonl"));
+    await expect(sink.write(makeEvent())).rejects.toThrow();
+    mkdirSync(dir);
+    await sink.write(makeEvent());
+    await sink.aclose();
+    expect(readFileSync(join(dir, "events.jsonl"), "utf8").trimEnd().split("\n")).toHaveLength(1);
+  });
+
+  it("a second close waits for the first to finish writing", async () => {
+    const path = tempPath();
+    const sink = new FileSink(path);
+    void sink.write(makeEvent());
+    void sink.aclose();
+    await sink.aclose();
+    expect(readFileSync(path, "utf8").trimEnd().split("\n")).toHaveLength(1);
   });
 
   it("rejects writes after close, and a second close is a no-op", async () => {

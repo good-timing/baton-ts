@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { createBaton, withBaton } from "../../../src/index.js";
 import { SENT_SURFACES_CAP } from "../../../src/integrations/mcp/surface.js";
+import { PROCESS_DROPS } from "../../../src/drops.js";
 import { CapturingSink, CFG, expectNumberedFromOne, expectNumberedInOrderOnAStoppedClock, MAJORS, type Major } from "./_majors.js";
 
 const DSN = `https://baton_pk_${"a".repeat(43)}@ingest.example.com/ten_655b084e118b43f88992ee6357fcc23c/echo-server`;
@@ -144,25 +145,22 @@ describe.each(MAJORS)("createBaton on $label", (major) => {
     await new Promise((resolve) => setTimeout(resolve, 50));
     releaseWrites();
     await Promise.all(requests);
+    await baton.flush();
 
     expect(count(sink, "surface_snapshot")).toBe(1);
   });
 
-  it("sends the surface again after a failed write", async () => {
+  it("counts a surface the sink failed to write, and does not send it again", async () => {
     const { sink, failed } = failFirstSurfaceWrite();
+    vi.spyOn(process, "emitWarning").mockImplementation(() => {});
+    const before = PROCESS_DROPS.total().write_failed ?? 0;
     const baton = createBaton({ ...CFG, sink });
     for (let i = 0; i < 2; i++) await serveOneRequest(major, (server) => baton.wrap(server));
+    await baton.flush();
 
     expect(failed()).toBe(true);
-    expect(count(sink, "surface_snapshot")).toBe(1);
-  });
-
-  it("sends the surface again on the same server after a failed write", async () => {
-    const { sink, failed } = failFirstSurfaceWrite();
-    await serveOneRequest(major, (server) => withBaton(server, { ...CFG, sink }), "echo", 2);
-
-    expect(failed()).toBe(true);
-    expect(count(sink, "surface_snapshot")).toBe(1);
+    expect(count(sink, "surface_snapshot")).toBe(0);
+    expect((PROCESS_DROPS.total().write_failed ?? 0) - before).toBe(1);
   });
 
   it("reads the environment once, when it is created", async () => {

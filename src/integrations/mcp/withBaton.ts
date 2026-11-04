@@ -107,7 +107,7 @@ import {
   ToolListErrorEventSchema,
   ToolListStartEventSchema,
 } from "../../events.js";
-import { boundedSinkCall, droppedAfterClose, isSinkClosed, StdoutSink, type Sink } from "../../sinks.js";
+import { boundedSinkCall, offTheCall, StdoutSink, type Sink } from "../../sinks.js";
 import { registerAnnotationTool, TOOL_NAME_PARAM_NAME } from "./annotation.js";
 import { Scrubber } from "../../scrub.js";
 import { scrubOrNull } from "./safeScrub.js";
@@ -881,11 +881,8 @@ function stripIntentParams(
  * among the last `SENT_SURFACES_CAP` that `sentSurfaces` has seen. `dirty`
  * is cleared FIRST so a hashing/serialization error (deterministic — would
  * just re-throw identically every call) costs one attempt per surface
- * change, not a retry storm. A WRITE failure is different (sink health can recover),
- * so that path re-sets `dirty = true` to retry on this server's next call,
- * and takes the digest back out of `sentSurfaces` so a later server sends it:
- * `createBaton.test.ts`, "sends the surface again after a failed write" and
- * "sends the surface again on the same server after a failed write". */
+ * change, not a retry storm. The write only queues, so a snapshot counts as
+ * sent once queued; a sink that later fails to write it counts it `write_failed`. */
 async function maybeEmitSurfaceSnapshot(ctx: WrapContext): Promise<void> {
   if (!ctx.surfaceState.dirty) return;
   ctx.surfaceState.dirty = false;
@@ -914,8 +911,6 @@ async function maybeEmitSurfaceSnapshot(ctx: WrapContext): Promise<void> {
     await ctx.emitSurface(ctx.fallbackSessionId, digest, { ...snapshot, seam_augmentations: seam });
   } catch (err) {
     process.stderr.write(`baton: surface snapshot capture failed: ${String(err)}\n`);
-    sent.unmark(digest);
-    ctx.surfaceState.dirty = true;
   }
 }
 
@@ -1944,7 +1939,7 @@ export function createBaton(supplied: BatonConfig = {}): Baton {
   // After every check that needs no server; those that do run on each `wrap`.
   if (unconfigured) logUnconfigured("createBaton");
   else warnAboutSettings(resolved);
-  const sink = unconfigured ? new DisabledSink() : (resolved.sink ?? new StdoutSink());
+  const sink = unconfigured ? new DisabledSink() : offTheCall(resolved.sink ?? new StdoutSink());
   const config = {
     ...resolved,
     sink,
@@ -2045,7 +2040,8 @@ function install(
   // The checks that change nothing are above this line; from here on the install
   // builds a sink and changes the server.
   if (unconfigured) return inertHandle(new DisabledSink(), "baton-unconfigured");
-  const sink = config.sink ?? new StdoutSink();
+  const given = config.sink ?? new StdoutSink();
+  const sink = offTheCall(given);
   const intentParamMode: IntentParamMode = config.intentParamMode ?? DEFAULT_INTENT_PARAM_MODE;
   // Per server: two connections are never one session (SPEC §3.4), as
   // `createBaton.test.ts` "never joins two connections that have no session id" checks.
@@ -2069,14 +2065,10 @@ function install(
     digest: string,
     snapshot: Record<string, unknown>,
   ): Promise<void> => {
-    // NOT `emit()`'s fail-open wrapper — this deliberately lets a write
-    // failure propagate so maybeEmitSurfaceSnapshot can tell success from
-    // failure and retry on the next call rather than silently treating the
-    // surface as emitted. The caller still fails open overall (SPEC
-    // §11.2): it catches this and never lets it reach the vendor's call.
     // Deliberately NOT scrubbed — this is the vendor's own static tool
     // surface, not caller-supplied data (mirrors Python's emit_surface).
-    const event = SurfaceSnapshotEventSchema.parse({
+    await emit(sink, () =>
+      SurfaceSnapshotEventSchema.parse({
       tenant_id: tenantId,
       vendor_id: config.vendorId,
       session_id: sessionId,
@@ -2092,14 +2084,8 @@ function install(
         tools: snapshot.tools,
         seam_augmentations: snapshot.seam_augmentations,
       },
-    });
-    try {
-      await sink.write(event);
-    } catch (err) {
-      // A closed sink stays closed, so this surface is not retried.
-      if (isSinkClosed(err)) return droppedAfterClose(sink);
-      throw err;
-    }
+    }),
+    );
   };
 
   // v2 memoises each tool's converted JSON Schema at registration
@@ -2281,7 +2267,8 @@ function install(
   };
 
   return new BatonHandle({
-    sink,
+    sink: given,
+    queue: sink,
     vendorId: config.vendorId,
     sessionId: fallbackSessionId,
     annotationToolName: resolvedAnnotationToolName,

@@ -26,6 +26,7 @@ import {
   PRINCIPAL_SOURCE_ASSERTED,
 } from "../../../src/identity.js";
 import { CHATGPT_IPHONE_META } from "../../openaiMetaSamples.js";
+import { holdAnswers } from "./_majors.js";
 
 class CapturingSink implements Sink {
   readonly events: Event[] = [];
@@ -52,6 +53,7 @@ function registerTools(server: McpServer): void {
 async function connectClient(server: McpServer): Promise<Client> {
   const [clientTransport, serverTransport] =
     InMemoryTransport.createLinkedPair();
+  holdAnswers(serverTransport);
   const client = new Client({ name: "test-client", version: "1.0.0" });
   await Promise.all([
     server.connect(serverTransport),

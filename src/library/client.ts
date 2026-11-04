@@ -16,7 +16,6 @@
  * dropped. Only a bad config throws, and only from the constructor.
  */
 
-import { raceDeadline, TIMED_OUT } from "../deadline.js";
 import { nextClockSequence } from "../sequence.js";
 import type { Event } from "../events.js";
 import {
@@ -30,7 +29,7 @@ import {
 import { parseDsn, selectDsn } from "../dsn.js";
 import { captureDisabled, DisabledSink, logDisabled } from "../optout.js";
 import { Scrubber } from "../scrub.js";
-import { boundedSinkCall, callWithin, droppedAfterClose, HttpSink, isSinkClosed, type Sink } from "../sinks.js";
+import { boundedSinkCall, HttpSink, offTheCall, safeWrite, type Sink } from "../sinks.js";
 import { PROCESS_DROPS } from "../drops.js";
 import { printable } from "../warn.js";
 import { uuid7 } from "../uuid7.js";
@@ -231,7 +230,6 @@ function paramsOf(args: readonly unknown[]): Record<string, unknown> {
 /** What a client holds that its traces read. */
 class Core {
   closed = false;
-  private readonly pending = new Set<Promise<void>>();
   private closedWarned = false;
   // A snapshot describes the server, so it takes no block's session,
   // principal or client: SPEC §11.5.1's join must not count it.
@@ -247,7 +245,7 @@ class Core {
   readonly disabled: boolean;
 
   constructor(resolved: Resolved & { scrubber: (value: unknown) => unknown; disabled: boolean }) {
-    this.sink = resolved.sink;
+    this.sink = offTheCall(resolved.sink);
     this.vendorId = resolved.vendorId;
     this.tenantId = resolved.tenantId;
     this.consentToken = resolved.consentToken;
@@ -281,20 +279,13 @@ class Core {
     return false;
   }
 
-  /** Never rejects. Tracked so `flush()` can wait for it. */
+  /** Never rejects. */
   emit(build: () => Event): Promise<void> {
-    return this.track(emit(this.sink, build));
+    return emit(this.sink, build);
   }
 
-  private track(work: Promise<void>): Promise<void> {
-    const tracked = work.finally(() => this.pending.delete(tracked));
-    this.pending.add(tracked);
-    return tracked;
-  }
-
-  /** Sends `surface` unless this client already has. Never rejects; a failed
-   * write unmarks it, so the next `listTools` tries again. A surface that does
-   * not fit the schema stays marked: it would fail the same way every time. */
+  /** Sends `surface` unless this client already has. Never rejects. The
+   * write only queues, so a surface counts as sent once queued. */
   sendSurface(surface: Surface): Promise<void> {
     if (this.sentSurfaces.wasSent(surface.digest) || !this.live()) return Promise.resolve();
     this.sentSurfaces.mark(surface.digest);
@@ -315,33 +306,7 @@ class Core {
       process.stderr.write(`baton: surface snapshot dropped; it does not fit the schema: ${printable(err)}\n`);
       return Promise.resolve();
     }
-    return this.track(
-      (async () => {
-        try {
-          await this.sink.write(event);
-        } catch (err) {
-          if (isSinkClosed(err)) return droppedAfterClose(this.sink);
-          process.stderr.write(`baton: surface snapshot not sent; will retry: ${printable(err)}\n`);
-          this.sentSurfaces.unmark(surface.digest);
-        }
-      })(),
-    );
-  }
-
-  /** Waits up to `ms` for pending events to reach the sink; with `untilEmpty`,
-   * also for ones emitted while it waits. A write still pending when time runs
-   * out is not waited on again, so one stuck write costs one wait. */
-  async settleWithin(ms: number, untilEmpty: boolean): Promise<void> {
-    const deadline = performance.now() + ms;
-    do {
-      const waiting = [...this.pending];
-      if ((await raceDeadline(Promise.allSettled(waiting), deadline - performance.now())) === TIMED_OUT) {
-        const left = waiting.filter((write) => this.pending.delete(write));
-        // Lost only for close: after a flush the write may still finish.
-        if (untilEmpty) PROCESS_DROPS.add("unsent_at_close", left.length);
-        return;
-      }
-    } while (untilEmpty && this.pending.size > 0);
+    return safeWrite(this.sink, event);
   }
 
   scrub(value: unknown, field: ScrubbedField): unknown {
@@ -660,23 +625,13 @@ export class Client {
   /** Wait for events so far to reach the sink, then flush it. Never rejects;
    * returns within the sink's shutdown budget plus 250 ms (SPEC §11.2 rule 7). */
   async flush(): Promise<void> {
-    await this.#settleThen("flush");
+    await boundedSinkCall(this.#core.sink, "flush");
   }
 
   /** Flush, then close the sink. Later events are dropped. */
   aclose(): Promise<void> {
-    this.#closing ??= this.#settleThen("aclose");
+    this.#core.closed = true;
+    this.#closing ??= boundedSinkCall(this.#core.sink, "aclose");
     return this.#closing;
-  }
-
-  /** One budget: events in flight get until its end to reach the sink, then
-   * the sink gets the time left. */
-  async #settleThen(method: "flush" | "aclose"): Promise<void> {
-    await boundedSinkCall(this.#core.sink, method, async (budgetMs) => {
-      const deadline = performance.now() + budgetMs;
-      await this.#core.settleWithin(budgetMs, method === "aclose");
-      if (method === "aclose") this.#core.closed = true;
-      await callWithin(this.#core.sink, method, Math.max(0, deadline - performance.now()));
-    });
   }
 }

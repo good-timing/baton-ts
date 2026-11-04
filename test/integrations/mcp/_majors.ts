@@ -42,6 +42,19 @@ export async function resolveCallPrincipal(
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
+/** Baton writes events after the call that recorded them goes on. Holding
+ * each answer for one turn of the event loop lets a test read the events as
+ * soon as its request resolves. */
+export function holdAnswers(serverTransport: { send: (...args: any[]) => Promise<void> }): void {
+  const send = serverTransport.send.bind(serverTransport);
+  serverTransport.send = async (...args: any[]) => {
+    await nextTurn();
+    return send(...args);
+  };
+}
+
+export const nextTurn = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
+
 export class CapturingSink implements Sink {
   readonly events: Event[] = [];
   closed = false;
@@ -177,6 +190,7 @@ const V1: Major = {
   connect: async (server, options) => {
     const [clientTransport, serverTransport] = TransportV1.createLinkedPair();
     withAuthInfo(clientTransport, options?.authInfo);
+    holdAnswers(serverTransport);
     if (options?.sessionId !== undefined) serverTransport.sessionId = options.sessionId;
     const client = new ClientV1({ name: "test-client", version: "1.0.0" });
     await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
@@ -209,6 +223,7 @@ const V2: Major = {
   connect: async (server, options) => {
     const [clientTransport, serverTransport] = TransportV2.createLinkedPair();
     withAuthInfo(clientTransport, options?.authInfo);
+    holdAnswers(serverTransport);
     if (options?.sessionId !== undefined) serverTransport.sessionId = options.sessionId;
     const client = new ClientV2({ name: "test-client", version: "1.0.0" });
     await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);

@@ -24,6 +24,7 @@ import { withBaton } from "../src/integrations/mcp/withBaton.js";
 import { captureDisabled, DisabledSink } from "../src/optout.js";
 import type { Event } from "../src/events.js";
 import type { Sink } from "../src/sinks.js";
+import { holdAnswers } from "./integrations/mcp/_majors.js";
 
 const KEY = "baton_pk_" + "a".repeat(43);
 const DSN = `https://${KEY}@ingest.example.com/ten_${"6".repeat(32)}/echo-server`;
@@ -42,6 +43,7 @@ class CapturingSink implements Sink {
 
 async function connect(server: McpServer): Promise<Client> {
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  holdAnswers(serverTransport);
   const client = new Client({ name: "test-client", version: "1.0.0" });
   await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
   return client;
