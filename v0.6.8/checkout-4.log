@@ -1,0 +1,8 @@
+(node:7488) Warning: Baton HTTP sink buffer full (1000); oldest events dropped. Further overflows will be silent.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:7488) Warning: baton: the sink closed with 1100 event(s) unsent.
+(node:7488) Warning: Baton HTTP sink buffer full (1000); oldest events dropped. Further overflows will be silent.
+(node:7488) Warning: baton: the sink closed with 1000 event(s) unsent.
+(node:7488) Warning: baton: delivering again; 8002 event(s) lost before this: buffer_full 5902, unsent_at_close 2100.
+(node:7488) Warning: Baton HTTP sink buffer full (1000); oldest events dropped. Further overflows will be silent.
+(node:7488) Warning: baton: the sink closed with 1000 event(s) unsent.
