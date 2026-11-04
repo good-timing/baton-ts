@@ -776,6 +776,8 @@ export type ToolListErrorEvent = z.infer<typeof ToolListErrorEventSchema>;
 // Discriminated union — mirrors Python's `Event` (discriminator: event_type)
 // =============================================================================
 
+/** @experimental The zod schema for any event. Its type names zod's, so it may
+ * change with a zod major. */
 export const EventSchema = z.discriminatedUnion("event_type", [
   ToolCallStartEventSchema,
   ToolCallEndEventSchema,

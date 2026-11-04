@@ -9,6 +9,7 @@
 
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
+import ts from "typescript";
 import { describe, expect, it } from "vitest";
 
 import { EventTypeSchema } from "../src/events.js";
@@ -24,34 +25,96 @@ function sourceFiles(dir: string): string[] {
 }
 
 describe("public surface", () => {
-  /** Every event type the SDK can emit has its schema and its two types
-   * EXPORTED from `src/index.ts`.
-   *
-   * ⚠ **Derived from `EventTypeSchema`, so a new event type acquires this
-   * requirement by existing.** The way this regresses is the way it already
-   * did twice: the rolled-up `dist/index.d.ts` carries a type transitively
-   * whenever `Event` references it, but WITHOUT `export` — so `tsc` is green,
-   * every test is green, and the only person who finds out is a vendor trying
-   * to name it. `ResultCaptureMode` cost `f1b7ab2` exactly that way, and the
-   * twelve lifecycle types cost it again one commit after they landed.
-   *
-   * Read as TEXT rather than by importing `index.js` and checking keys,
-   * because a TYPE export leaves no runtime key to check — and the types are
-   * half of what a vendor needs. */
-  it("exports a schema and both types for every event type in the enum", () => {
-    const index = readFileSync(join(SRC, "index.ts"), "utf8");
+  // From 1.0 removing any of these is a 2.0, and adding one is a promise.
+  it("exports exactly these values", async () => {
+    const api = await import("../src/index.js");
+    expect(Object.keys(api).sort()).toEqual([
+      "BatonHandle",
+      "Client",
+      "EventSchema",
+      "FileSink",
+      "HttpSink",
+      "INTENT_INSTRUCTIONS",
+      "INTENT_PARAMS",
+      "MultiSink",
+      "SDK_VERSION",
+      "Scrubber",
+      "SinkClosedError",
+      "StdoutSink",
+      "Trace",
+      "createBaton",
+      "identityScrub",
+      "principalFromOAuthEmail",
+      "principalFromOAuthSub",
+      "withBaton",
+    ]);
+  });
+
+  /** Read from the compiler, so it covers type exports too, which leave no
+   * runtime key. The event types are derived from `EventTypeSchema`, so a new
+   * event type must be exported by existing: the rolled-up `dist/index.d.ts`
+   * carries a type `Event` names, but without `export`, so nothing else fails. */
+  it("exports exactly these names, values and types", () => {
+    const index = join(SRC, "index.ts");
+    const program = ts.createProgram([index], { module: ts.ModuleKind.NodeNext, noEmit: true });
+    const checker = program.getTypeChecker();
+    const module = checker.getSymbolAtLocation(program.getSourceFile(index)!)!;
     const pascal = (type: string): string =>
       type
         .split("_")
         .map((part) => part[0]!.toUpperCase() + part.slice(1))
         .join("");
-    const missing = EventTypeSchema.options.flatMap((type) => {
-      const base = pascal(type);
-      return [`${base}Event`, `${base}Payload`, `${base}EventSchema`, `${base}PayloadSchema`].filter(
-        (name) => !new RegExp(`^\\s*${name},$`, "m").test(index),
-      );
-    });
-    expect(missing).toEqual([]);
+    const eventTypes = EventTypeSchema.options.flatMap((type) => [
+      `${pascal(type)}Event`,
+      `${pascal(type)}Payload`,
+    ]);
+    const names = checker.getExportsOfModule(module).map((symbol) => symbol.name);
+    expect(names.sort()).toEqual(
+      [
+        ...eventTypes,
+        "AnnotateOptions",
+        "AuthInfo",
+        "Baton",
+        "BatonConfig",
+        "BatonHandle",
+        "Client",
+        "ClientOptions",
+        "Event",
+        "EventSchema",
+        "EventType",
+        "FileSink",
+        "HeaderInput",
+        "HttpSink",
+        "HttpSinkOptions",
+        "INTENT_INSTRUCTIONS",
+        "INTENT_PARAMS",
+        "IntentParam",
+        "ListToolsOptions",
+        "MultiSink",
+        "ObservedError",
+        "Organization",
+        "Principal",
+        "PrincipalForm",
+        "PrincipalResolutionContext",
+        "ResolvePrincipalHook",
+        "ResultCaptureMode",
+        "SDK_VERSION",
+        "Scrubber",
+        "SessionOptions",
+        "Sink",
+        "SinkClosedError",
+        "StdoutSink",
+        "StdoutSinkOptions",
+        "SupportedMcpServer",
+        "Trace",
+        "TraceOptions",
+        "createBaton",
+        "identityScrub",
+        "principalFromOAuthEmail",
+        "principalFromOAuthSub",
+        "withBaton",
+      ].sort(),
+    );
   });
 });
 

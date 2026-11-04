@@ -80,60 +80,12 @@ export type {
   ToolListErrorPayload,
 } from "./events.js";
 
-export { DEFAULT_CONSENT_TOKEN } from "./events.js";
+export { EventSchema } from "./events.js";
 
-export {
-  EventSchema,
-  EventTypeSchema,
-  ToolCallStartEventSchema,
-  ToolCallStartPayloadSchema,
-  ToolCallEndEventSchema,
-  ToolCallEndPayloadSchema,
-  ToolCallErrorEventSchema,
-  ToolCallErrorPayloadSchema,
-  AnnotationEventSchema,
-  AnnotationPayloadSchema,
-  SurfaceSnapshotEventSchema,
-  SurfaceSnapshotPayloadSchema,
-  ClientReportEventSchema,
-  ClientReportPayloadSchema,
-  PrincipalWireSchema,
-  ResourceListStartEventSchema,
-  ResourceListStartPayloadSchema,
-  ResourceListEndEventSchema,
-  ResourceListEndPayloadSchema,
-  ResourceListErrorEventSchema,
-  ResourceListErrorPayloadSchema,
-  ResourceReadStartEventSchema,
-  ResourceReadStartPayloadSchema,
-  ResourceReadEndEventSchema,
-  ResourceReadEndPayloadSchema,
-  ResourceReadErrorEventSchema,
-  ResourceReadErrorPayloadSchema,
-  PromptListStartEventSchema,
-  PromptListStartPayloadSchema,
-  PromptListEndEventSchema,
-  PromptListEndPayloadSchema,
-  PromptListErrorEventSchema,
-  PromptListErrorPayloadSchema,
-  PromptGetStartEventSchema,
-  PromptGetStartPayloadSchema,
-  PromptGetEndEventSchema,
-  PromptGetEndPayloadSchema,
-  PromptGetErrorEventSchema,
-  PromptGetErrorPayloadSchema,
-  ToolListStartEventSchema,
-  ToolListStartPayloadSchema,
-  ToolListEndEventSchema,
-  ToolListEndPayloadSchema,
-  ToolListErrorEventSchema,
-  ToolListErrorPayloadSchema,
-} from "./events.js";
-
-export { Scrubber, identityScrub, DEPTH_LIMIT, DEPTH_MARKER } from "./scrub.js";
+export { Scrubber, identityScrub } from "./scrub.js";
 
 export type { Sink, StdoutSinkOptions, HttpSinkOptions } from "./sinks.js";
-export { StdoutSink, FileSink, HttpSink, MultiSink, SinkClosedError, safeWrite } from "./sinks.js";
+export { StdoutSink, FileSink, HttpSink, MultiSink, SinkClosedError } from "./sinks.js";
 
 export type { BatonConfig } from "./integrations/mcp/index.js";
 // `BatonConfig.resultCaptureMode` is typed with it, so a vendor cannot name
@@ -150,17 +102,6 @@ export type { SupportedMcpServer } from "./integrations/mcp/index.js";
 // signs its function against, so a vendor cannot write a typed hook without
 // naming them.
 export type { Organization, Principal, PrincipalForm } from "./identity.js";
-// `PrincipalWire` and `callerFor` are NOT exported: they are the PRODUCER's,
-// and `identityWire` behind `callerFor` is the single construction site for
-// the wire object. `Event.principal` is inferred from `PrincipalWireSchema`, whose
-// members are deliberately open, so a consumer wanting a name for the
-// received shape uses `z.infer<typeof PrincipalWireSchema>` or
-// `Event["principal"]`.
-export {
-  PRINCIPAL_FORM_HASHED,
-  PRINCIPAL_FORM_RAW,
-  PRINCIPAL_SOURCE_ASSERTED,
-} from "./identity.js";
 export type {
   AuthInfo,
   ResolvePrincipalHook,

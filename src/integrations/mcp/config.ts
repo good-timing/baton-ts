@@ -94,8 +94,9 @@ export interface BatonConfig {
   /** End-user consent token attached to every emitted event per SPEC §2.3 —
    * the Console MUST reject events missing it.
    *
-   * **Defaulted, so the customer never has to carry it** — see
-   * `DEFAULT_CONSENT_TOKEN` for why the field stays on the wire regardless.
+   * **Defaulted to `"customer-consented"`, so the customer never has to carry
+   * it.** The field stays on the wire: SPEC §2.3 governs the envelope, not the
+   * config.
    * Passing `""` explicitly still throws: a value the vendor deliberately
    * emptied is a mistake, not a request for the default.
    *

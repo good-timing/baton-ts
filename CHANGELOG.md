@@ -1,5 +1,41 @@
 # Changelog
 
+## Unreleased: the public API for 1.0
+
+**Breaking.** These exports are removed. Nothing on the wire changes.
+
+- **44 zod schemas.** A schema's type is zod's, so exporting them would tie
+  this package's API to zod's major. To check an event at runtime, use
+  `EventSchema.parse` (or `safeParse`) and narrow on `event_type`. The event
+  types all stay. The 44:
+  `AnnotationEventSchema`, `AnnotationPayloadSchema`,
+  `ClientReportEventSchema`, `ClientReportPayloadSchema`, `EventTypeSchema`,
+  `PrincipalWireSchema`, `PromptGetEndEventSchema`,
+  `PromptGetEndPayloadSchema`, `PromptGetErrorEventSchema`,
+  `PromptGetErrorPayloadSchema`, `PromptGetStartEventSchema`,
+  `PromptGetStartPayloadSchema`, `PromptListEndEventSchema`,
+  `PromptListEndPayloadSchema`, `PromptListErrorEventSchema`,
+  `PromptListErrorPayloadSchema`, `PromptListStartEventSchema`,
+  `PromptListStartPayloadSchema`, `ResourceListEndEventSchema`,
+  `ResourceListEndPayloadSchema`, `ResourceListErrorEventSchema`,
+  `ResourceListErrorPayloadSchema`, `ResourceListStartEventSchema`,
+  `ResourceListStartPayloadSchema`, `ResourceReadEndEventSchema`,
+  `ResourceReadEndPayloadSchema`, `ResourceReadErrorEventSchema`,
+  `ResourceReadErrorPayloadSchema`, `ResourceReadStartEventSchema`,
+  `ResourceReadStartPayloadSchema`, `SurfaceSnapshotEventSchema`,
+  `SurfaceSnapshotPayloadSchema`, `ToolCallEndEventSchema`,
+  `ToolCallEndPayloadSchema`, `ToolCallErrorEventSchema`,
+  `ToolCallErrorPayloadSchema`, `ToolCallStartEventSchema`,
+  `ToolCallStartPayloadSchema`, `ToolListEndEventSchema`,
+  `ToolListEndPayloadSchema`, `ToolListErrorEventSchema`,
+  `ToolListErrorPayloadSchema`, `ToolListStartEventSchema`,
+  `ToolListStartPayloadSchema`.
+- **`EventSchema` stays and is experimental:** it may change with a zod major.
+- **`safeWrite`, `DEPTH_LIMIT`, `DEPTH_MARKER`, `DEFAULT_CONSENT_TOKEN`,
+  `PRINCIPAL_FORM_HASHED`, `PRINCIPAL_FORM_RAW`, `PRINCIPAL_SOURCE_ASSERTED`.**
+  They are internal, and `baton-sdk` does not export them. A principal's `form`
+  is still typed `PrincipalForm` (`"raw"` or `"hashed"`).
+
 ## 0.6.8: the off warning names tool_list_error
 
 - **The `resultCaptureMode: "off"` warning names `tool_list_error`** (SPEC
