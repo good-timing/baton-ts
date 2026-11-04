@@ -32,8 +32,8 @@ const REFUSAL_LOG_MS = 60_000;
 
 export interface Sink {
   /** Hand one event to the sink. Baton calls a sink you write from its own
-   * queue, one event at a time, never from the vendor's call, so it may take
-   * as long as it needs. */
+   * queue, one event at a time, never from the vendor's call: a slow write
+   * delays later events, not the vendor. */
   write(event: Event): Promise<void>;
   /** Wait for any buffered events to reach their destination (or be
    * dropped per the sink's policy). No-op for synchronous sinks. */
@@ -268,7 +268,7 @@ export class MultiSink implements Sink {
 }
 
 // =============================================================================
-// QueuedSink — every sink but HttpSink, written after the vendor's call
+// QueuedSink — every sink but HttpSink, written off the vendor's call
 // =============================================================================
 
 const QUEUE_BOUND = 1000;
@@ -286,8 +286,9 @@ const later = (run: () => void): void => {
 const withUnwrittenEvents = new Set<QueuedSink>();
 let exitHooked = false;
 
-/** `process.exit()` gives no time to wait, so what waits is handed over at
- * once and the rest is written straight out (SPEC §11.2 rule 7). */
+/** At `process.exit()` nothing can be awaited: queued events go synchronously
+ * to a `StdoutSink` on stdout/stderr or a `FileSink`, and are reported as
+ * possibly lost for any other sink (SPEC §11.2 rules 7 and 8). */
 function hookExit(): void {
   if (exitHooked) return;
   exitHooked = true;
@@ -327,7 +328,7 @@ export class QueuedSink implements Sink {
   private readonly queue: Event[] = [];
   private closed = false;
   private draining = false;
-  /** Set when close ran out of time: what was left is already counted. */
+  /** Set when close ran out of time or the process is exiting: what was left is already handled. */
   private abandoned = false;
   private inFlight = 0;
   /** A flush waits until `settled`, the events written or lost, reaches `taken` as it was. */

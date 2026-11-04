@@ -36,7 +36,7 @@
   They are internal, and `baton-sdk` does not export them. A principal's `form`
   is still typed `PrincipalForm` (`"raw"` or `"hashed"`).
 
-## Unreleased: sinks are written after the vendor's call
+## Unreleased: sinks are written off the vendor's call
 
 Before, `StdoutSink`, `FileSink`, `MultiSink` and a vendor's own sink were
 awaited inside each tool call, so a slow or stuck sink slowed the vendor.
@@ -53,7 +53,7 @@ the wire changes, and the `Sink` interface is the same.
   JSON would write it. An event JSON cannot hold, such as one with a
   `BigInt`, is dropped and counted `encode_failed`, with one warning.
 - `flush()` waits for the events recorded before it. `aclose()` writes what
-  waits, still taking events recorded meanwhile, then closes the sink; what
+  waits, still taking events recorded meanwhile, then closes the sink. What
   close has no time for is counted `unsent_at_close`. Both keep SPEC §11.2
   rule 7's time limit.
 - `FileSink` writes with async file calls instead of `writeSync`, so a slow
@@ -70,10 +70,10 @@ the wire changes, and the `Sink` interface is the same.
 - `BatonHandle.sink` is still the sink you passed. Flush and close through
   `handle.flush()` and `handle.aclose()`: the sink's own `flush()` and
   `aclose()` skip the events still queued.
-- A one-at-a-time queue means a sink whose every write is slow caps how fast
-  events are written, and a write that never ends holds every event behind
-  it, as in the Go SDK. Neither slows the vendor; the queue's bound drops the
-  oldest events instead.
+- The queue writes one event at a time, as in the Go SDK. A slow sink caps
+  how fast events are written. A write that never ends holds every event
+  behind it. Neither slows the vendor; the queue's bound drops the oldest
+  events instead.
 - **Known gap:** the copy is made inside the tool call, and a JSON sink
   encodes the event again when it writes, so a large result is encoded
   twice; only the copy is in the call's time.
