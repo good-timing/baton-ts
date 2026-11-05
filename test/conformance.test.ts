@@ -1,5 +1,5 @@
 /**
- * Wire-conformance test — the load-bearing check per CHARTER: TS-emitted
+ * Wire-conformance test — the load-bearing check: TS-emitted
  * events must be JSON-identical in shape to Python-emitted events (only
  * `sdk_version`/`event_id`/`captured_at`/`sequence_number` may differ).
  *

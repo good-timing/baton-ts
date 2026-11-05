@@ -2,7 +2,7 @@
 
 *Follows the [AGENTS.md](https://agents.md) convention — discovered automatically by Claude Code, Cursor, OpenAI Codex CLI, and other AI coding agents.*
 
-This is the TypeScript counterpart to [`baton`](https://github.com/good-timing/baton) (the Python `baton-sdk`). It has no `CHARTER.md` or `SPEC.md` of its own — **read `baton`'s `docs/CHARTER.md` and `docs/SPEC.md` first**; every boundary rule and ADR there applies here too. This file only adds what's TypeScript-specific.
+This is the TypeScript counterpart to [`baton`](https://github.com/good-timing/baton) (the Python `baton-sdk`). It has no design rules or spec of its own — **read [`baton`'s design rules](https://github.com/good-timing/baton/blob/main/AGENTS.md#design-rules) and [`baton-spec`'s `SPEC.md`](https://github.com/good-timing/baton-spec/blob/main/SPEC.md) first**. Every rule there applies here too. This file only adds what's TypeScript-specific.
 
 ## Status
 
@@ -49,4 +49,4 @@ Use `npm run ci` as the canonical gate (matches GitHub Actions).
 
 ## When in doubt
 
-Read `baton`'s `docs/CHARTER.md` first. It's the North Star for this repo too.
+Read the design rules linked above first.

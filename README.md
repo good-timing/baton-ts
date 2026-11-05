@@ -1,6 +1,6 @@
 # @goodtiming/baton-sdk
 
-**Stable from 1.0.** This package follows [semver](https://semver.org). [What is public](#what-is-public) lists the public API and what in it is experimental. The wire format only grows: nothing is removed or changes meaning, except what SPEC marks experimental ([SPEC §13](https://github.com/good-timing/baton/blob/main/docs/SPEC.md#stability-from-10)).
+**Stable from 1.0.** This package follows [semver](https://semver.org). [What is public](#what-is-public) lists the public API and what in it is experimental. The wire format only grows: nothing is removed or changes meaning, except what SPEC marks experimental ([SPEC §13](https://github.com/good-timing/baton-spec/blob/main/SPEC.md#stability-from-10)).
 
 MCP standardizes how agents discover and call your tools. It does not capture *why* a call happened or whether it helped the user. Baton instruments those interactions on the vendor side by wrapping your MCP server. It captures intent, the tool calls, expected outcomes and observed outcomes, plus friction signals, and hands each one to a sink.
 
@@ -320,7 +320,7 @@ None of it blocks the quickstart above.
 
 The public API is the exports of `@goodtiming/baton-sdk`, its only entry point.
 
-These are **experimental** and may change in a minor release: `settings` and `settingsRefreshMs`, `labels` on `Principal` and `Organization`, the events' `labels` and `capture` with the `CaptureObserved` type, `EventSchema`, and `ClientReportEvent` with `ClientReportPayload`. [SPEC §13](https://github.com/good-timing/baton/blob/main/docs/SPEC.md#stability-from-10) lists what is experimental on the wire.
+These are **experimental** and may change in a minor release: `settings` and `settingsRefreshMs`, `labels` on `Principal` and `Organization`, the events' `labels` and `capture` with the `CaptureObserved` type, `EventSchema`, and `ClientReportEvent` with `ClientReportPayload`. [SPEC §13](https://github.com/good-timing/baton-spec/blob/main/SPEC.md#stability-from-10) lists what is experimental on the wire.
 
 The event types are built with zod. `EventSchema` may change with a zod major; the event types may not, so 1.x moves to a new zod major only if they stay the same.
 
@@ -335,8 +335,8 @@ Keeping that submodule current is load-bearing for contributors: a stale pin mak
 | | |
 |---|---|
 | [goodtiming.ai/docs.html#typescript](https://goodtiming.ai/docs.html#typescript) | The docs: configuration, what it captures, the Console |
-| [`docs/SPEC.md`](https://github.com/good-timing/baton/blob/main/docs/SPEC.md) | The wire protocol, in the `baton` repo. Applies here too |
-| [`docs/CHARTER.md`](https://github.com/good-timing/baton/blob/main/docs/CHARTER.md) | Why the SDK is thin. Read before architectural changes |
+| [`SPEC.md`](https://github.com/good-timing/baton-spec/blob/main/SPEC.md) | The wire protocol, in `baton-spec`. Applies here too |
+| [`baton`'s design rules](https://github.com/good-timing/baton/blob/main/AGENTS.md#design-rules) | Why the SDK is thin. Read before architectural changes |
 | [`CHANGELOG.md`](https://github.com/good-timing/baton-ts/blob/main/CHANGELOG.md) | What has shipped |
 
 Apache-2.0.

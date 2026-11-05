@@ -2,7 +2,7 @@
  * Baton SDK — structured signal capture for agent-mediated tool use.
  *
  * TypeScript counterpart to `baton-sdk` (Python) — see that repo's
- * `docs/CHARTER.md` (load-bearing decisions) and `docs/SPEC.md` (the wire
+ * `AGENTS.md` (the design rules) and `baton-spec`'s `SPEC.md` (the wire
  * protocol) for the canonical spec; this repo has none of its own.
  *
  * `withBaton(server, config)` is the entry point: it instruments a high-level

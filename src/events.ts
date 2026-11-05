@@ -10,7 +10,7 @@
  *
  * All concrete event schemas share the same envelope fields and differ only
  * in `payload`. Fields match Python field-for-field (snake_case on the wire,
- * per CHARTER's wire-compatibility requirement — NOT camelCase).
+ * NOT camelCase).
  */
 
 import { z } from "zod";

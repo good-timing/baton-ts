@@ -41,7 +41,7 @@
  * distributed stdio server that is the end user, and it works. For a HOSTED
  * server it is the vendor, and the end user has no switch at all — they cannot
  * set an environment variable on someone else's machine. A per-end-user
- * opt-out is the consent token (CHARTER ADR-1) and remains unbuilt, so no
+ * opt-out is the consent token and remains unbuilt, so no
  * vendor-facing wording may imply otherwise.
  */
 

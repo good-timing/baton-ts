@@ -1,9 +1,9 @@
 # Contributing to @goodtiming/baton-sdk
 
-Read [`docs/CHARTER.md`](https://github.com/good-timing/baton/blob/main/docs/CHARTER.md)
-and [`docs/SPEC.md`](https://github.com/good-timing/baton/blob/main/docs/SPEC.md)
-in the `baton` repo before making architectural changes. This package has no
-CHARTER or SPEC of its own; those two apply here too.
+Read [`baton`'s design rules](https://github.com/good-timing/baton/blob/main/AGENTS.md#design-rules)
+and [`baton-spec`'s `SPEC.md`](https://github.com/good-timing/baton-spec/blob/main/SPEC.md)
+before making architectural changes. This package has no
+design rules or spec of its own. Those two apply here too.
 
 ## Setup
 
@@ -20,8 +20,7 @@ before `npm test`: the conformance tests read fixtures from `baton-spec/`.
 ## Wire compatibility — the constraint this package is built around
 
 Events emitted here must be JSON-identical in shape to the Python SDK's, so a
-collector never has to branch on which SDK produced an event (CHARTER §3 rule
-3). [`baton-spec`](https://github.com/good-timing/baton-spec), submoduled at
+collector never has to branch on which SDK produced an event. [`baton-spec`](https://github.com/good-timing/baton-spec), submoduled at
 `baton-spec/`, is the neutral schema repo both SDKs are checked against, and it
 is enforced at two levels:
 
