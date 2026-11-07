@@ -20,7 +20,7 @@ const REPORT_POINTER_TEMPLATE = (vendorDisplayName: string, annotationToolName: 
   `Use \`${annotationToolName}\` to report a ${vendorDisplayName} tool call ` +
   "that went wrong, or a request no tool covers; its description says when and how.";
 
-// The Console splits user_goal on "; success is" (SPEC §11.5.1 rule 2).
+// The format SPEC §5.1.1 gives for user_goal.
 const USER_GOAL_FORMAT = "'<n>: <what this call is for>; success is <what its result should show>'";
 
 const ANNOTATION_TOOL_DESCRIPTION_TEMPLATE = (
@@ -124,8 +124,7 @@ export const INTENT_SOURCE_PARAM = "injected_param";
 /** `intent_source` when the vendor's code passed intent to `client.trace()`. */
 export const INTENT_SOURCE_LIBRARY = "library_arg";
 
-// The leading number says which user message the call answers, and the
-// Console cuts a turn where it changes (SPEC §11.5.1 rule 2).
+// The leading number says which user message the call answers (SPEC §5.1.1).
 //
 // Do not reword: the text is the Python SDK's, byte for byte
 // (`llmText.test.ts`, "parity with the Python SDK's rendered text"). Only the

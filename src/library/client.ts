@@ -83,8 +83,8 @@ export interface SessionOptions {
   sessionId?: string;
   /** Who the vendor says is calling: a `Principal`, which may carry its
    * `organization`, or an `Organization` alone when only the company is known.
-   * A block with only a company and no `sessionId` is never joined to another
-   * (SPEC §11.5.1), so pass your own `sessionId` then. */
+   * A block with only a company and no `sessionId` gets a session of its own,
+   * so pass your own `sessionId` to keep a conversation's blocks together. */
   principal?: Principal | Organization;
   /** What the calling client said about itself. */
   clientInfo?: { name?: string; version?: string };
@@ -231,7 +231,7 @@ function paramsOf(args: readonly unknown[]): Record<string, unknown> {
 class Core {
   closed = false;
   // A snapshot describes the server, so it takes no block's session,
-  // principal or client: SPEC §11.5.1's join must not count it.
+  // principal or client (SPEC §5.6 rule 7).
   private readonly surfaceSessionId = uuid7();
   private readonly sentSurfaces = new SentSurfaces();
 
