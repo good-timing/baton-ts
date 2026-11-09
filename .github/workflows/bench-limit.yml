@@ -1,0 +1,26 @@
+# bench.json's limits hold the 1.0 promise. Red on main: don't tag until it is green.
+name: Bench limit
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  limits:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: true
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: python3 baton-spec/scripts/check_bench_limit.py node --expose-gc scripts/bench.mjs . checkout '{out}' '{measure}'

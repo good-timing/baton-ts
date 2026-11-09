@@ -2,9 +2,10 @@
 // writes one result file. Only the public API is used, so the same script
 // measures the last release and the checkout; scripts/bench.sh runs both.
 //
-//   node --expose-gc scripts/bench.mjs SDK_DIR published|checkout RESULT.json
+//   node --expose-gc scripts/bench.mjs SDK_DIR published|checkout RESULT.json [MEASURE]
 import { spawn } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -13,13 +14,15 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { z } from "zod";
 
-const [sdkDir, source, out] = process.argv.slice(2);
-if (!sdkDir || !["published", "checkout"].includes(source ?? "") || !out || !globalThis.gc) {
-  console.error("usage: node --expose-gc scripts/bench.mjs SDK_DIR published|checkout RESULT.json");
+const usage = () => {
+  console.error("usage: node --expose-gc scripts/bench.mjs SDK_DIR published|checkout RESULT.json [MEASURE]");
   process.exit(2);
-}
+};
+const [sdkDir, source, out, only] = process.argv.slice(2);
+if (!sdkDir || !["published", "checkout"].includes(source ?? "") || !out || !globalThis.gc) usage();
 const spec = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "baton-spec");
 const bench = JSON.parse(readFileSync(path.join(spec, "bench", "bench.json"), "utf-8"));
+if (only !== undefined && !bench.measures.some((m) => m.name === only)) usage();
 const { withBaton, HttpSink } = await import(pathToFileURL(path.join(sdkDir, "dist", "index.js")).href);
 const { version } = JSON.parse(readFileSync(path.join(sdkDir, "package.json"), "utf-8"));
 
@@ -195,6 +198,7 @@ const measures = {};
 const maxRssBytes = () => process.resourceUsage().maxRSS * 1024;
 let peak = 0;
 for (const m of bench.measures) {
+  if (only !== undefined && m.name !== only) continue;
   if (m.name.startsWith("memory") && !peak) peak = maxRssBytes();
   measures[m.name] = await runners[m.name](m);
 }
@@ -203,6 +207,7 @@ const result = {
   version,
   source,
   runtime: `node ${process.versions.node}`,
+  cpu: os.cpus()[0]?.model.trim() || "unknown",
   max_rss_bytes: peak || maxRssBytes(),
   measures,
 };
