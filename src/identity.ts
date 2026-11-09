@@ -104,9 +104,7 @@ export interface Principal {
   /** The company this principal belongs to. Sent as `organization`, and
    * dropped alone when unusable (SPEC §11.4). */
   organization?: Organization | null | undefined;
-  /** @experimental May change in a minor release.
-   *
-   * As `Organization.labels`. A principal's labels and its organization's
+  /** As `Organization.labels`. A principal's labels and its organization's
    * are sent together. */
   labels?: readonly string[] | undefined;
 }
@@ -118,9 +116,7 @@ export interface Organization {
   organizationId: string;
   form?: PrincipalForm | undefined;
   displayName?: string | null | undefined;
-  /** @experimental May change in a minor release.
-   *
-   * Your names for the groups this caller is in, for Console settings to
+  /** Your names for the groups this caller is in, for Console settings to
    * match (SPEC §11.4). Baton sees them, so use group names or keys you keep,
    * never raw ids. */
   labels?: readonly string[] | undefined;

@@ -135,9 +135,7 @@ export interface BatonConfig {
    * goal still arrives through `user_goal`. `"on"` registers the tool and
    * serves its instructions. */
   reportMode?: "on" | "off";
-  /** @experimental May change in a minor release.
-   *
-   * Where capture settings come from. `"local"` (default): the values in
+  /** Where capture settings come from. `"local"` (default): the values in
    * this config, and Baton is never asked. `"console"`: the settings saved on
    * the Console's Capture page, read from the collector every
    * `settingsRefreshMs`, so they can differ by label, client or a share of
@@ -151,9 +149,7 @@ export interface BatonConfig {
    * so the Console can hide reports from some callers only when they are on
    * here. */
   settings?: SettingsMode;
-  /** @experimental May change in a minor release.
-   *
-   * How often `settings: "console"` reads the saved settings, in
+  /** How often `settings: "console"` reads the saved settings, in
    * milliseconds. Default 60000, at least 15000. */
   settingsRefreshMs?: number;
   /** Per-tool intent-param injection (mirrors baton-extmcp's vendor-neutral

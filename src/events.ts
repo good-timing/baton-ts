@@ -239,7 +239,6 @@ export const CaptureObservedSchema = z
     overlay: z.string().optional(),
   })
   .strict();
-/** @experimental May change in a minor release. */
 export type CaptureObserved = z.infer<typeof CaptureObservedSchema>;
 
 /** The principal as emitted — `{id, source, form}`, all three REQUIRED

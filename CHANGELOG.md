@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- **Console settings and labels are stable.** `settings` and
+  `settingsRefreshMs`, `labels` on `Principal` and `Organization`, and the
+  events' `labels` and `capture` (with `CaptureObserved`) now follow semver.
+  `EventSchema` and `ClientReportEvent` stay experimental.
+
 ## 1.0.0: the public API, sinks off the call, Console settings and the report tool
 
 **Stable from 1.0.** This package follows semver: a breaking change to the

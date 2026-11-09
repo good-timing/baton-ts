@@ -219,8 +219,6 @@ The SDK reads the settings every 60 seconds, in the background: a read never del
 
 Labels come from your `resolvePrincipal` hook, as `labels` on the `Principal` or the `Organization` it returns. Up to 20 per caller, sent on every event, so send only names you are happy for Baton to see. A share of callers is picked by the principal's id, or the company's when there is no principal, so the same person always lands in the same group. A caller with neither is never in a share.
 
-These settings, `labels` and `capture` are **experimental** and may change in a minor release.
-
 ## Failures your handler never saw
 
 A wrapper around your tool executor only sees calls that reach it. Three kinds
@@ -320,7 +318,7 @@ None of it blocks the quickstart above.
 
 The public API is the exports of `@goodtiming/baton-sdk`, its only entry point.
 
-These are **experimental** and may change in a minor release: `settings` and `settingsRefreshMs`, `labels` on `Principal` and `Organization`, the events' `labels` and `capture` with the `CaptureObserved` type, `EventSchema`, and `ClientReportEvent` with `ClientReportPayload`. [SPEC §13](https://github.com/good-timing/baton-spec/blob/main/SPEC.md#stability-from-10) lists what is experimental on the wire.
+These are **experimental** and may change in a minor release: `EventSchema`, and `ClientReportEvent` with `ClientReportPayload`. [SPEC §13](https://github.com/good-timing/baton-spec/blob/main/SPEC.md#stability-from-10) lists what is experimental on the wire.
 
 The event types are built with zod. `EventSchema` may change with a zod major; the event types may not, so 1.x moves to a new zod major only if they stay the same.
 
