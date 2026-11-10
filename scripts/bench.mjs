@@ -28,7 +28,7 @@ const { version } = JSON.parse(readFileSync(path.join(sdkDir, "package.json"), "
 
 async function withCollector(mode, use) {
   if (mode === "down") return use(1);
-  const child = spawn("python3", [path.join(spec, "collector", "fake_collector.py"), "--mode", mode], {
+  const child = spawn("python3", [path.join(spec, "collector", "fake_collector.py"), "--mode", mode, "--no-events"], {
     stdio: ["ignore", "pipe", "inherit"],
   });
   try {
