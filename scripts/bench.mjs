@@ -105,16 +105,25 @@ function pct(samples, p) {
   return ordered[Math.min(ordered.length - 1, Math.floor((p / 100) * ordered.length))];
 }
 
+/** Call times, wall time and the still-open install handle of one pass on a new server. */
+async function onePass(m, port, call = echoCall) {
+  const { client, handle } = await echoClient(port, m.result_bytes);
+  await timedCalls(client, m.warmup, 1, call);
+  const started = performance.now();
+  const times = await timedCalls(client, m.calls, m.concurrency, call);
+  const wall = performance.now() - started;
+  await client.close();
+  return { times, wall, handle };
+}
+
 /** The call times on a server without Baton, then on one with it, and what
  * Baton adds to them. */
 async function added(m, port, call) {
   const figures = {};
   const result = {};
   for (const [name, to] of [["plain", null], ["baton", port]]) {
-    const { client, handle } = await echoClient(to, m.result_bytes);
-    await timedCalls(client, m.warmup, 1, call);
-    figures[name] = await timedCalls(client, m.calls, m.concurrency, call);
-    await client.close();
+    const { times, handle } = await onePass(m, to, call);
+    figures[name] = times;
     await handle?.aclose();
   }
   for (const name of ["plain", "baton"]) {
@@ -148,22 +157,20 @@ async function largeResult(m) {
 
 async function load(m) {
   return withCollector(m.collector, async (port) => {
-    const { client, handle } = await echoClient(port);
-    await timedCalls(client, m.warmup, 1);
-    let started = performance.now();
-    const times = await timedCalls(client, m.calls, m.concurrency);
-    const wall = performance.now() - started;
-    await client.close();
-    started = performance.now();
-    await handle.aclose();
-    const closing = performance.now() - started;
-    return {
-      ...(await losses(port, m)),
-      wall_ms: wall,
-      call_p50_ms: pct(times, 50),
-      call_p99_ms: pct(times, 99),
-      close_ms: closing,
-    };
+    // So that neither pass's times include collecting garbage made before it.
+    globalThis.gc();
+    const plain = await onePass(m, null);
+    globalThis.gc();
+    const baton = await onePass(m, port);
+    const started = performance.now();
+    await baton.handle.aclose();
+    const result = { close_ms: performance.now() - started };
+    for (const [prefix, pass] of [["plain_", plain], ["", baton]]) {
+      result[`${prefix}wall_ms`] = pass.wall;
+      for (const p of [50, 99]) result[`${prefix}call_p${p}_ms`] = pct(pass.times, p);
+    }
+    for (const p of [50, 99]) result[`added_call_p${p}_ms`] = result[`call_p${p}_ms`] - result[`plain_call_p${p}_ms`];
+    return { ...(await losses(port, m)), ...result };
   });
 }
 
