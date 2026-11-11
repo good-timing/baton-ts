@@ -155,11 +155,10 @@ export async function resolveCaller(
   const caller = await resolveIdentity(hook, call);
   if (settings === undefined) return caller;
   try {
-    const identity = caller.principal ?? caller.organization;
     const callSettings = settings.forCaller({
       labels: caller.labels,
       clientName: client?.info?.name ?? null,
-      shareKey: identity?.id ?? null,
+      shareKey: caller.principal?.id ?? null,
     });
     return callSettings === undefined ? caller : { ...caller, settings: callSettings };
   } catch {

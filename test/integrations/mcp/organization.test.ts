@@ -56,6 +56,17 @@ describe("resolveCaller", () => {
   });
 });
 
+describe("the share key", () => {
+  it.each([
+    ["only the company never lands in a share", ACME, null],
+    ["a person and their company keys on the person", { principalId: "u_123", organization: ACME }, "u_123"],
+  ] as const)("%s", async (_label, returned, shareKey) => {
+    const forCaller = vi.fn(() => undefined);
+    await resolveCaller(() => returned, call, { forCaller } as never);
+    expect(forCaller).toHaveBeenCalledWith(expect.objectContaining({ shareKey }));
+  });
+});
+
 describe("an organization that is dropped", () => {
   it.each([
     [
