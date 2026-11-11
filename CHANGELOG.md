@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.0.1: a share samples people only
 
 ### Changed
 
@@ -8,6 +8,9 @@
   `settingsRefreshMs`, `labels` on `Principal` and `Organization`, and the
   events' `labels` and `capture` (with `CaptureObserved`) now follow semver.
   `EventSchema` and `ClientReportEvent` stay experimental.
+- **A share samples people only.** A caller with no principal never lands in
+  an audience's `share`, even with an organization; target a company with a
+  label (SPEC §2.6).
 
 ## 1.0.0: the public API, sinks off the call, Console settings and the report tool
 
