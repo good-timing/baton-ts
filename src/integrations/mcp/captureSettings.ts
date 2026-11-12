@@ -4,6 +4,7 @@
 import { createHash } from "node:crypto";
 import { isRecord } from "../../_object.js";
 import type { CaptureObserved } from "../../events.js";
+import { globalFetch } from "../../runtime.js";
 import { warn } from "../../warn.js";
 import { RESULT_CAPTURE_MODES, type ResultCaptureMode } from "./errorResult.js";
 import type { IntentParamMode } from "./schemaCompat.js";
@@ -182,8 +183,7 @@ export class SettingsFetcher implements SettingsSource {
     this.url = `${options.origin}${SETTINGS_PATH}?${new URLSearchParams({ server: options.vendorId }).toString()}`;
     this.#headers = { Authorization: `Bearer ${options.apiKey}`, [TENANT_HEADER]: options.tenantId };
     this.refreshMs = options.refreshMs;
-    // Not `fetch` itself: called as a method, a Worker's fetch throws "Illegal invocation".
-    this.fetchImpl = options.fetchImpl ?? ((input, init) => fetch(input, init));
+    this.fetchImpl = options.fetchImpl ?? globalFetch;
   }
 
   get document(): SettingsDocument | null {

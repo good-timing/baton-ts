@@ -105,6 +105,31 @@ What a stateless server costs, with either function:
   Without that header, signals that need several calls in one session, such as a retry loop, do not fire across requests.
 - **The client is named from its `User-Agent`.** A client states its name in the `initialize` handshake, and a per-request server never sees the handshake of the call it is serving. Each event still carries the request's `User-Agent` header in `client_observed`, and your dashboard names the client from that.
 
+## Cloudflare Workers
+
+Baton runs on Workers with the `nodejs_compat` flag, in a plain `fetch` handler or in a Durable Object such as an `McpAgent` session.
+
+- **Call `withBaton` or `createBaton` inside a handler, a Durable Object's constructor or its `init()`, never at module scope.** A Worker refuses timers and random values while its modules load, and Baton needs both.
+- **Baton sends each event as soon as it is written**, with no batching timer, because a Worker may drop a timer its request left behind. In a Durable Object, a send in progress keeps the object alive. In a plain `fetch` handler, hand the send to the runtime so it outlives the response:
+
+  ```ts
+  let baton: Baton | undefined;
+
+  export default {
+    async fetch(request, env, ctx) {
+      baton ??= createBaton({ dsn: env.BATON_DSN });
+      const server = buildServer();
+      baton.wrap(server);
+      const response = await handle(server, request);
+      ctx.waitUntil(baton.flush());
+      return response;
+    },
+  };
+  ```
+
+- **`settings: "console"` is not supported on Workers yet.** Baton warns once and the capture values in your config apply. The report tool it turns on stays on.
+- **A tool that only computes can show a duration of 0 ms.** A Worker's clock moves only across I/O.
+
 ## Without MCP: the library API
 
 Use `Client` when agents reach you through something other than an MCP server: a REST API, a skill, or a tool loop in your own agent. It sends the same events `withBaton` sends.

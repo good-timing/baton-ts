@@ -9,7 +9,9 @@ import type { ResolvePrincipalHook } from "./principalResolution.js";
 import { DEFAULT_CONSENT_TOKEN } from "../../events.js";
 import { MAX_TIMER_MS } from "../../deadline.js";
 import { RESULT_CAPTURE_MODES, type ResultCaptureMode } from "./errorResult.js";
+import { onWorkers } from "../../runtime.js";
 import { HttpSink, type Sink } from "../../sinks.js";
+import { warn } from "../../warn.js";
 import {
   CaptureSettings,
   DEFAULT_SETTINGS_REFRESH_MS,
@@ -297,6 +299,22 @@ export interface ResolvedBatonConfig extends BatonConfig {
   captureSettings?: CaptureSettings;
 }
 
+let consoleOffWarned = false;
+
+/** A Worker cannot keep reading the settings in the background, so there
+ * `settings: "console"` is dropped and this config's capture values apply.
+ * The report tool it turns on stays on. */
+function withoutConsoleOnWorkers(config: BatonConfig): BatonConfig {
+  if (config.settings !== "console" || !onWorkers()) return config;
+  if (!consoleOffWarned) {
+    consoleOffWarned = true;
+    warn('baton: settings: "console" is not supported on Cloudflare Workers yet; the Console\'s settings are not read and this config\'s capture values apply.');
+  }
+  const rest: BatonConfig = { ...config, reportMode: config.reportMode ?? "on" };
+  delete rest.settings;
+  return rest;
+}
+
 /**
  * Fill in whatever the DSN carries, returning a config nothing downstream has
  * to know about. Mirrors Python's `integrations/_config.py::resolve_config`.
@@ -316,19 +334,21 @@ export interface ResolvedBatonConfig extends BatonConfig {
  * Knows nothing about the server being wrapped. The one field that depends on
  * it, the display name, is finished by `withServerDisplayName`.
  */
-export function resolveBatonConfig(config: BatonConfig): ResolvedBatonConfig {
+export function resolveBatonConfig(supplied: BatonConfig): ResolvedBatonConfig {
   const dsnString = selectDsn(
-    config.dsn,
+    supplied.dsn,
     {
       // Truthiness per field, mirroring Python's `bool()` / `is not None`
       // split: an empty `vendorId` is an unset one, while an explicitly
       // supplied `tenantId` or `sink` is a conflict whatever it holds.
-      vendorId: Boolean(config.vendorId),
-      tenantId: config.tenantId !== undefined,
-      sink: config.sink !== undefined,
+      vendorId: Boolean(supplied.vendorId),
+      tenantId: supplied.tenantId !== undefined,
+      sink: supplied.sink !== undefined,
     },
     "BatonConfig",
   );
+  // Without a dsn, `settings: "console"` is refused below, on Workers too.
+  const config = dsnString === undefined ? supplied : withoutConsoleOnWorkers(supplied);
 
   if (dsnString === undefined) {
     const defaulted: BatonConfig = {

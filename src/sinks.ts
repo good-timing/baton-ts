@@ -22,6 +22,7 @@ import { capCodePoints, escapeForLog } from "./_text.js";
 import { MAX_TIMER_MS, raceDeadline, SHUTDOWN_FLUSH_TIMEOUT_MS, TIMED_OUT } from "./deadline.js";
 import { PROCESS_DROPS } from "./drops.js";
 import { ClientReportEventSchema, type Event } from "./events.js";
+import { globalFetch, onWorkers } from "./runtime.js";
 import { nextClockSequence } from "./sequence.js";
 import { printable, warn } from "./warn.js";
 
@@ -607,7 +608,8 @@ export interface HttpSinkOptions {
   /** How long the flush at process exit, or an explicit `flush()` or
    * `aclose()`, may take in total, in ms, at most 2^31 - 1. Default 3000. */
   shutdownFlushTimeoutMs?: number;
-  /** The longest an event waits before its batch is sent, in ms. Default 5000. */
+  /** The longest an event waits before its batch is sent, in ms. Default
+   * 5000, or 0 on Cloudflare Workers. At 0 a write sends at once. */
   flushIntervalMs?: number;
   /** Injectable for tests; defaults to the global `fetch`. */
   fetchImpl?: typeof fetch;
@@ -664,8 +666,12 @@ export class HttpSink implements Sink {
   /** Whether the queued pass sends everything waiting, not only what is due. */
   private forceNext = false;
   private flushTimer: ReturnType<typeof setTimeout> | null = null;
-  /** Set by a failed batch: only the timer, a flush or a close tries again. */
+  /** Set by a failed batch: only the timer, a flush, a close or, at
+   * `flushIntervalMs` 0, a write after `retryFrom` tries again. */
   private waitForTimer = false;
+  /** When a failed batch may be tried again. At `flushIntervalMs` 0 the
+   * first write from then retries, as a Worker may drop the timer. */
+  private retryFrom = 0;
   /** Nothing is sent before this `Date.now()`, from a 429's `Retry-After`. */
   private retryAt = 0;
   /** Set for the life of the sink by a 404 or 405 on the batch path. */
@@ -692,7 +698,8 @@ export class HttpSink implements Sink {
       "shutdownFlushTimeoutMs",
       SHUTDOWN_FLUSH_TIMEOUT_MS,
     );
-    this.flushIntervalMs = timerMsOption(options.flushIntervalMs, "flushIntervalMs", FLUSH_INTERVAL_MS);
+    // A Worker may drop a timer its request left behind, and with it every later send.
+    this.flushIntervalMs = timerMsOption(options.flushIntervalMs, "flushIntervalMs", onWorkers() ? 0 : FLUSH_INTERVAL_MS);
     this.maxRetries = options.maxRetries ?? 3;
     this.backoffBaseMs = options.backoffBaseMs ?? 100;
     this.backoffMaxMs = options.backoffMaxMs ?? 5000;
@@ -700,8 +707,7 @@ export class HttpSink implements Sink {
       options.circuitBreakerThreshold ?? 5,
       options.circuitBreakerResetMs ?? 30_000,
     );
-    // Not `fetch` itself: called as a method, a Worker's fetch throws "Illegal invocation".
-    this.fetchImpl = options.fetchImpl ?? ((input, init) => fetch(input, init));
+    this.fetchImpl = options.fetchImpl ?? globalFetch;
   }
 
   /**
@@ -744,8 +750,9 @@ export class HttpSink implements Sink {
     }
     this.enqueue({ event, json, bytes, writtenAt: Date.now() });
     this.unsentWarned = false;
-    if (this.batchIsFull() && !this.waitForTimer) void this.scheduleDrain(false);
-    else this.armTimer(this.buffer[0]!.writtenAt + this.flushIntervalMs - Date.now());
+    const held = this.waitForTimer && !(this.flushIntervalMs === 0 && Date.now() >= this.retryFrom);
+    if (!held && (this.flushIntervalMs === 0 || this.batchIsFull())) void this.scheduleDrain(false);
+    else this.armTimer(Math.max(this.buffer[0]!.writtenAt + this.flushIntervalMs, held ? this.retryFrom : 0) - Date.now());
     this.ensureExitHooksRegistered();
   }
 
@@ -1035,8 +1042,9 @@ export class HttpSink implements Sink {
     this.waitForTimer = failed;
     this.clearTimer();
     if (failed) {
-      const waits = [this.flushIntervalMs, this.backoffBaseMs, this.retryAt - Date.now(), this.circuit.msUntilRequest()];
-      if (this.buffer.length > 0 || this.pendingReport !== null) this.armTimer(Math.max(...waits));
+      const wait = Math.max(this.flushIntervalMs, this.backoffBaseMs, this.retryAt - Date.now(), this.circuit.msUntilRequest());
+      this.retryFrom = Date.now() + wait;
+      if (this.buffer.length > 0 || this.pendingReport !== null) this.armTimer(wait);
       return;
     }
     const next = Math.min(this.buffer[0]?.writtenAt ?? Infinity, this.reportRidesHead() ? this.reportSetAt : Infinity);

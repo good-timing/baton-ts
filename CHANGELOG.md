@@ -37,11 +37,16 @@
 
 - **Cloudflare Workers.** The package now loads in a Worker: it no longer
   makes a random value while its modules load, which a Worker refuses. Events
-  and Console settings are now sent from a Worker: Baton called the global
-  `fetch` as a method, which a Worker refuses with "Illegal invocation", so
-  nothing was sent. Loading broke in 0.6.2; sending never worked in a
-  Worker. Checked with `wrangler dev`
-  on SDK 1.29.0, with a Baton made per request and one made at load.
+  are now sent from a Worker: Baton called the global `fetch` as a method,
+  which a Worker refuses with "Illegal invocation", so nothing was sent.
+  Loading broke in 0.6.2; sending never worked in a Worker. Baton's warnings
+  now print on Workers, which print nothing for `process.emitWarning`. On Workers, `HttpSink` now sends each event as soon as it is
+  written (`flushIntervalMs` defaults to 0 there), because a Worker may drop
+  a timer its request left behind. `settings: "console"` is not supported on
+  Workers yet: Baton warns once and the config's capture values apply; the
+  report tool it turns on stays on. Checked with
+  `wrangler dev` on SDK 1.29.0 in a plain `fetch` handler and in an
+  `McpAgent` Durable Object. See "Cloudflare Workers" in the README.
 
 ## 1.0.1: a share samples people only
 
