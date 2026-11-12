@@ -700,7 +700,8 @@ export class HttpSink implements Sink {
       options.circuitBreakerThreshold ?? 5,
       options.circuitBreakerResetMs ?? 30_000,
     );
-    this.fetchImpl = options.fetchImpl ?? fetch;
+    // Not `fetch` itself: called as a method, a Worker's fetch throws "Illegal invocation".
+    this.fetchImpl = options.fetchImpl ?? ((input, init) => fetch(input, init));
   }
 
   /**

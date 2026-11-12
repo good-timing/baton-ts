@@ -21,7 +21,8 @@ const RECOVERY_LOG_MS = 60_000;
  * delivered or counted here, except at close, where the count is best effort
  * (SPEC §11.2 rule 8). One per process, like the sequence clock. */
 class DropCounts {
-  #instanceId = uuid7();
+  // Made on first use: a Worker refuses random values while its modules load.
+  #instanceId: string | undefined;
   readonly #total = new Map<DropReason, number>();
   readonly #sinceDelivery = new Map<DropReason, number>();
   #lastRecoveryLog = -RECOVERY_LOG_MS;
@@ -49,14 +50,14 @@ class DropCounts {
     warn(`baton: delivering again; ${total} event(s) lost before this: ${lost.map(([r, n]) => `${r} ${n}`).join(", ")}.`);
   }
 
-  /** For tests: the counts are one per process. */
   /** Names this process in its loss reports (SPEC §11.4.7). */
   get instanceId(): string {
-    return this.#instanceId;
+    return (this.#instanceId ??= uuid7());
   }
 
+  /** For tests: the counts are one per process. */
   clear(): void {
-    this.#instanceId = uuid7();
+    this.#instanceId = undefined;
     this.#total.clear();
     this.#sinceDelivery.clear();
     this.#lastRecoveryLog = -RECOVERY_LOG_MS;

@@ -33,6 +33,16 @@
   takes `user_goal` off such a tool's call, unless its schema may take
   `user_goal`, and leaves `expected_result` and `overall_task`.
 
+### Fixed
+
+- **Cloudflare Workers.** The package now loads in a Worker: it no longer
+  makes a random value while its modules load, which a Worker refuses. Events
+  and Console settings are now sent from a Worker: Baton called the global
+  `fetch` as a method, which a Worker refuses with "Illegal invocation", so
+  nothing was sent. Loading broke in 0.6.2; sending never worked in a
+  Worker. Checked with `wrangler dev`
+  on SDK 1.29.0, with a Baton made per request and one made at load.
+
 ## 1.0.1: a share samples people only
 
 ### Changed

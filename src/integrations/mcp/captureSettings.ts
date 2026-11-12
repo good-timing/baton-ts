@@ -182,7 +182,8 @@ export class SettingsFetcher implements SettingsSource {
     this.url = `${options.origin}${SETTINGS_PATH}?${new URLSearchParams({ server: options.vendorId }).toString()}`;
     this.#headers = { Authorization: `Bearer ${options.apiKey}`, [TENANT_HEADER]: options.tenantId };
     this.refreshMs = options.refreshMs;
-    this.fetchImpl = options.fetchImpl ?? fetch;
+    // Not `fetch` itself: called as a method, a Worker's fetch throws "Illegal invocation".
+    this.fetchImpl = options.fetchImpl ?? ((input, init) => fetch(input, init));
   }
 
   get document(): SettingsDocument | null {
