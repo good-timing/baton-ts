@@ -17,7 +17,7 @@
  * both are OPTIONAL peerDependencies: install whichever your server is built
  * on. Nothing here imports either package, at runtime or as a type, so the
  * one you do not have is never resolved. `withBaton` takes the structural
- * `SupportedMcpServer` that both classes satisfy.
+ * `SupportedServer`: an `McpServer` or a low-level `Server` of either major.
  *
  * `Client` is the library API (SPEC §5.6), for agents that reach the vendor
  * through something other than MCP: `client.session()` and `client.trace()`
@@ -94,9 +94,9 @@ export type { BatonConfig } from "./integrations/mcp/index.js";
 export type { ResultCaptureMode } from "./integrations/mcp/index.js";
 export { createBaton, withBaton, BatonHandle } from "./integrations/mcp/index.js";
 export type { Baton } from "./integrations/mcp/index.js";
-// The only way a consumer can name `withBaton`'s parameter now that neither
-// SDK major's `McpServer` is imported.
-export type { SupportedMcpServer } from "./integrations/mcp/index.js";
+// The only way a consumer can name `withBaton`'s parameter: neither SDK
+// major's servers are imported.
+export type { SupportedLowLevelServer, SupportedMcpServer, SupportedServer } from "./integrations/mcp/index.js";
 
 // Principal identity. `Principal`, `Organization`, `PrincipalForm` and
 // `PrincipalResolutionContext` are what a vendor's `resolvePrincipal` hook

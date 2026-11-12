@@ -218,6 +218,14 @@ export interface BatonConfig {
    * what a page shows. A vendor who must not send real identities hashes
    * inside the hook and returns `form: "hashed"`. */
   resolvePrincipal?: ResolvePrincipalHook;
+
+  /** A low-level `Server`'s tools, as its `tools/list` answers them, or a
+   * function that returns them. Read once per `withBaton` or `createBaton`.
+   * Without it Baton learns the tools from the lists its servers serve, so a
+   * process that has served none yet, such as a fresh worker, takes
+   * `user_goal` off every call, even from a tool that declares its own. An
+   * `McpServer` does not read it. */
+  tools?: readonly unknown[] | (() => readonly unknown[]);
 }
 
 /**
@@ -529,5 +537,8 @@ export function validateBatonConfig(config: BatonConfig): asserts config is Reso
     // (stdio, where no token can exist) that this field is the only mechanism
     // for. Mirrors Python's `resolve_user must be callable`.
     throw new Error("BatonConfig.resolvePrincipal must be a function.");
+  }
+  if (config.tools !== undefined && !Array.isArray(config.tools) && typeof config.tools !== "function") {
+    throw new Error("BatonConfig.tools must be an array of tools or a function that returns one.");
   }
 }

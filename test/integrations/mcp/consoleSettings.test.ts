@@ -308,7 +308,7 @@ describe.each(MAJORS)("$label", (major) => {
   it("a failed install reads no settings", () => {
     useCollector(answering(null));
     const start = vi.spyOn(SettingsFetcher.prototype, "start");
-    expect(() => withBaton({} as never, { dsn: DSN, settings: "console" })).toThrow(/high-level McpServer/);
+    expect(() => withBaton({} as never, { dsn: DSN, settings: "console" })).toThrow(/McpServer or a low-level Server/);
     expect(start).not.toHaveBeenCalled();
   });
 });

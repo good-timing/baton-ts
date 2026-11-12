@@ -408,11 +408,19 @@ describe("an install where nothing says where events go (SPEC §11.2 rule 10)", 
     expect(() => createBaton(config).wrap(vendorServer())).toThrow(/safety cap/);
   });
 
-  it("still throws for a low-level Server", () => {
-    const lowLevel = new Server({ name: "x", version: "1.0.0" }, { capabilities: {} });
-    expect(() => withBaton(lowLevel as never, {})).toThrow(/high-level McpServer/);
+  it("still throws for an object that is not a server", () => {
+    expect(() => withBaton({} as never, {})).toThrow(/McpServer or a low-level Server/);
     expect(warned().join("\n")).not.toContain("installed nothing");
-    expect(() => createBaton({}).wrap(lowLevel as never)).toThrow(/high-level McpServer/);
+    expect(() => createBaton({}).wrap({} as never)).toThrow(/McpServer or a low-level Server/);
+  });
+
+  it("installs nothing on a low-level Server either", () => {
+    const lowLevel = new Server({ name: "x", version: "1.0.0" }, { capabilities: { tools: {} } });
+    const handlers = lowLevel as unknown as { _requestHandlers: Map<string, unknown> };
+    const before = new Map(handlers._requestHandlers);
+    withBaton(lowLevel, {});
+    expect(warned().join("\n")).toContain("installed nothing");
+    expect(handlers._requestHandlers).toEqual(before);
   });
 
   it("is not the case once a vendorId is set: events go to stderr", () => {

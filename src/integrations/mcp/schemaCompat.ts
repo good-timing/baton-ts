@@ -22,10 +22,39 @@ import {
 } from "./zodCompat.js";
 import { z as zV4 } from "zod";
 import { z as zV3 } from "zod/v3";
-import { RETIRED_PARAM_NAMES, USER_GOAL_PARAM_NAME, buildUserGoalParamDescription } from "./llmText.js";
+import { RETIRED_PARAM_NAMES, USER_GOAL_PARAM_NAME, buildUserGoalParamDescription, declaresParam } from "./llmText.js";
+import { isRecord } from "../../_object.js";
 
 export type IntentParamMode = "optional" | "required";
 export const DEFAULT_INTENT_PARAM_MODE: IntentParamMode = "required";
+
+// A property beside a root `$ref` or combiner is not seen by the subschema's
+// `additionalProperties: false`, so a client validator would refuse the call.
+const ROOT_COMBINERS = ["$ref", "oneOf", "anyOf", "allOf"] as const;
+
+/** Whether Baton may add `user_goal` to a tool's JSON Schema `inputSchema`. */
+export function takesUserGoalJson(schema: Record<string, unknown>): boolean {
+  // `undefined` counts as missing: JSON drops the key, so the agent would see none.
+  const properties = schema.properties ?? {};
+  return isRecord(properties) && !ROOT_COMBINERS.some((key) => key in schema);
+}
+
+/** `schema` with `user_goal` added as `injectGoalParams` adds it to a zod one.
+ * A schema that declares its own, or that `takesUserGoalJson` refuses, is
+ * returned as it is. */
+export function withUserGoalJson(
+  schema: Record<string, unknown>,
+  intentParamMode: IntentParamMode,
+  listRequired: boolean,
+): Record<string, unknown> {
+  if (!takesUserGoalJson(schema) || declaresParam(schema, USER_GOAL_PARAM_NAME)) return schema;
+  const properties = (schema.properties ?? {}) as Record<string, unknown>;
+  const goal = { type: "string", description: buildUserGoalParamDescription({ intentParamMode }) };
+  const served: Record<string, unknown> = { ...schema, properties: { ...properties, [USER_GOAL_PARAM_NAME]: goal } };
+  const required = Array.isArray(schema.required) ? (schema.required as unknown[]) : [];
+  if (listRequired && !required.includes(USER_GOAL_PARAM_NAME)) served.required = [...required, USER_GOAL_PARAM_NAME];
+  return served;
+}
 
 /** The sliver of a zod namespace the injected fields need — written
  * structurally so the same builder serves zod v3, zod v4, and whichever
@@ -40,7 +69,7 @@ export type IntentParamDispositions = Record<string, "injected" | "native">;
 
 // Mirrors mcp.js's private EMPTY_OBJECT_JSON_SCHEMA — used identically by
 // the SDK's own tools/list handler when a tool declares no inputSchema.
-const EMPTY_OBJECT_JSON_SCHEMA = { type: "object", properties: {} };
+export const EMPTY_OBJECT_JSON_SCHEMA = { type: "object", properties: {} };
 
 /**
  * Splice `user_goal` into `inputSchema`'s object shape.
@@ -225,6 +254,17 @@ export function advertiseIntentParamsRequired(
     return { ...entry, inputSchema: { ...schema, required: [...required, ...missing] } };
   });
   return changed ? { ...(result as Record<string, unknown>), tools: advertised } : result;
+}
+
+/** A v2 schema's draft 2020-12 rendering through its own Standard JSON Schema
+ * converter, the one v2 lists tools with; `undefined` when it has none. */
+export function standardInputJsonSchema(schema: unknown): Record<string, unknown> | undefined {
+  try {
+    const standard = (schema as { "~standard"?: { jsonSchema?: { input?: (o: unknown) => Record<string, unknown> } } })?.["~standard"];
+    return standard?.jsonSchema?.input?.({ target: "draft-2020-12" });
+  } catch {
+    return undefined;
+  }
 }
 
 /** The vendor-true JSON Schema for a tool's `inputSchema` — same conversion

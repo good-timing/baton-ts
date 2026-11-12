@@ -32,9 +32,9 @@
  * a `user_goal` intent param on every wrapped tool's schema (SPEC §11.4.1
  * `call_intent`/`intent_source`), and captures a `surface_snapshot`
  * of the vendor-true surface. Every payload leaving here runs through the
- * configured scrubber, which defaults to the shipped ruleset (`src/scrub.ts`)
- * — see README "What is not here yet" for what's still not here (the low-level
- * `Server` adapter).
+ * configured scrubber, which defaults to the shipped ruleset (`src/scrub.ts`).
+ * On a low-level `Server`, which has no tool registry, the same is done at its
+ * `tools/list` and `tools/call` handlers: see `installLowLevelToolSeams`.
  *
  * Interception mechanism: `McpServer` has no middleware API (unlike the
  * standalone `fastmcp` library's `Middleware`/`CallNext`), so this patches
@@ -108,7 +108,14 @@ import {
   ToolListStartEventSchema,
 } from "../../events.js";
 import { boundedSinkCall, offTheCall, StdoutSink, type Sink } from "../../sinks.js";
-import { registerAnnotationTool, TOOL_NAME_PARAM_NAME } from "./annotation.js";
+import {
+  type AnnotationTool,
+  buildAnnotationTool,
+  annotationInputJsonSchema,
+  callAnnotationTool,
+  registerAnnotationTool,
+  TOOL_NAME_PARAM_NAME,
+} from "./annotation.js";
 import { Scrubber } from "../../scrub.js";
 import { scrubOrNull } from "./safeScrub.js";
 import { roundMetaCoordinates } from "../../metaCoordinates.js";
@@ -121,7 +128,8 @@ import {
 } from "./config.js";
 import { captureDisabled, DisabledSink, logDisabled, logUnconfigured } from "../../optout.js";
 import { capCodePoints, isBlank } from "../../_text.js";
-import { warn } from "../../warn.js";
+import { printable, warn } from "../../warn.js";
+import { isRecord } from "../../_object.js";
 import { emit } from "./emit.js";
 import {
   ERROR_BODY_MAX_CODE_POINTS,
@@ -157,6 +165,7 @@ import {
   INTENT_INSTRUCTIONS,
   INTENT_SOURCE_PARAM,
   instructionsSuffixServed,
+  mayDeclareParam,
   RETIRED_PARAM_NAMES,
   requiredParamNames,
   USER_GOAL_PARAM_NAME,
@@ -187,6 +196,10 @@ import {
   type IntentParamDispositions,
   type IntentParamMode,
   DEFAULT_INTENT_PARAM_MODE,
+  takesUserGoalJson,
+  withUserGoalJson,
+  standardInputJsonSchema,
+  EMPTY_OBJECT_JSON_SCHEMA,
 } from "./schemaCompat.js";
 import { PROCESS_DROPS } from "../../drops.js";
 import { assembleSurface, buildServerMeta, buildSeamAugmentations, SentSurfaces, surfaceHash } from "./surface.js";
@@ -206,7 +219,7 @@ interface WrapContext {
    * it cached, which is where every client shipping today declares its name
    * and the only place either peer exposes it. Read lazily per call — the
    * handshake has not happened yet when `withBaton` runs. */
-  server: SupportedMcpServer;
+  server: SupportedServer;
   scrubber: (value: unknown) => unknown;
   annotationToolName: string;
   intentParamMode: IntentParamMode;
@@ -384,10 +397,14 @@ class SurfaceState {
     inputSchemaJson: Record<string, unknown>,
     description: string | undefined,
   ): void {
-    this.rawTools.set(name, {
-      disabled: this.rawTools.get(name)?.disabled ?? false,
-      tool: { name, description: description ?? null, inputSchema: inputSchemaJson },
-    });
+    const before = this.rawTools.get(name);
+    const tool = { name, description: description ?? null, inputSchema: inputSchemaJson };
+    // A low-level Server's tools are noted on every list it serves.
+    if (before !== undefined && before.tool.description === tool.description) {
+      const same = before.tool.inputSchema === inputSchemaJson || JSON.stringify(before.tool.inputSchema) === JSON.stringify(inputSchemaJson);
+      if (same) return;
+    }
+    this.rawTools.set(name, { disabled: before?.disabled ?? false, tool });
     this.dirty = true;
   }
 
@@ -491,10 +508,7 @@ async function openCall(
   /** What the seam took off the request. Passed in, not read from
    * `callSlots`: the request-side path runs outside its own slot. */
   stripped: StrippedParams,
-  /** Is there a registry entry for this tool? `false` only from the
-   * `tools/call` seam's `unknown_tool` path, and it suppresses one warning
-   * whose diagnosis would be wrong there — see `extractGoalParam`. */
-  registered = true,
+  unlisted: Unlisted = "warn",
 ): Promise<{ common: Record<string, unknown>; session: ResolvedSession; resultCaptureMode: ResultCaptureMode }> {
   // Snapshot BEFORE tool_call_start, from inside openCall so every caller inherits the order.
   await maybeEmitSurfaceSnapshot(ctx);
@@ -506,10 +520,10 @@ async function openCall(
   const dispositions = ctx.paramRegistry.get(toolName);
   const rawIntent =
     stripped[USER_GOAL_PARAM_NAME] ??
-    extractGoalParam(params, USER_GOAL_PARAM_NAME, toolName, dispositions, registered);
+    extractGoalParam(params, USER_GOAL_PARAM_NAME, toolName, dispositions, unlisted);
   const scrubbedIntent = scrubOrNull(ctx.scrubber, rawIntent, USER_GOAL_PARAM_NAME);
   const [scrubbedExpected = null, scrubbedWorkflow = null] = RETIRED_PARAM_NAMES.map((name) =>
-    dispositions === undefined || dispositions[name] === "native"
+    dispositions === undefined || dispositions[name] === "native" || unlisted === "leave" || unlisted === "goalOnly"
       ? null
       : scrubOrNull(ctx.scrubber, stripped[name] ?? popText(params, name), name),
   );
@@ -569,7 +583,12 @@ async function openCall(
  * keep emitting events under the old `tool_name` and keep missing its own
  * param-registry entry — which downgrades the strip to the cold-registry
  * path and puts a warning on the vendor's stderr for every call. */
-function batonWrap(nameRef: { current: string }, original: AnyHandler, ctx: WrapContext): AnyHandler {
+function batonWrap(
+  nameRef: { current: string },
+  original: AnyHandler,
+  ctx: WrapContext,
+  unlisted: Unlisted = "warn",
+): AnyHandler {
   return async (...callArgs: AnyArgs): Promise<unknown> => {
     const toolName = nameRef.current;
     // ⚠ FIRST, ahead of every await below. The flag's whole job is to say the
@@ -591,7 +610,7 @@ function batonWrap(nameRef: { current: string }, original: AnyHandler, ctx: Wrap
     // Handed over once: a tool this handler calls in-process shares the slot.
     const stripped = slot?.strippedFor === toolName ? slot.stripped : {};
     if (slot) slot.strippedFor = null;
-    const { common, session, resultCaptureMode } = await openCall(ctx, toolName, extra, params, stripped);
+    const { common, session, resultCaptureMode } = await openCall(ctx, toolName, extra, params, stripped, unlisted);
 
     /** Emit this call's terminal event, or PARK it for the outer `tools/call`
      * seam when one is running (see `CallSlot`). `replacement` is passed by
@@ -605,8 +624,8 @@ function batonWrap(nameRef: { current: string }, original: AnyHandler, ctx: Wrap
       replacement: ((outcome: OuterOutcome) => Event) | null,
     ): Promise<void> => {
       if (!slot) {
-        // No outer seam: a direct executor call, or a server whose internals
-        // this package could not reach. Emit exactly as it always has — and
+        // No outer seam: a direct executor call, a low-level Server, or a
+        // server whose internals this package could not reach. Emit exactly as it always has — and
         // SPEC §11.4.3 agrees that is the right degradation, since "a
         // producer with only one seam cannot emit `failure_kind` correctly
         // and MUST omit it".
@@ -829,28 +848,28 @@ function batonWrap(nameRef: { current: string }, original: AnyHandler, ctx: Wrap
   };
 }
 
+/** What a call to a tool Baton did not add `user_goal` to does with it: strip
+ * it with the cold-registry warning, strip it quietly (the caller has warned,
+ * or the tool does not exist), or, on a low-level Server, strip only
+ * `user_goal` and leave the retired names, or leave them all. */
+type Unlisted = "warn" | "quiet" | "goalOnly" | "leave";
+
 /** Pop an injected goal param from `args` in place; return its value.
  * `"native"` (the tool already declares this name itself) forwards the
  * caller's own value untouched — never stripped, never reported as intent.
- * Unlisted (a call arrived before this tool was ever wired) strips
- * defensively with a warning: safe only because this name is reserved. */
+ * A tool with no entry is handled as `unlisted` says. */
 function extractGoalParam(
   args: Record<string, unknown>,
   paramName: string,
   toolName: string,
   dispositions: IntentParamDispositions | undefined,
-  registered: boolean,
+  unlisted: Unlisted,
 ): string | null {
   if (!(paramName in args)) return null;
   const disposition = dispositions ? dispositions[paramName] : undefined;
   if (disposition === "native") return null;
-  // ⚠ The warning says "cold registry", which is a real and useful diagnosis
-  // for a tool that EXISTS and was never wired — and a wrong one for a tool
-  // that does not exist at all. The `tools/call` seam reaches here for an
-  // unknown tool, where there is no entry to have been wired, so the caller
-  // says which case it is rather than letting this infer it from an absent
-  // disposition that means two different things.
-  if (disposition === undefined && registered) {
+  if (disposition === undefined && unlisted === "leave") return null;
+  if (disposition === undefined && unlisted === "warn") {
     process.stderr.write(
       `baton: stripping ${paramName} from unlisted tool ${JSON.stringify(toolName)} (cold registry)\n`,
     );
@@ -1080,6 +1099,270 @@ function installToolsListSeam(lowLevel: RequestHandlerInternals, ctx: WrapContex
     const out = handler(...args);
     return isThenable(out) ? out.then(advertise) : advertise(out);
   });
+}
+
+type LowLevelInternals = {
+  _instructions?: string;
+  _serverInfo?: { name?: unknown };
+} & RequestHandlerInternals;
+
+const LOW_LEVEL_LIST_SEAM = Symbol("batonLowLevelListSeam");
+const LOW_LEVEL_CALL_SEAM = Symbol("batonLowLevelCallSeam");
+const LOW_LEVEL_HANDSHAKE_SEAM = Symbol("batonLowLevelHandshakeSeam");
+
+/** What one Baton knows of a low-level `Server`'s tools, shared by every
+ * server it wraps, so a server made per request knows the tools another one
+ * served. `given` is the `tools` option until it is read, once, into `givenTools`. */
+interface KnownTools {
+  given: BatonConfig["tools"];
+  givenTools: ToolInfo[];
+  served: Map<string, ToolInfo>;
+  /** Tools some version of which may declare `user_goal`. A name is never removed. */
+  keepsGoal: Set<string>;
+  /** Tools whose calls keep `user_goal` until a version of them is read. */
+  unread: Set<string>;
+}
+
+type ToolInfo = { name: string; description: unknown; inputSchema: unknown };
+type ReadOptions = { surface: boolean };
+
+/**
+ * `tools/list` and `tools/call` on a low-level `Server`, which has no tool
+ * registry: what Baton knows of a tool comes from the `tools` option and from
+ * the lists this Baton's servers serve. A server's surface and report-name
+ * check use only the `tools` option and its own lists; what other servers
+ * served only decides which calls lose `user_goal`.
+ *
+ * ⚠ Every call is traced. `user_goal` comes off every call, since a client
+ * sends it only because Baton listed it, except to a tool that may take its
+ * own (`known.keepsGoal`) or that Baton could not read (`known.unread`):
+ * `lowLevelServer.test.ts`, "a tool Baton does not know", "leaves a call's
+ * user_goal when the root combiner names user_goal" and "a given tool it
+ * cannot read".
+ */
+function installLowLevelToolSeams(
+  lowLevel: LowLevelInternals,
+  ctx: WrapContext,
+  annotationTool: AnnotationTool | undefined,
+  known: KnownTools,
+  warnOnce: (key: string, message: string) => void,
+  /** The vendor lists a tool with the report tool's name: drop the pointer to it. */
+  reportToolTaken: () => void,
+): void {
+  let reportTool = annotationTool;
+  const listedReportTool = reportTool && {
+    name: reportTool.name,
+    description: reportTool.description,
+    inputSchema: annotationInputJsonSchema(lowLevelMajor(lowLevel)),
+  };
+  const skipTool = (name: string, err: unknown): void => {
+    known.unread.add(name);
+    warnOnce(
+      `tool-unread:${name}`,
+      `baton: could not read tool ${JSON.stringify(name)}; its calls keep user_goal until Baton can read it: ${printable(err)}\n`,
+    );
+  };
+  const skipNote = (name: string, err: unknown): void => {
+    if (known.unread.has(name)) return;
+    warnOnce(`tool-unnoted:${name}`, `baton: could not note tool ${JSON.stringify(name)}; Baton adds no user_goal to it: ${printable(err)}\n`);
+  };
+  // Below the root only where Baton cannot add its own `user_goal` at the root.
+  const keepGoalIfDeclared = (tools: ToolInfo[]): void => {
+    for (const { name, inputSchema } of tools) {
+      try {
+        const checked = known.served.get(name)?.inputSchema === inputSchema && !known.unread.has(name);
+        if (!known.keepsGoal.has(name) && !checked) {
+          const declares =
+            isRecord(inputSchema) && takesUserGoalJson(inputSchema) ? declaresParam : mayDeclareParam;
+          if (declares(inputSchema, USER_GOAL_PARAM_NAME)) known.keepsGoal.add(name);
+        }
+        known.unread.delete(name);
+      } catch (err) {
+        skipTool(name, err);
+      }
+    }
+  };
+
+  const read = (tools: ToolInfo[], { surface }: ReadOptions): void => {
+    if (surface && reportTool !== undefined && tools.some((tool) => tool.name === reportTool?.name)) {
+      warnOnce(
+        "report-tool-name-taken",
+        `baton: the server lists its own tool ${JSON.stringify(reportTool.name)}, so Baton's report ` +
+          "tool is not added; set annotationToolName to another name\n",
+      );
+      reportTool = undefined;
+      ctx.annotationToolName = "";
+      reportToolTaken();
+    }
+    readToolList(tools, ctx, surface, skipNote);
+  };
+
+  // Per caller lists may differ: keep every tool, and a version that declares
+  // its own `user_goal` over one that does not, so a server reading this map
+  // registers it as the tool's own and not as one Baton added.
+  const learn = (tools: ToolInfo[]): void => {
+    keepGoalIfDeclared(tools);
+    for (const tool of tools) {
+      const held = known.served.get(tool.name);
+      const ownGoal = (info: ToolInfo | undefined) => declaresParam(info?.inputSchema, USER_GOAL_PARAM_NAME);
+      if (held === undefined || !ownGoal(held) || ownGoal(tool)) known.served.set(tool.name, tool);
+    }
+  };
+
+  let caughtUp = false;
+  const catchUp = (): void => {
+    if (caughtUp) return;
+    caughtUp = true;
+    if (known.given !== undefined) {
+      const given = known.given;
+      known.given = undefined;
+      try {
+        const tools: unknown = typeof given === "function" ? given() : given;
+        if (!Array.isArray(tools)) throw new Error("it is not an array of tools");
+        known.givenTools = toolInfos(tools, skipTool);
+        keepGoalIfDeclared(known.givenTools);
+      } catch (err) {
+        warnOnce(
+          "tools-unread",
+          `baton: could not read the tools option; Baton learns the tools from tools/list: ${printable(err)}\n`,
+        );
+      }
+    }
+    read(known.givenTools, { surface: true });
+    read([...known.served.values()], { surface: false });
+  };
+
+  installRequestSeam(lowLevel, TOOLS_LIST_METHOD, LOW_LEVEL_LIST_SEAM, (handler) => async (...args) => {
+    catchUp();
+    const result = await handler(...args);
+    try {
+      const listed = listedTools(result);
+      if (listed === null) return result;
+      const tools = toolInfos(listed, skipTool);
+      learn(tools);
+      read(tools, { surface: true });
+      // On the first page, which every client reads.
+      const firstPage = (args[0] as { params?: { cursor?: unknown } } | undefined)?.params?.cursor === undefined;
+      return servedToolList(result as Record<string, unknown>, listed, ctx, firstPage && reportTool ? listedReportTool : undefined);
+    } catch (err) {
+      process.stderr.write(`baton: tools/list capture failed; serving the vendor's own result: ${printable(err)}\n`);
+      return result;
+    }
+  });
+
+  // Before `initialize`, so a known tool's own `user_goal` takes the subagent
+  // sentence out of the instructions it answers with.
+  const readFirst =
+    (handler: AnyHandler): AnyHandler =>
+    (...args) => {
+      catchUp();
+      return handler(...args);
+    };
+  installRequestSeam(lowLevel, "initialize", LOW_LEVEL_HANDSHAKE_SEAM, readFirst);
+  installRequestSeam(lowLevel, "server/discover", LOW_LEVEL_HANDSHAKE_SEAM, readFirst);
+
+  installRequestSeam(lowLevel, TOOLS_CALL_METHOD, LOW_LEVEL_CALL_SEAM, (handler) => async (...args) => {
+    catchUp();
+    ctx.perCaller?.followSettings();
+    const request = args[0] as { params?: { name?: unknown; arguments?: unknown; task?: unknown } } | undefined;
+    const name = request?.params?.name;
+    if (typeof name !== "string") return handler(...args);
+    if (name === reportTool?.name) return callAnnotationTool(reportTool, request?.params?.arguments, args[1] as Extra);
+    const injected = ctx.paramRegistry.get(name)?.[USER_GOAL_PARAM_NAME] === "injected";
+    const unlisted: Unlisted = injected ? "warn" : known.keepsGoal.has(name) || known.unread.has(name) ? "leave" : "goalOnly";
+    // The request's own object: `openCall` takes Baton's params off it in
+    // place, before the SDK's parse hands the vendor a copy.
+    const params = request?.params?.arguments;
+    const toolArgs = isRecord(params) ? params : {};
+    if (
+      unlisted === "goalOnly" &&
+      USER_GOAL_PARAM_NAME in toolArgs &&
+      !known.served.has(name) &&
+      !known.givenTools.some((tool) => tool.name === name)
+    ) {
+      warnOnce(
+        "user-goal-unlisted",
+        `baton: ${JSON.stringify(name)} is not in any tool list this process has read, so Baton took ` +
+          "user_goal off it without knowing whether the tool declares its own; pass your tools as the tools option\n",
+      );
+    }
+    // A task-based call answers with the task, not the tool's result, so it
+    // is not captured, as on an McpServer.
+    if (request?.params?.task !== undefined) {
+      if (injected) stripIntentParams(request.params, ctx);
+      else extractGoalParam(toolArgs, USER_GOAL_PARAM_NAME, name, ctx.paramRegistry.get(name), unlisted);
+      return handler(...args);
+    }
+    return batonWrap({ current: name }, () => handler(...args), ctx, unlisted)(toolArgs, args[1]);
+  });
+}
+
+/** v2's `Protocol` has the result-validation hook; 1.x's has not. */
+function lowLevelMajor(lowLevel: LowLevelInternals): 1 | 2 {
+  return typeof (lowLevel as { _wrapHandler?: unknown })._wrapHandler === "function" ? 2 : 1;
+}
+
+function listedTools(result: unknown): unknown[] | null {
+  return isRecord(result) && Array.isArray(result.tools) ? (result.tools as unknown[]) : null;
+}
+
+/** Each named tool's fields, read one tool at a time: a tool whose fields
+ * cannot be read is skipped, not the list. */
+function toolInfos(tools: unknown[], skip: (name: string, err: unknown) => void): ToolInfo[] {
+  const infos: ToolInfo[] = [];
+  for (const tool of tools) {
+    let name: unknown;
+    try {
+      name = isRecord(tool) ? tool.name : undefined;
+      if (typeof name !== "string") continue;
+      infos.push({ name, description: (tool as ToolInfo).description, inputSchema: (tool as ToolInfo).inputSchema });
+    } catch (err) {
+      if (typeof name === "string") skip(name, err);
+    }
+  }
+  return infos;
+}
+
+/** Note each tool's own schema in the registry, and in the surface when it
+ * is one this server serves. */
+function readToolList(
+  tools: ToolInfo[],
+  ctx: WrapContext,
+  surface: boolean,
+  skip: (name: string, err: unknown) => void,
+): void {
+  for (const { name, inputSchema, description } of tools) {
+    try {
+      const schema = isRecord(inputSchema) ? inputSchema : null;
+      if (surface) {
+        ctx.surfaceState.noteTool(name, schema ?? EMPTY_OBJECT_JSON_SCHEMA, typeof description === "string" ? description : undefined);
+      }
+      const dispositions = declaredIntentParams(schema);
+      if (dispositions[USER_GOAL_PARAM_NAME] === "native") ctx.dropSubagentClause(name);
+      else if (schema !== null && takesUserGoalJson(schema)) dispositions[USER_GOAL_PARAM_NAME] = "injected";
+      if (Object.keys(dispositions).length > 0) ctx.paramRegistry.set(name, dispositions);
+      else ctx.paramRegistry.delete(name);
+    } catch (err) {
+      ctx.paramRegistry.delete(name);
+      skip(name, err);
+    }
+  }
+}
+
+function servedToolList(
+  result: Record<string, unknown>,
+  listed: unknown[],
+  ctx: WrapContext,
+  reportTool: Record<string, unknown> | undefined,
+): unknown {
+  const tools = listed.map((tool) => {
+    if (!isRecord(tool) || typeof tool.name !== "string") return tool;
+    if (ctx.paramRegistry.get(tool.name)?.[USER_GOAL_PARAM_NAME] !== "injected") return tool;
+    // `required` is the `tools/list` seam's, which follows `intentParamMode`.
+    return { ...tool, inputSchema: withUserGoalJson(tool.inputSchema as Record<string, unknown>, ctx.intentParamMode, false) };
+  });
+  if (reportTool !== undefined) tools.push(reportTool);
+  return { ...result, tools };
 }
 
 const LIFECYCLE_SEAMS = {
@@ -1572,7 +1855,7 @@ const VALIDATION_PROBE = Symbol("baton.validationProbe");
  * through leaves every slot `"unseen"`, and a rejected argument reads as
  * `refused` (SPEC §11.4.3: the producer cannot tell why).
  */
-function installValidationProbe(server: SupportedMcpServer): void {
+function installValidationProbe(server: SupportedServer): void {
   const target = server as unknown as {
     validateToolInput?: ((...args: unknown[]) => Promise<unknown>) & { [VALIDATION_PROBE]?: true };
   };
@@ -1707,7 +1990,7 @@ async function emitRequestSideFailure(
     args[1] as Extra,
     params,
     slot.stripped,
-    entry != null,
+    entry != null ? "warn" : "quiet",
   );
 
   // `undefined` where the SDK rejected the call for a reason this producer
@@ -1902,8 +2185,17 @@ export interface SupportedMcpServer {
   registerTool(name: string, ...rest: unknown[]): unknown;
 }
 
-/** Install Baton into an `McpServer`. See module docstring for usage. */
-export function withBaton(server: SupportedMcpServer, supplied: BatonConfig = {}): BatonHandle {
+/** The official SDK's low-level `Server`, 1.x or v2, on which the vendor sets
+ * its own `tools/list` and `tools/call` handlers. */
+export interface SupportedLowLevelServer {
+  setRequestHandler(method: unknown, ...rest: unknown[]): unknown;
+}
+
+export type SupportedServer = SupportedMcpServer | SupportedLowLevelServer;
+
+/** Install Baton into an `McpServer` or a low-level `Server`. See module
+ * docstring for usage. */
+export function withBaton(server: SupportedServer, supplied: BatonConfig = {}): BatonHandle {
   // ⚠ **FIRST — ahead of config resolution, every validation, and every
   // mutation of the vendor's server.** Off means install nothing and never
   // throw, so this cannot sit after a check that raises: a switch that can
@@ -1954,7 +2246,7 @@ class SettingsHandle extends BatonHandle {
 /** One Baton for a process that builds a new `McpServer` for every request.
  * Owns the sink, so a request has nothing to close. */
 export interface Baton {
-  wrap(server: SupportedMcpServer): void;
+  wrap(server: SupportedServer): void;
   flush(): Promise<void>;
   aclose(): Promise<void>;
 }
@@ -2008,15 +2300,28 @@ function inertHandle(sink: Sink, sessionId: string): BatonHandle {
   return new BatonHandle({ sink, sessionId, vendorId: "", annotationToolName: "" });
 }
 
-/** Both majors' `McpServer` has these; the low-level `Server` does not. */
-function requireHighLevelServer(server: SupportedMcpServer): void {
-  const candidate = server as { server?: unknown; registerTool?: unknown } | null;
-  if (typeof candidate?.registerTool !== "function" || typeof candidate.server !== "object" || candidate.server === null) {
-    throw new TypeError(
-      "Baton needs a high-level McpServer (from @modelcontextprotocol/sdk/server/mcp.js " +
-        "or @modelcontextprotocol/server); the low-level Server is not supported.",
-    );
+/** Which of the two servers this is, told apart by shape because this
+ * package imports neither SDK. */
+function serverShapeOf(server: SupportedServer): "mcpServer" | "lowLevel" {
+  const candidate = server as {
+    server?: unknown;
+    registerTool?: unknown;
+    setRequestHandler?: unknown;
+    _requestHandlers?: unknown;
+    _serverInfo?: unknown;
+  } | null;
+  if (typeof candidate?.registerTool === "function" && typeof candidate.server === "object" && candidate.server !== null) {
+    return "mcpServer";
   }
+  // `_serverInfo` tells a Server from a Client, which has the same handler map.
+  const isServer = typeof candidate?._serverInfo === "object" && candidate._serverInfo !== null;
+  if (typeof candidate?.setRequestHandler === "function" && candidate._requestHandlers instanceof Map && isServer) {
+    return "lowLevel";
+  }
+  throw new TypeError(
+    "Baton needs an McpServer or a low-level Server, from @modelcontextprotocol/sdk " +
+      "or @modelcontextprotocol/server.",
+  );
 }
 
 /** Shared by every server one Baton wraps, so per-request servers act as one:
@@ -2027,6 +2332,7 @@ interface BatonState {
   warned: Set<string>;
   counter: SessionCounter;
   scrubber: (value: unknown) => unknown;
+  lowLevelTools: KnownTools;
 }
 
 function newBatonState(config: BatonConfig): BatonState {
@@ -2035,23 +2341,24 @@ function newBatonState(config: BatonConfig): BatonState {
     warned: new Set(),
     counter: new SessionCounter(),
     scrubber: config.scrubber ?? new Scrubber().scrub,
+    lowLevelTools: { given: config.tools, givenTools: [], served: new Map(), keepsGoal: new Set(), unread: new Set() },
   };
 }
 
 function install(
-  server: SupportedMcpServer,
+  server: SupportedServer,
   supplied: BatonConfig,
   resolved: ResolvedBatonConfig,
-  { sentSurfaces, warned, counter: sharedCounter, scrubber }: BatonState,
+  { sentSurfaces, warned, counter: sharedCounter, scrubber, lowLevelTools }: BatonState,
   /** Nothing says where events go (SPEC §11.2 rule 10): check, then add nothing. */
   unconfigured: boolean,
 ): BatonHandle {
-  requireHighLevelServer(server);
+  const shape = serverShapeOf(server);
   // The internals both majors keep off their public `.d.ts`, on one named
   // shape rather than an `any` per reach-in, so a future SDK rename is a
   // compile error here instead of a runtime surprise in five places.
   const internals = server as unknown as {
-    server: { _instructions?: string; _serverInfo?: { name?: unknown } } & RequestHandlerInternals;
+    server: LowLevelInternals;
     registerTool: (...args: AnyArgs) => unknown;
     // `ToolEntry` and not `unknown`: the `tools/call` seam reads `enabled` and
     // the dispatch target off these entries, so an upstream rename of either
@@ -2060,13 +2367,14 @@ function install(
     _toolInputSchemaJson?: Record<string, unknown>;
     toolInputSchemaJson?: (name: string) => Record<string, unknown> | undefined;
   };
+  const lowLevel = shape === "mcpServer" ? internals.server : (server as unknown as LowLevelInternals);
 
   // The name the vendor gave this server, read once for both cosmetic labels:
   // the display name (only when a DSN is given) and the annotation tool name.
   // `_serverInfo` is where both majors keep what the constructor was handed;
   // the guards live in `annotationName.ts`.
   const serverName = usableServerName(() => ({
-    name: internals.server._serverInfo?.name,
+    name: lowLevel._serverInfo?.name,
     className: internals.constructor.name,
   }));
 
@@ -2104,7 +2412,7 @@ function install(
   // Vendor-true baseline, captured BEFORE any Baton mutation below —
   // MUST run before the instructions assignment, or the snapshot would
   // capture Baton's own text instead of the vendor's. See module docstring.
-  const serverMeta = buildServerMeta(server.server);
+  const serverMeta = buildServerMeta(lowLevel);
   const surfaceState = new SurfaceState(serverMeta, sentSurfaces);
 
   const emitSurface = async (
@@ -2154,12 +2462,12 @@ function install(
   };
 
   const dropSubagentClause = (name: string): void => {
-    const current = internals.server._instructions;
+    const current = lowLevel._instructions;
     if (current === INTENT_INSTRUCTIONS) {
-      internals.server._instructions = "";
+      lowLevel._instructions = "";
     } else if (typeof current === "string" && current.includes(INSTRUCTIONS_SUBAGENT_CLAUSE)) {
       // A replace, not a suffix strip: the vendor may have appended text after ours.
-      internals.server._instructions = current.replace(INSTRUCTIONS_SUBAGENT_CLAUSE, "");
+      lowLevel._instructions = current.replace(INSTRUCTIONS_SUBAGENT_CLAUSE, "");
     } else {
       return;
     }
@@ -2188,15 +2496,8 @@ function install(
       // so a tool captured while disabled would otherwise land on the 1.x
       // converter and put a draft-07 `$schema` in a snapshot whose other
       // tools are draft-2020-12 — two spellings in one hash, from one server.
-      // The schema's own Standard-Schema converter is the one v2 renders
-      // with; verified canonically equal to the wire output.
-      try {
-        const standard = (inputSchema as { "~standard"?: { jsonSchema?: { input?: (o: unknown) => Record<string, unknown> } } })?.["~standard"];
-        const json = standard?.jsonSchema?.input?.({ target: "draft-2020-12" });
-        if (json) return json;
-      } catch {
-        // Fall through.
-      }
+      const json = standardInputJsonSchema(inputSchema);
+      if (json) return json;
     }
     try {
       return toolInputJsonSchema(inputSchema);
@@ -2206,7 +2507,7 @@ function install(
       // registration failing. A schema we cannot convert costs the snapshot
       // one tool's schema, nothing else — spelled the way both majors spell
       // an empty one, not as a third `{}`.
-      return { type: "object", properties: {} };
+      return EMPTY_OBJECT_JSON_SCHEMA;
     }
   };
 
@@ -2230,7 +2531,7 @@ function install(
     vendorToolJsonSchema,
     bustSchemaMemo,
     dropSubagentClause,
-    servedInstructions: () => internals.server._instructions,
+    servedInstructions: () => lowLevel._instructions,
     surfaceState,
     emitSurface,
   };
@@ -2240,42 +2541,76 @@ function install(
   // docstring for why this reach-in has no "preferred path" to fall back
   // from, unlike Python's adapter.
   const writeInstructions = (text: string): void => {
-    internals.server._instructions = withVendorInstructions(internals.server, text, (message) =>
+    lowLevel._instructions = withVendorInstructions(lowLevel, text, (message) =>
       warnOnce("instructions-length", message),
     );
   };
   writeInstructions(ours);
+  const rewriteInstructions = (text: string): void => {
+    writeInstructions(text);
+    const native = [...ctx.paramRegistry].find(([, d]) => d[USER_GOAL_PARAM_NAME] === "native");
+    if (native !== undefined) dropSubagentClause(native[0]);
+  };
   if (config.captureSettings !== undefined) {
     ctx.perCaller = new PerCallerSurface({
       settings: config.captureSettings,
       intentParamMode,
-      annotationToolName,
-      instructions: ours,
-      writeInstructions: (text) => {
-        writeInstructions(text);
-        const native = [...ctx.paramRegistry].find(([, d]) => d[USER_GOAL_PARAM_NAME] === "native");
-        if (native !== undefined) dropSubagentClause(native[0]);
+      // Read, not copied: a low-level Server's own tool can take the name.
+      get annotationToolName() {
+        return ctx.annotationToolName;
       },
+      instructions: ours,
+      writeInstructions: rewriteInstructions,
       injectsGoal: (name) => ctx.paramRegistry.get(name)?.[USER_GOAL_PARAM_NAME] === "injected",
     });
     // Now, not at the first request: `initialize` passes no seam of ours.
     ctx.perCaller.followSettings();
   }
 
+  const annotationOptions = !reports ? undefined : {
+    sink,
+    counter: ctx.counter,
+    tenantId: ctx.tenantId,
+    vendorId: ctx.vendorId,
+    vendorDisplayName: reports.vendorDisplayName,
+    consentToken: ctx.consentToken,
+    resolvePrincipal: ctx.resolvePrincipal,
+    captureSettings: ctx.captureSettings,
+    fallbackSessionId: ctx.fallbackSessionId,
+    scrubber: ctx.scrubber,
+    // The RESOLVED name, never `config.annotationToolName`: handing over the
+    // raw override and letting the registration re-derive would register
+    // `srv-..._annotate` while the instructions name the server-derived one.
+    annotationToolName,
+  };
+
+  // Innermost, so every seam below sees the list with Baton's additions.
+  if (shape === "lowLevel") {
+    installLowLevelToolSeams(
+      lowLevel,
+      ctx,
+      annotationOptions && buildAnnotationTool(server, annotationOptions),
+      lowLevelTools,
+      warnOnce,
+      () => rewriteInstructions(INTENT_INSTRUCTIONS),
+    );
+  }
+
   // Before any tool registers: on a server with no tools yet, the first
   // registration is what makes the SDK install its `tools/list` handler, and
   // the seam has to be in place to wrap it as it lands.
-  installToolsListSeam(internals.server, ctx);
+  installToolsListSeam(lowLevel, ctx);
 
-  // The SECOND tool-call seam (SPEC §11.4.3's `failure_kind`) — unconditional,
-  // and installed here for the same reason the `tools/list` seam is.
+  // The SECOND tool-call seam (SPEC §11.4.3's `failure_kind`), installed here
+  // for the same reason the `tools/list` seam is. Not on a low-level Server,
+  // which has no registry to classify a refused call against.
   //
   // ⚠ The registry is read PER CALL, not captured, so a tool removed after
   // install classifies as `unknown_tool` rather than against a stale snapshot
   // — `update({name: null})` and `remove()` both delete the entry, and the
   // whole point of this lookup is to agree with what the SDK itself just read.
-  installToolsCallSeam(
-    internals.server,
+  if (shape === "mcpServer") installToolsCallSeam(
+    lowLevel,
     // ⚠ `Object.hasOwn`, never a bare index. `_registeredTools` is a plain
     // object, so `registry["constructor"]` answers `Object` and
     // `registry["__proto__"]` answers `Object.prototype` — both non-undefined,
@@ -2295,24 +2630,21 @@ function install(
   // `tools/list` seam, so they wrap it and the per-caller rewrite sees the
   // advertised `required`: consoleSettings.test.ts, "two callers in different
   // audiences see different tool lists".
-  installLifecycleSeams(internals.server, ctx);
+  installLifecycleSeams(lowLevel, ctx);
 
-  const resolvedAnnotationToolName = !reports ? "" : registerAnnotationTool(server, {
-    sink,
-    counter: ctx.counter,
-    tenantId: ctx.tenantId,
-    vendorId: ctx.vendorId,
-    vendorDisplayName: reports.vendorDisplayName,
-    consentToken: ctx.consentToken,
-    resolvePrincipal: ctx.resolvePrincipal,
-    captureSettings: ctx.captureSettings,
-    fallbackSessionId: ctx.fallbackSessionId,
-    scrubber: ctx.scrubber,
-    // The RESOLVED name, never `config.annotationToolName`: handing over the
-    // raw override and letting the registration re-derive would register
-    // `srv-..._annotate` while the instructions name the server-derived one.
-    annotationToolName,
-  });
+  const handle = (name: string): BatonHandle =>
+    new BatonHandle({
+      sink: given,
+      queue: sink,
+      vendorId: config.vendorId,
+      sessionId: fallbackSessionId,
+      annotationToolName: name,
+    });
+  if (shape === "lowLevel") return handle(annotationToolName);
+
+  const resolvedAnnotationToolName = annotationOptions
+    ? registerAnnotationTool(server as SupportedMcpServer, annotationOptions)
+    : "";
 
   // Retroactive: sweep whatever's already registered, regardless of call order.
   const existing = internals._registeredTools;
@@ -2337,13 +2669,7 @@ function install(
     return registered;
   };
 
-  return new BatonHandle({
-    sink: given,
-    queue: sink,
-    vendorId: config.vendorId,
-    sessionId: fallbackSessionId,
-    annotationToolName: resolvedAnnotationToolName,
-  });
+  return handle(resolvedAnnotationToolName);
 }
 
 /** The display name the reports need, or `undefined` under `reportMode: "off"`. */

@@ -2,13 +2,8 @@
  * its agents, and the `surface_snapshot` of the list it started from (SPEC
  * §5.6, §11.4.2). */
 
-import {
-  buildUserGoalParamDescription,
-  declaresParam,
-  requiredParamNames,
-  USER_GOAL_PARAM_NAME,
-} from "../integrations/mcp/llmText.js";
-import { DEFAULT_INTENT_PARAM_MODE } from "../integrations/mcp/schemaCompat.js";
+import { requiredParamNames, USER_GOAL_PARAM_NAME } from "../integrations/mcp/llmText.js";
+import { DEFAULT_INTENT_PARAM_MODE, withUserGoalJson } from "../integrations/mcp/schemaCompat.js";
 import { assembleSurface, buildSeamAugmentations, surfaceHash, type ServerMeta } from "../integrations/mcp/surface.js";
 import { printable } from "../warn.js";
 import { isRecord } from "../_object.js";
@@ -77,28 +72,6 @@ export function snapshotPayload({ surface, digest }: Surface): Record<string, un
 }
 
 function servedEntry<T>(tool: T): T {
-  if (!isRecord(tool)) return tool;
-  const entry: Record<string, unknown> = { ...tool };
-  if (isRecord(entry.inputSchema)) {
-    // Only these levels change, so only they are copied.
-    const schema: Record<string, unknown> = { ...entry.inputSchema };
-    if (isRecord(schema.properties)) schema.properties = { ...schema.properties };
-    injectGoalParam(schema);
-    entry.inputSchema = schema;
-  }
-  return entry as T;
-}
-
-/** Python's `inject_goal_params` on a JSON Schema object, in place. A tool
- * that declares `user_goal` itself keeps its own. */
-function injectGoalParam(schema: Record<string, unknown>): void {
-  // `undefined` counts as missing: JSON drops the key, so the agent would see none.
-  if (schema.properties === undefined) schema.properties = {};
-  if (!isRecord(schema.properties) || declaresParam(schema, USER_GOAL_PARAM_NAME)) return;
-  schema.properties[USER_GOAL_PARAM_NAME] = {
-    type: "string",
-    description: buildUserGoalParamDescription({ intentParamMode: DEFAULT_INTENT_PARAM_MODE }),
-  };
-  const required = Array.isArray(schema.required) ? (schema.required as unknown[]) : [];
-  if (!required.includes(USER_GOAL_PARAM_NAME)) schema.required = [...required, USER_GOAL_PARAM_NAME];
+  if (!isRecord(tool) || !isRecord(tool.inputSchema)) return tool;
+  return { ...tool, inputSchema: withUserGoalJson(tool.inputSchema, DEFAULT_INTENT_PARAM_MODE, true) };
 }

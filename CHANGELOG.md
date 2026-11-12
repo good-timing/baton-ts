@@ -1,5 +1,38 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **The low-level `Server`.** `withBaton` and `createBaton().wrap` take the
+  official SDK's low-level `Server`, 1.x or 2.x, on which the vendor sets its
+  own `tools/list` and `tools/call` handlers. Baton adds `user_goal` and the
+  report tool to the vendor's tool list, follows Console settings per caller,
+  takes `user_goal` off a call, and sends the same events as on an
+  `McpServer`. Baton knows the tools from the lists its servers serve, and
+  from the new `tools` option, read once. Every call is traced. `user_goal`
+  comes off every call, since an agent sends it only because Baton listed it,
+  except to a tool that declares its own, or whose root `$ref` or combiner may
+  take it at any depth or behind a `$ref` to another document. Baton
+  never runs the vendor's `tools/list` handler itself. `failure_kind` is
+  never `unknown_tool`, `invalid_argument` or `output_schema_mismatch` on this
+  server, because Baton has no registry to check a call against. Exported
+  types: `SupportedServer`, `SupportedLowLevelServer`.
+
+### Changed
+
+- **`@modelcontextprotocol/sdk` 1.29 is supported.** The peer range is now
+  `^1.29.0`. The suite passes on 1.29.0, and the SDK files this package reads
+  (`server/mcp.js`, `shared/protocol.js`) are the same in 1.29.0 and 1.30.0.
+  On 1.29, an `invalid_argument` event's `error_body` holds only the first
+  validation message, because 1.29 reports only that one.
+- **No `user_goal` on a tool whose root schema has `$ref`, `oneOf`, `anyOf`
+  or `allOf`.** A property beside one is not seen by the subschema's
+  `additionalProperties: false`, so clients could refuse the call. This also
+  applies to the library's `listTools`. On a low-level `Server`, Baton still
+  takes `user_goal` off such a tool's call, unless its schema may take
+  `user_goal`, and leaves `expected_result` and `overall_task`.
+
 ## 1.0.1: a share samples people only
 
 ### Changed

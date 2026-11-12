@@ -170,6 +170,30 @@ export function declaresParam(schema: unknown, name: string): boolean {
   return typeof props === "object" && props !== null && name in props;
 }
 
+// What a schema forbids, or values it shows, never names a parameter it takes.
+const NOT_ACCEPTED = new Set(["not", "const", "enum", "default", "examples"]);
+// Their keys are the vendor's names, so a property called "default" is searched.
+const NAMED_SCHEMAS = new Set(["properties", "patternProperties", "$defs", "definitions", "dependentSchemas"]);
+
+/** Whether a JSON schema may take `name` anywhere: as a property or a
+ * required name at any depth, or behind a `$ref` to another document, which
+ * Baton cannot read. */
+export function mayDeclareParam(schema: unknown, name: string): boolean {
+  const seen = new Set<object>();
+  const walk = (node: unknown): boolean => {
+    if (typeof node !== "object" || node === null || seen.has(node)) return false;
+    seen.add(node);
+    const { required, $ref } = node as { required?: unknown; $ref?: unknown };
+    if (declaresParam(node, name) || (Array.isArray(required) && required.includes(name))) return true;
+    if (typeof $ref === "string" && !$ref.startsWith("#")) return true;
+    return Object.entries(node).some(([key, child]: [string, unknown]) => {
+      if (NAMED_SCHEMAS.has(key) && typeof child === "object" && child !== null) return Object.values(child).some(walk);
+      return !NOT_ACCEPTED.has(key) && walk(child);
+    });
+  };
+  return walk(schema);
+}
+
 /** Whether Baton's text is in the served instructions. Without the annotation
  * tool it is only the subagent sentence, which a tool declaring its own
  * `user_goal` removes. */

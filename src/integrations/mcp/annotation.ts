@@ -22,6 +22,7 @@ import { emit } from "./emit.js";
 import { type ResolvePrincipalHook, callerEnvelope, resolveCaller } from "./principalResolution.js";
 import type { CaptureSettings } from "./captureSettings.js";
 import { buildAnnotationToolDescription, buildRefusalText } from "./llmText.js";
+import { standardInputJsonSchema, toolInputJsonSchema } from "./schemaCompat.js";
 import { extraMeta, observeTransport, type Extra } from "./mcpTypes.js";
 import type { SupportedMcpServer } from "./withBaton.js";
 import { observeClient } from "./clientObserved.js";
@@ -79,24 +80,76 @@ export function isReport(whatHappened: unknown): whatHappened is string {
   return typeof whatHappened === "string" && !isBlank(whatHappened);
 }
 
+export interface AnnotationTool {
+  name: string;
+  description: string;
+  /** Runs on arguments the input schema has already accepted. */
+  handler: (args: AnnotationArgs, extra: Extra) => Promise<CallToolResultLike>;
+}
+
+interface CallToolResultLike {
+  content: Array<{ type: "text"; text: string }>;
+  isError?: boolean;
+}
+
 /** Register the annotation tool on `server`. Returns the resolved tool name. */
 export function registerAnnotationTool(
   server: SupportedMcpServer,
   options: RegisterAnnotationToolOptions,
 ): string {
+  const tool = buildAnnotationTool(server, options);
+  server.registerTool(
+    tool.name,
+    { description: tool.description, inputSchema: ANNOTATION_INPUT_SHAPE },
+    tool.handler,
+  );
+  return tool.name;
+}
+
+const ANNOTATION_ARGS = z.object(ANNOTATION_INPUT_SHAPE);
+
+/** The input schema as that major's `McpServer` lists it: v2 renders draft
+ * 2020-12 from the schema itself, 1.x through its own converter. */
+export function annotationInputJsonSchema(major: 1 | 2): Record<string, unknown> {
+  // A zod without the Standard JSON Schema interface falls back to the 1.x
+  // converter, so a vendor's boot never fails on the report tool's schema.
+  return (annotationJsonSchemas[major] ??=
+    (major === 2 ? standardInputJsonSchema(ANNOTATION_ARGS) : undefined) ?? toolInputJsonSchema(ANNOTATION_INPUT_SHAPE));
+}
+
+const annotationJsonSchemas: Partial<Record<1 | 2, Record<string, unknown>>> = {};
+
+/** `tools/call` for the annotation tool on a server with no tool registry to
+ * validate its arguments, so the check `McpServer` makes is made here. */
+export function callAnnotationTool(
+  tool: AnnotationTool,
+  args: unknown,
+  extra: Extra,
+): Promise<CallToolResultLike> {
+  const parsed = ANNOTATION_ARGS.safeParse(args ?? {});
+  if (parsed.success) return tool.handler(parsed.data, extra);
+  return Promise.resolve({
+    content: [{ type: "text", text: `Invalid arguments for tool ${tool.name}: ${parsed.error.message}` }],
+    isError: true,
+  });
+}
+
+/** The annotation tool for `server`, which is read only for the client the
+ * `initialize` handshake declared. */
+export function buildAnnotationTool(
+  server: unknown,
+  options: RegisterAnnotationToolOptions,
+): AnnotationTool {
   const name = deriveAnnotationToolName(options.vendorId, options.annotationToolName);
   const description = buildAnnotationToolDescription({
     vendorDisplayName: options.vendorDisplayName,
   });
   const refusal = buildRefusalText({ annotationToolName: name });
 
-  server.registerTool(
+  return {
     name,
-    {
-      description,
-      inputSchema: ANNOTATION_INPUT_SHAPE,
-    },
-    async (args: AnnotationArgs, extra: Extra) => {
+    description,
+    handler: async (args: AnnotationArgs, extra: Extra) => {
       // Refused in the handler, not by requiring `what_happened` in the
       // schema: an agent that must fill it to get a call through invents a
       // problem, and that corrupts the reports.
@@ -174,7 +227,5 @@ export function registerAnnotationTool(
 
       return { content: [{ type: "text" as const, text: JSON.stringify({ ok: true }) }] };
     },
-  );
-
-  return name;
+  };
 }

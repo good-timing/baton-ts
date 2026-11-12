@@ -12,7 +12,7 @@ MCP standardizes how agents discover and call your tools. It does not capture *w
 npm install @goodtiming/baton-sdk
 ```
 
-Node 20+. Both major versions of the official MCP TypeScript SDK are supported, and both are **optional** peer dependencies: `@modelcontextprotocol/sdk` **1.30+** or `@modelcontextprotocol/server` 2.x. You install whichever one your server already uses and nothing else. The 1.x floor is `^1.30.0`; an older 1.x will not satisfy the peer range.
+Node 20+. Both major versions of the official MCP TypeScript SDK are supported, and both are **optional** peer dependencies: `@modelcontextprotocol/sdk` **1.29+** or `@modelcontextprotocol/server` 2.x. You install whichever one your server already uses and nothing else. The 1.x floor is `^1.29.0`; an older 1.x will not satisfy the peer range.
 
 ## Quickstart
 
@@ -43,6 +43,23 @@ With no DSN, no `vendorId`, no `tenantId` and no sink, `withBaton` warns once an
 For a hosted server, where the process starts from your own environment, set `BATON_DSN` and call `withBaton(server)` with no config. An explicit `dsn` wins over `BATON_DSN`, and both win over every other `BATON_*` variable. That ordering matters when you **re-onboard** a server: the new DSN beats the old install's leftover `.env`, rather than filing your events under the previous server's name.
 
 Sending to your own collector instead, or trying the package before you have a key, means naming the parts rather than passing a DSN: [Without a DSN](https://goodtiming.ai/docs.html#without-dsn). That section's examples are Python. The config field names carry over as camelCase, and `HttpSink` takes its options as an object: `new HttpSink(url, { apiKey })`. Its timeouts do **not** carry over. Python's `request_timeout_seconds` / `backoff_base_seconds` / `backoff_max_seconds` / `circuit_breaker_reset_seconds` / `shutdown_flush_timeout_seconds` are `requestTimeoutMs` / `backoffBaseMs` / `backoffMaxMs` / `circuitBreakerResetMs` / `shutdownFlushTimeoutMs` here, in milliseconds rather than seconds.
+
+## A low-level Server
+
+`withBaton` and `createBaton().wrap` also take the official SDK's low-level `Server`, 1.x or 2.x, on which you set the `tools/list` and `tools/call` handlers yourself. Set them before or after `withBaton`.
+
+- Baton adds `user_goal` to the tools your `tools/list` handler returns, and the report tool under `reportMode: "on"`. It takes `user_goal` off a call before your handler sees it, and sends the same events as on an `McpServer`.
+- Baton knows your tools from the lists your servers serve; with `createBaton`, what one server served is known to the next. A tool that declares its own `user_goal` keeps it.
+- A tool whose root schema has `$ref`, `oneOf`, `anyOf` or `allOf` gets no `user_goal`. If an agent sends `user_goal` to it anyway, Baton takes it off, unless the schema may take `user_goal` somewhere: as a property or a required name at any depth, or behind a `$ref` to another document. With `createBaton`, once any server has listed a version of the tool that may take it, every server leaves it.
+- A process that has served no list yet does not know your tools, as in a worker that just started. Baton still takes `user_goal` off their calls, because an agent sends it only after Baton listed it, and warns once. A tool that declares its own `user_goal` would lose it there. Pass your tool list as `tools` so every process knows them from its first request:
+
+  ```ts
+  withBaton(server, { dsn: process.env.BATON_DSN, tools: TOOLS }); // or tools: () => TOOLS
+  ```
+
+  Baton reads `tools` once per `withBaton` or `createBaton`, and never calls your `tools/list` handler itself. It also needs `tools` to leave its subagent sentence out of the instructions when a tool declares its own `user_goal`.
+- If your list has a tool with the report tool's name, yours is kept, Baton's report tool is not added, and the instructions stop naming it; the handle's `annotationToolName` still does. Until Baton has seen that list, a call to that name reaches Baton's report tool, so pass `tools` or set `annotationToolName` to another name.
+- Baton has no tool registry to check a call against here, so `failure_kind` is never `unknown_tool`, `invalid_argument` or `output_schema_mismatch`. Such a failure is recorded as an error with no `failure_kind`.
 
 ## A server per request
 
@@ -308,7 +325,6 @@ Checking it worked: `handle.sink` is still an object, so finding one there is no
 
 None of it blocks the quickstart above.
 
-- Only the high-level `McpServer`. The low-level `Server` is not wrapped.
 - **Task-based tools are not wrapped.** A 1.x tool registered with an object at `.handler` rather than a function produces no `tool_call_*` events at all, and nothing reports that. It still advertises `user_goal`, which Baton removes from the call before your handler sees it, wherever it can reach the server's `tools/call` handler. Tools on the same server registered the ordinary way are unaffected. ⚠ **The request-level seam above does not rescue this one**: it reports only on tools this package wrapped, so a task-based tool emits nothing even for a rejected argument, where an unknown tool now emits a `tool_call_error`.
 - Intent parameters need a Zod schema. On the 2.x SDK a tool registered with a non-Zod standard schema is still wrapped and still emits `tool_call_*`; it just advertises no intent parameters.
 - `resources/templates/list` sends no events.
