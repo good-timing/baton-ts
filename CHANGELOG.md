@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.1.1: Workers test runners and the report tool schema
 
 ### Fixed
 
