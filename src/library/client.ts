@@ -31,7 +31,7 @@ import { captureDisabled, DisabledSink, logDisabled } from "../optout.js";
 import { Scrubber } from "../scrub.js";
 import { boundedSinkCall, droppedAfterClose, HttpSink, offTheCall, safeWrite, type Sink } from "../sinks.js";
 import { PROCESS_DROPS } from "../drops.js";
-import { printable } from "../warn.js";
+import { printable, stderrLine } from "../warn.js";
 import { uuid7 } from "../uuid7.js";
 import { resolveTenantId } from "../integrations/mcp/config.js";
 import { emit } from "../integrations/mcp/emit.js";
@@ -300,7 +300,7 @@ class Core {
       });
     } catch (err) {
       PROCESS_DROPS.add("encode_failed");
-      process.stderr.write(`baton: surface snapshot dropped; it does not fit the schema: ${printable(err)}\n`);
+      stderrLine(`baton: surface snapshot dropped; it does not fit the schema: ${printable(err)}`);
       return Promise.resolve();
     }
     return safeWrite(this.sink, event);
@@ -379,7 +379,7 @@ export class Trace {
   observed(result?: unknown, failure?: ObservedError): this {
     if ((this.#result !== UNSET || this.#error !== null) && !this.#observedWarned) {
       this.#observedWarned = true;
-      process.stderr.write("baton: Trace.observed() called more than once; the last call wins.\n");
+      stderrLine("baton: Trace.observed() called more than once; the last call wins.");
     }
     this.#result = UNSET;
     this.#error = null;
@@ -403,7 +403,7 @@ export class Trace {
         // eslint-disable-next-line no-restricted-syntax -- the throw is caught here and parks SCRUB_FAILED, which drops the end event
         this.#result = this.#core.scrubber(result);
       } catch (err) {
-        process.stderr.write(`baton: scrubber threw on a result; that call's end event is dropped: ${printable(err)}\n`);
+        stderrLine(`baton: scrubber threw on a result; that call's end event is dropped: ${printable(err)}`);
         this.#result = SCRUB_FAILED;
       }
     }
@@ -567,7 +567,7 @@ export class Client {
     try {
       block = newSession(options, this.#core.scrubber, this.#core.disabled);
     } catch (err) {
-      process.stderr.write(`baton: session values could not be read; using a minted session: ${printable(err)}\n`);
+      stderrLine(`baton: session values could not be read; using a minted session: ${printable(err)}`);
       block = newSession({}, this.#core.scrubber, this.#core.disabled);
     }
     return runInSession(this, block, fn);

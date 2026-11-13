@@ -7,10 +7,13 @@
 
 import { expect, vi } from "vitest";
 import { McpServer as McpServerV1 } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { Server as ServerV1 } from "@modelcontextprotocol/sdk/server/index.js";
+import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { Client as ClientV1 } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport as TransportV1 } from "@modelcontextprotocol/sdk/inMemory.js";
 import {
   McpServer as McpServerV2,
+  Server as ServerV2,
   InMemoryTransport as TransportV2,
 } from "@modelcontextprotocol/server";
 import { Client as ClientV2 } from "@modelcontextprotocol/client";
@@ -238,3 +241,14 @@ const V2: Major = {
 };
 
 export const MAJORS: Major[] = [V1, V2];
+
+/** A low-level `Server` of `major` with the tools capability, and the keys its
+ * `setRequestHandler` takes for `tools/list` and `tools/call`. */
+export function lowLevelServerOf(major: Major): { server: any; listTools: any; callTool: any } {
+  const isV1 = major === V1;
+  return {
+    server: new (isV1 ? ServerV1 : ServerV2)({ name: "vendor", version: "1.0.0" }, { capabilities: { tools: {} } }),
+    listTools: isV1 ? ListToolsRequestSchema : "tools/list",
+    callTool: isV1 ? CallToolRequestSchema : "tools/call",
+  };
+}

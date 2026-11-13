@@ -83,7 +83,7 @@
  * instead of the vendor's.
  */
 
-import { AsyncLocalStorage } from "node:async_hooks";
+import * as asyncHooks from "node:async_hooks";
 import { uuid7 } from "../../uuid7.js";
 import {
   type Event,
@@ -128,7 +128,7 @@ import {
 } from "./config.js";
 import { captureDisabled, DisabledSink, logDisabled, logUnconfigured } from "../../optout.js";
 import { capCodePoints, isBlank } from "../../_text.js";
-import { printable, warn } from "../../warn.js";
+import { printable, stderrLine, warn } from "../../warn.js";
 import { isRecord } from "../../_object.js";
 import { emit } from "./emit.js";
 import {
@@ -190,6 +190,7 @@ import { PerCallerSurface } from "./perCaller.js";
 import { ServerCounter, SessionCounter } from "./sessionCounter.js";
 import {
   advertiseIntentParamsRequired,
+  withToolInputSchema,
   injectGoalParams,
   injectGoalParamsV2,
   toolInputJsonSchema,
@@ -366,7 +367,7 @@ type StrippedParams = Readonly<MutableStrippedParams>;
  * a second seamed server in-process enters that server's slot first, so the
  * inner wrapper there reads its own, not ours. Nothing is shared BETWEEN
  * calls, so there is no per-install state to keep. */
-const callSlots = new AsyncLocalStorage<CallSlot>();
+const callSlots = new asyncHooks.AsyncLocalStorage<CallSlot>();
 
 /** Tracks the vendor-true (pre-injection) tool surface for this install, for
  * `surface_snapshot` capture. Built from data already in hand at wrap time
@@ -870,8 +871,8 @@ function extractGoalParam(
   if (disposition === "native") return null;
   if (disposition === undefined && unlisted === "leave") return null;
   if (disposition === undefined && unlisted === "warn") {
-    process.stderr.write(
-      `baton: stripping ${paramName} from unlisted tool ${JSON.stringify(toolName)} (cold registry)\n`,
+    stderrLine(
+      `baton: stripping ${paramName} from unlisted tool ${JSON.stringify(toolName)} (cold registry)`,
     );
   }
   return popText(args, paramName);
@@ -921,7 +922,7 @@ async function maybeEmitSurfaceSnapshot(ctx: WrapContext): Promise<void> {
     snapshot = ctx.surfaceState.buildSnapshot();
     digest = surfaceHash(snapshot);
   } catch (err) {
-    process.stderr.write(`baton: surface snapshot capture failed: ${String(err)}\n`);
+    stderrLine(`baton: surface snapshot capture failed: ${String(err)}`);
     return;
   }
   const sent = ctx.surfaceState.sentSurfaces;
@@ -1073,12 +1074,16 @@ function installRequestSeam(
  * `intentParamMode: "required"`, and `tool_name` on the annotate tool, in
  * every mode (SPEC §5.1.1).
  *
+ * On an McpServer the annotate tool lists Baton's own rendering of its
+ * schema, as a low-level Server's list already does: the SDK renders it with
+ * the vendor's zod, which may differ (reportToolSchema.test.ts).
+ *
  * ⚠ Fail-open, twice. A throw from the transform is logged and the SDK's own
  * result goes out untouched, because a vendor's `tools/list` may never break
  * on Baton's account. And a server with no reachable handler map gets no seam,
  * which costs the advertisement and nothing else.
  */
-function installToolsListSeam(lowLevel: RequestHandlerInternals, ctx: WrapContext): void {
+function installToolsListSeam(lowLevel: RequestHandlerInternals, ctx: WrapContext, listsOwnReportTool: boolean): void {
   const names = [...requiredParamNames(ctx.intentParamMode), TOOL_NAME_PARAM_NAME];
   const isInjected = (toolName: string, paramName: string): boolean =>
     toolName === ctx.annotationToolName
@@ -1086,10 +1091,13 @@ function installToolsListSeam(lowLevel: RequestHandlerInternals, ctx: WrapContex
       : ctx.paramRegistry.get(toolName)?.[paramName] === "injected";
   const advertise = (result: unknown): unknown => {
     try {
-      return advertiseIntentParamsRequired(result, names, isInjected);
+      const served = listsOwnReportTool || ctx.annotationToolName === ""
+        ? result
+        : withToolInputSchema(result, ctx.annotationToolName, annotationInputJsonSchema(lowLevelMajor(lowLevel)));
+      return advertiseIntentParamsRequired(served, names, isInjected);
     } catch (err) {
-      process.stderr.write(
-        `baton: tools/list advertisement failed; serving the SDK's own result: ${String(err)}\n`,
+      stderrLine(
+        `baton: tools/list advertisement failed; serving the SDK's own result: ${String(err)}`,
       );
       return result;
     }
@@ -1159,12 +1167,12 @@ function installLowLevelToolSeams(
     known.unread.add(name);
     warnOnce(
       `tool-unread:${name}`,
-      `baton: could not read tool ${JSON.stringify(name)}; its calls keep user_goal until Baton can read it: ${printable(err)}\n`,
+      `baton: could not read tool ${JSON.stringify(name)}; its calls keep user_goal until Baton can read it: ${printable(err)}`,
     );
   };
   const skipNote = (name: string, err: unknown): void => {
     if (known.unread.has(name)) return;
-    warnOnce(`tool-unnoted:${name}`, `baton: could not note tool ${JSON.stringify(name)}; Baton adds no user_goal to it: ${printable(err)}\n`);
+    warnOnce(`tool-unnoted:${name}`, `baton: could not note tool ${JSON.stringify(name)}; Baton adds no user_goal to it: ${printable(err)}`);
   };
   // Below the root only where Baton cannot add its own `user_goal` at the root.
   const keepGoalIfDeclared = (tools: ToolInfo[]): void => {
@@ -1188,7 +1196,7 @@ function installLowLevelToolSeams(
       warnOnce(
         "report-tool-name-taken",
         `baton: the server lists its own tool ${JSON.stringify(reportTool.name)}, so Baton's report ` +
-          "tool is not added; set annotationToolName to another name\n",
+          "tool is not added; set annotationToolName to another name",
       );
       reportTool = undefined;
       ctx.annotationToolName = "";
@@ -1224,7 +1232,7 @@ function installLowLevelToolSeams(
       } catch (err) {
         warnOnce(
           "tools-unread",
-          `baton: could not read the tools option; Baton learns the tools from tools/list: ${printable(err)}\n`,
+          `baton: could not read the tools option; Baton learns the tools from tools/list: ${printable(err)}`,
         );
       }
     }
@@ -1245,7 +1253,7 @@ function installLowLevelToolSeams(
       const firstPage = (args[0] as { params?: { cursor?: unknown } } | undefined)?.params?.cursor === undefined;
       return servedToolList(result as Record<string, unknown>, listed, ctx, firstPage && reportTool ? listedReportTool : undefined);
     } catch (err) {
-      process.stderr.write(`baton: tools/list capture failed; serving the vendor's own result: ${printable(err)}\n`);
+      stderrLine(`baton: tools/list capture failed; serving the vendor's own result: ${printable(err)}`);
       return result;
     }
   });
@@ -1283,7 +1291,7 @@ function installLowLevelToolSeams(
       warnOnce(
         "user-goal-unlisted",
         `baton: ${JSON.stringify(name)} is not in any tool list this process has read, so Baton took ` +
-          "user_goal off it without knowing whether the tool declares its own; pass your tools as the tools option\n",
+          "user_goal off it without knowing whether the tool declares its own; pass your tools as the tools option",
       );
     }
     // A task-based call answers with the task, not the tool's result, so it
@@ -1553,7 +1561,7 @@ async function openLifecycleCall(
       },
     };
   } catch (err) {
-    process.stderr.write(`baton: ${spec.method} capture failed: ${String(err)}\n`);
+    stderrLine(`baton: ${spec.method} capture failed: ${String(err)}`);
     return null;
   }
 }
@@ -1921,7 +1929,7 @@ async function settleCall(
     await emitRequestSideFailure(outcome, args, slot, toolEntry, ctx);
   } catch (err) {
     PROCESS_DROPS.add("encode_failed");
-    process.stderr.write(`baton: settling a tool call failed; events dropped: ${String(err)}\n`);
+    stderrLine(`baton: settling a tool call failed; events dropped: ${String(err)}`);
   }
 }
 
@@ -2392,9 +2400,19 @@ function install(
     ? buildServerInstructions({ vendorDisplayName: reports.vendorDisplayName, annotationToolName })
     : INTENT_INSTRUCTIONS;
 
+  if (unconfigured) return inertHandle(new DisabledSink(), "baton-unconfigured");
+  // Truthy, not `Object.hasOwn`: the SDK refuses a name the same way, so
+  // `constructor` is refused here, before the server changes.
+  if (shape === "mcpServer" && reports && internals._registeredTools?.[annotationToolName]) {
+    throw new Error(
+      `Tool ${annotationToolName} is already registered, so Baton cannot add its report tool. ` +
+        "If it is your tool, set annotationToolName to another name; if Baton is already on " +
+        "this server, call withBaton once.",
+    );
+  }
+
   // The checks that change nothing are above this line; from here on the install
   // builds a sink and changes the server.
-  if (unconfigured) return inertHandle(new DisabledSink(), "baton-unconfigured");
   const given = config.sink ?? new StdoutSink();
   const sink = offTheCall(given);
   const intentParamMode: IntentParamMode = config.intentParamMode ?? DEFAULT_INTENT_PARAM_MODE;
@@ -2458,7 +2476,7 @@ function install(
   const warnOnce = (key: string, message: string): void => {
     if (warned.has(key)) return;
     warned.add(key);
-    process.stderr.write(message);
+    stderrLine(message);
   };
 
   const dropSubagentClause = (name: string): void => {
@@ -2474,7 +2492,7 @@ function install(
     warnOnce(
       "native-user-goal",
       `baton: tool ${JSON.stringify(name)} declares its own user_goal, so the subagent ` +
-        "sentence was removed from the server instructions; a session that already started keeps it\n",
+        "sentence was removed from the server instructions; a session that already started keeps it",
     );
   };
 
@@ -2599,7 +2617,7 @@ function install(
   // Before any tool registers: on a server with no tools yet, the first
   // registration is what makes the SDK install its `tools/list` handler, and
   // the seam has to be in place to wrap it as it lands.
-  installToolsListSeam(lowLevel, ctx);
+  installToolsListSeam(lowLevel, ctx, shape === "lowLevel");
 
   // The SECOND tool-call seam (SPEC §11.4.3's `failure_kind`), installed here
   // for the same reason the `tools/list` seam is. Not on a low-level Server,
@@ -2682,9 +2700,9 @@ function reportsFor(config: ResolvedBatonConfig): { vendorDisplayName: string } 
 /** Once per `withBaton` or `createBaton`, not per request. */
 function warnAboutSettings(config: ResolvedBatonConfig): void {
   if (config.reportMode !== "on" && config.annotationToolName !== undefined) {
-    process.stderr.write(
+    stderrLine(
       `baton: annotationToolName=${JSON.stringify(config.annotationToolName)} has no effect ` +
-        'with reportMode: "off", because no annotation tool is registered\n',
+        'with reportMode: "off", because no annotation tool is registered',
     );
   }
   if (config.resultCaptureMode === WITHHELD) {

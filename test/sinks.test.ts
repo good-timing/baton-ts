@@ -10,7 +10,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { z } from "zod";
 import { ClientReportEventSchema, type Event } from "../src/events.js";
-import { acceptAll, makeEvent, results, sentIn, sequences, sinkWith, type Sent } from "./_sink.js";
+import { acceptAll, failingSink, makeEvent, messages, results, sentIn, sequences, sinkWith, type Sent } from "./_sink.js";
 
 
 describe("StdoutSink", () => {
@@ -37,10 +37,6 @@ describe("StdoutSink", () => {
     await expect(sink.write(makeEvent())).rejects.toThrow("closed");
   });
 });
-
-function messages(warning: { mock: { calls: unknown[][] } }): string[] {
-  return warning.mock.calls.map(([message]) => String(message));
-}
 
 /** Called directly, so the test runner's own exit listeners never fire. */
 function exitHooks(sink: HttpSink): { atExit: () => void; drained: () => Promise<void>; exited: () => void } {
@@ -1434,11 +1430,6 @@ describe("a write after close (SPEC §11.2 rules 7 and 8)", () => {
 
 describe("safeWrite", () => {
   it("swallows a sink.write rejection instead of propagating it", async () => {
-    const failingSink: Sink = {
-      write: () => Promise.reject(new Error("boom")),
-      flush: () => Promise.resolve(),
-      aclose: () => Promise.resolve(),
-    };
-    await expect(safeWrite(failingSink, makeEvent())).resolves.toBeUndefined();
+    await expect(safeWrite(failingSink(), makeEvent())).resolves.toBeUndefined();
   });
 });

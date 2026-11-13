@@ -129,6 +129,7 @@ Baton runs on Workers with the `nodejs_compat` flag, in a plain `fetch` handler 
 
 - **`settings: "console"` is not supported on Workers yet.** Baton warns once and the capture values in your config apply. The report tool it turns on stays on.
 - **A tool that only computes can show a duration of 0 ms.** A Worker's clock moves only across I/O.
+- **In tests, Baton may still send events after a test ends.** If a test puts back the real `fetch` afterwards, those sends go to your DSN's host. Leave `fetch` stubbed, or give Baton no `dsn` in tests.
 
 ## Without MCP: the library API
 

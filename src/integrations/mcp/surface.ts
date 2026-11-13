@@ -16,11 +16,11 @@
  * server: each producer serializes `tools` from a different shape.
  */
 
-import { createHash } from "node:crypto";
+import * as crypto from "node:crypto";
 
 export function surfaceHash(surface: unknown): string {
   const canonical = canonicalJson(surface);
-  const digest = createHash("sha256").update(canonical, "utf-8").digest("hex");
+  const digest = crypto.createHash("sha256").update(canonical, "utf-8").digest("hex");
   return `sha256:${digest}`;
 }
 

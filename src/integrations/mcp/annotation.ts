@@ -72,7 +72,8 @@ export const ANNOTATION_INPUT_SHAPE = {
   // not rejected by validation.
   tool_name: z.string().nullable().optional(),
   suggested_improvement: z.string().optional(),
-  context: z.record(z.string(), z.unknown()).optional(),
+  // zod renders "any value" as `{}`, which some MCP clients refuse (reportToolSchema.test.ts).
+  context: z.record(z.string(), z.unknown()).meta({ additionalProperties: true }).optional(),
 };
 
 /** SPEC §11.4: an annotation is a report when its account is filled. */
@@ -108,8 +109,9 @@ export function registerAnnotationTool(
 
 const ANNOTATION_ARGS = z.object(ANNOTATION_INPUT_SHAPE);
 
-/** The input schema as that major's `McpServer` lists it: v2 renders draft
- * 2020-12 from the schema itself, 1.x through its own converter. */
+/** The report tool's input schema as Baton lists it on a server of that
+ * major: v2 renders draft 2020-12 from the schema itself, 1.x through its own
+ * converter. */
 export function annotationInputJsonSchema(major: 1 | 2): Record<string, unknown> {
   // A zod without the Standard JSON Schema interface falls back to the 1.x
   // converter, so a vendor's boot never fails on the report tool's schema.

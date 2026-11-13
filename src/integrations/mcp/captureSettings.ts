@@ -1,7 +1,7 @@
 /** Capture settings read from the collector (SPEC §2.6): fetch, match, apply.
  * The TypeScript half of Python's `_capture_settings.py`. */
 
-import { createHash } from "node:crypto";
+import * as crypto from "node:crypto";
 import { isRecord } from "../../_object.js";
 import type { CaptureObserved } from "../../events.js";
 import { globalFetch } from "../../runtime.js";
@@ -41,7 +41,7 @@ export interface CallSettings {
 }
 
 export function shareBucket(vendorId: string, key: string): number {
-  const digest = createHash("sha256").update(`${vendorId}\n${key}`, "utf-8").digest();
+  const digest = crypto.createHash("sha256").update(`${vendorId}\n${key}`, "utf-8").digest();
   return Number(digest.readBigUInt64BE(0) % 10000n);
 }
 

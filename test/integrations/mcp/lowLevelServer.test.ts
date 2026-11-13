@@ -9,16 +9,14 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
-import { Server as ServerV1 } from "@modelcontextprotocol/sdk/server/index.js";
-import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
-import { Server as ServerV2 } from "@modelcontextprotocol/server";
 import { Client as ClientV1 } from "@modelcontextprotocol/sdk/client/index.js";
 import { Client as ClientV2 } from "@modelcontextprotocol/client";
 
 import type { Event } from "../../../src/events.js";
 import type { BatonConfig } from "../../../src/integrations/mcp/config.js";
 import { createBaton, withBaton } from "../../../src/integrations/mcp/withBaton.js";
-import { CapturingSink, CFG, install, MAJORS, type Major, nextTurn } from "./_majors.js";
+import { CapturingSink, CFG, install, lowLevelServerOf, MAJORS, type Major, nextTurn } from "./_majors.js";
+import { failingSink } from "../../_sink.js";
 
 const GOAL = "1: find alice; success is her row";
 
@@ -69,9 +67,7 @@ function lowLevelServer(
   major: Major,
   options: { setHandlers?: boolean; omit?: ToolName[]; list?: (request: any) => unknown } = {},
 ): LowLevel & { setHandlers: () => void } {
-  const isV1 = major === MAJORS[0];
-  const Server = isV1 ? ServerV1 : ServerV2;
-  const server: any = new Server({ name: "vendor", version: "1.0.0" }, { capabilities: { tools: {} } });
+  const { server, listTools: listMethod, callTool: callMethod } = lowLevelServerOf(major);
   let lists = 0;
   const received: Record<string, unknown>[] = [];
   const tools = (Object.keys(SHAPES) as ToolName[])
@@ -88,8 +84,8 @@ function lowLevelServer(
     return run(name as ToolName, z.object(SHAPES[name as ToolName]).parse(args));
   };
   const setHandlers = () => {
-    server.setRequestHandler(isV1 ? ListToolsRequestSchema : "tools/list", listTools);
-    server.setRequestHandler(isV1 ? CallToolRequestSchema : "tools/call", callTool);
+    server.setRequestHandler(listMethod, listTools);
+    server.setRequestHandler(callMethod, callTool);
   };
   if (options.setHandlers !== false) setHandlers();
   return { server, lists: () => lists, received, tools, setHandlers };
@@ -351,7 +347,7 @@ describe.each(MAJORS)("$label: a low-level Server", (major) => {
 
   it("serves the call when the hook and the sink both throw", async () => {
     vi.spyOn(process, "emitWarning").mockImplementation(() => {});
-    const sink = { write: () => Promise.reject(new Error("sink down")), flush: async () => {}, aclose: async () => {} };
+    const sink = failingSink();
     const resolvePrincipal = () => {
       throw new Error("hook down");
     };

@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import * as crypto from "node:crypto";
 
 const COUNTER_MAX = 0xfff;
 
@@ -8,7 +8,7 @@ let counter = 0;
 /** RFC 9562 UUIDv7, strictly increasing within this process: a 12-bit counter
  * orders ids minted in one millisecond, as the Python SDK's `_uuid.py` does. */
 export function uuid7(): string {
-  const bytes = randomBytes(18);
+  const bytes = crypto.randomBytes(18);
   // Seeded below half the counter's range, so a burst has room to count up.
   const seed = ((bytes[16]! << 8) | bytes[17]!) & 0x7ff;
   const now = Date.now();

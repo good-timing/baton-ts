@@ -256,6 +256,17 @@ export function advertiseIntentParamsRequired(
   return changed ? { ...(result as Record<string, unknown>), tools: advertised } : result;
 }
 
+/** `result` with the tool `name` listing `inputSchema`. Copy on write. */
+export function withToolInputSchema(result: unknown, name: string, inputSchema: Record<string, unknown>): unknown {
+  const tools = (result as { tools?: unknown } | null | undefined)?.tools;
+  if (!Array.isArray(tools)) return result;
+  const at = tools.findIndex((tool) => isRecord(tool) && tool.name === name);
+  if (at === -1) return result;
+  const served: unknown[] = [...(tools as unknown[])];
+  served[at] = { ...(tools[at] as Record<string, unknown>), inputSchema };
+  return { ...(result as Record<string, unknown>), tools: served };
+}
+
 /** A v2 schema's draft 2020-12 rendering through its own Standard JSON Schema
  * converter, the one v2 lists tools with; `undefined` when it has none. */
 export function standardInputJsonSchema(schema: unknown): Record<string, unknown> | undefined {

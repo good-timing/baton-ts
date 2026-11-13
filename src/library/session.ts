@@ -1,6 +1,6 @@
 /** The library API's session block and sequence numbers (SPEC §5.6). */
 
-import { AsyncLocalStorage } from "node:async_hooks";
+import * as asyncHooks from "node:async_hooks";
 import {
   NO_CALLER,
   callerFor,
@@ -18,6 +18,7 @@ import { scrubOrNull } from "../integrations/mcp/safeScrub.js";
 import { uuid7 } from "../uuid7.js";
 import { isRecord } from "../_object.js";
 import { stripWhiteSpace } from "../_text.js";
+import { stderrLine } from "../warn.js";
 
 const TRANSPORT_LIBRARY = "library";
 const TURN_ID_META_KEY = "baton/turn_id";
@@ -56,7 +57,7 @@ export interface SessionValues {
 }
 
 function warn(message: string): void {
-  process.stderr.write(`baton: ${message}\n`);
+  stderrLine(`baton: ${message}`);
 }
 
 function vendorId(name: string, value: unknown): string | null {
@@ -114,7 +115,7 @@ export function newSession(
 
 // The owning client is stored with the block so one client's block never
 // reaches another client's events.
-const current = new AsyncLocalStorage<{ owner: object; session: LibrarySession }>();
+const current = new asyncHooks.AsyncLocalStorage<{ owner: object; session: LibrarySession }>();
 
 export function runInSession<T>(owner: object, session: LibrarySession, fn: () => T): T {
   return current.run({ owner, session }, fn);

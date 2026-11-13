@@ -5,7 +5,7 @@
 import { requiredParamNames, USER_GOAL_PARAM_NAME } from "../integrations/mcp/llmText.js";
 import { DEFAULT_INTENT_PARAM_MODE, withUserGoalJson } from "../integrations/mcp/schemaCompat.js";
 import { assembleSurface, buildSeamAugmentations, surfaceHash, type ServerMeta } from "../integrations/mcp/surface.js";
-import { printable } from "../warn.js";
+import { printable, stderrLine } from "../warn.js";
 import { isRecord } from "../_object.js";
 
 /** The vendor's own `initialize` values, as it serves them. */
@@ -31,7 +31,7 @@ export function serveTools<T>(
   try {
     served = tools.map(servedEntry);
   } catch (err) {
-    process.stderr.write(`baton: could not add user_goal to the tool list; serving it unchanged: ${printable(err)}\n`);
+    stderrLine(`baton: could not add user_goal to the tool list; serving it unchanged: ${printable(err)}`);
     return { served: tools as T[], surface: null };
   }
   try {
@@ -52,7 +52,7 @@ export function serveTools<T>(
     ) as Record<string, unknown>;
     return { served, surface: { surface, digest: surfaceHash(surface) } };
   } catch (err) {
-    process.stderr.write(`baton: surface snapshot capture failed: ${printable(err)}\n`);
+    stderrLine(`baton: surface snapshot capture failed: ${printable(err)}`);
     return { served, surface: null };
   }
 }

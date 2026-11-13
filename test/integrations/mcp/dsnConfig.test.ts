@@ -15,7 +15,6 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { z } from "zod";
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
@@ -25,7 +24,7 @@ import {
   withServerDisplayName,
 } from "../../../src/integrations/mcp/config.js";
 import { HttpSink, StdoutSink } from "../../../src/sinks.js";
-import { MAJORS } from "./_majors.js";
+import { lowLevelServerOf, MAJORS } from "./_majors.js";
 import { DEFAULT_CONSENT_TOKEN } from "../../../src/events.js";
 
 const WORKSPACE = "ten_655b084e118b43f88992ee6357fcc23c";
@@ -415,7 +414,7 @@ describe("an install where nothing says where events go (SPEC §11.2 rule 10)", 
   });
 
   it("installs nothing on a low-level Server either", () => {
-    const lowLevel = new Server({ name: "x", version: "1.0.0" }, { capabilities: { tools: {} } });
+    const lowLevel = lowLevelServerOf(MAJORS[0]!).server;
     const handlers = lowLevel as unknown as { _requestHandlers: Map<string, unknown> };
     const before = new Map(handlers._requestHandlers);
     withBaton(lowLevel, {});

@@ -1,6 +1,6 @@
 /** What the HttpSink tests share: an event, a sink against a mock fetch, and readers for what it sent. */
 import { ToolCallStartEventSchema, type Event } from "../src/events.js";
-import { HttpSink, type HttpSinkOptions } from "../src/sinks.js";
+import { HttpSink, type HttpSinkOptions, type Sink } from "../src/sinks.js";
 
 export type Sent = { event_id?: string; event_type: string; sequence_number: number };
 
@@ -31,6 +31,16 @@ export function results<T extends object>(
     return { event_id: (e as { event_id?: unknown }).event_id, status: s, ...(s === "refused" ? { error: { code: "payload_malformed", message: "refused" } } : {}) };
   });
   return new Response(JSON.stringify({ results: answers }), { status: 200 });
+}
+
+/** What a spy on a print function was called with, one string per call. */
+export function messages(spy: { mock: { calls: unknown[][] } }): string[] {
+  return spy.mock.calls.map(([message]) => String(message));
+}
+
+/** A sink whose every write rejects. */
+export function failingSink(): Sink {
+  return { write: () => Promise.reject(new Error("sink down")), flush: async () => {}, aclose: async () => {} };
 }
 
 /** A fetch that accepts every event it is sent. */

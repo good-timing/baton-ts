@@ -1,7 +1,7 @@
 /** The tool list and instructions under the Console's per-caller settings
  * (SPEC §2.6). The TypeScript half of Python's `_per_caller.py`. */
 
-import { printable } from "../../warn.js";
+import { printable, stderrLine } from "../../warn.js";
 import type { CaptureSettings } from "./captureSettings.js";
 import { INTENT_INSTRUCTIONS, USER_GOAL_PARAM_NAME, buildUserGoalParamDescription } from "./llmText.js";
 import type { ResolvedCaller } from "./principalResolution.js";
@@ -37,7 +37,7 @@ export class PerCallerSurface {
       this.options.writeInstructions(pointerOn ? this.options.instructions : INTENT_INSTRUCTIONS);
       this.pointerOn = pointerOn;
     } catch (err) {
-      process.stderr.write(`baton: could not update the server instructions for new settings: ${printable(err)}\n`);
+      stderrLine(`baton: could not update the server instructions for new settings: ${printable(err)}`);
     }
   }
 
@@ -61,7 +61,7 @@ export class PerCallerSurface {
       }
       return { ...(result as Record<string, unknown>), tools: served };
     } catch (err) {
-      process.stderr.write(`baton: could not apply capture settings to the tool list: ${printable(err)}\n`);
+      stderrLine(`baton: could not apply capture settings to the tool list: ${printable(err)}`);
       return result;
     }
   }

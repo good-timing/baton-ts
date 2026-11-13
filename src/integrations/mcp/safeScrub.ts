@@ -3,7 +3,7 @@ import {
   OVERALL_TASK_PARAM_NAME,
   USER_GOAL_PARAM_NAME,
 } from "./llmText.js";
-import { printable } from "../../warn.js";
+import { printable, stderrLine } from "../../warn.js";
 
 /** The fields a vendor scrubber is applied to OUTSIDE an `emit()` build thunk.
  *
@@ -68,16 +68,13 @@ export function scrubOrNull<T>(
     // eslint-disable-next-line no-restricted-syntax -- this IS the guard; the one call the rule exists to funnel every other through
     return scrubber(value) as T;
   } catch (err) {
-    // Once per field per process. `safeWrite` logs per event because a sink
-    // failure is one write per event; this fires several times per CALL, so
-    // the unbounded form would put a line on stderr for every tool call forever. Bounded the way
-    // `principalResolution`'s pre-rename warning and `HttpSink.overflowWarned`
-    // already are.
+    // Once per field per process: this fires several times per call, so
+    // warning every time would print a stderr line on every tool call.
     if (!warned.has(field)) {
       warned.add(field);
-      process.stderr.write(
+      stderrLine(
         `baton: scrubber threw on ${field}; that field is dropped, tool call continues. ` +
-          `Further failures on this field will be silent: ${printable(err)}\n`,
+          `Further failures on this field will be silent: ${printable(err)}`,
       );
     }
     return null;

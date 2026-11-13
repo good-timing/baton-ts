@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **Cloudflare Workers test runners.** Baton loads where `node:fs` lacks
+  `appendFileSync` and the like, as in `@cloudflare/vitest-pool-workers`.
+  Where `process` has no `stderr` or `on`, as in a test that replaces
+  `process`, Baton's warnings, and a default `StdoutSink`'s events, go to
+  `console.warn`, and a failure Baton caught can no longer become an error
+  on `tools/list` or a tool call.
+- **The report tool's `context` schema.** Its values are listed as `true`
+  rather than `{}`, which some MCP clients refuse. On an `McpServer` the
+  report tool now lists Baton's own rendering of its schema, as on a
+  low-level `Server`, so a vendor's older zod no longer changes it.
+- **A report tool name already taken on an `McpServer`.** `withBaton` now
+  throws before it changes the server, so a vendor that catches the error
+  and serves on keeps its own tool and instructions as they were.
+
 ## 1.1.0: the low-level Server
 
 ### Added

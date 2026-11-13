@@ -14,6 +14,7 @@
  */
 
 import { isBlank } from "../../_text.js";
+import { stderrLine } from "../../warn.js";
 
 // Holds no report rule: each is written once, in the report tool's description.
 const REPORT_POINTER_TEMPLATE = (vendorDisplayName: string, annotationToolName: string) =>
@@ -250,7 +251,7 @@ function endsInOurs(current: unknown, vendor: unknown): boolean {
 export function withVendorInstructions(
   server: object,
   ours: string,
-  warn: (message: string) => void = (message) => process.stderr.write(message),
+  warn: (message: string) => void = stderrLine,
 ): string {
   const holder = server as InstructionsHolder;
   const current = holder._instructions;
@@ -265,7 +266,7 @@ export function withVendorInstructions(
     warn(
       `baton: the server instructions are ${combined.length} chars (yours ${vendor.length}, ` +
         `Baton's ${ours.length}); Claude Code cuts them at ~${CLAUDE_CODE_TRUNCATION_CAP}, ` +
-        "so the end of Baton's text is lost there\n",
+        "so the end of Baton's text is lost there",
     );
   }
   return combined;

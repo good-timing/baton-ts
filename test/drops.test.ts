@@ -3,8 +3,8 @@ import { DROP_REASONS, type DropReason, PROCESS_DROPS } from "../src/drops.js";
 import type { Event } from "../src/events.js";
 import { emit } from "../src/integrations/mcp/emit.js";
 import { Client } from "../src/index.js";
-import { safeWrite, type Sink } from "../src/sinks.js";
-import { acceptAll, makeEvent, results, sentIn, sequences, sinkWith } from "./_sink.js";
+import { safeWrite } from "../src/sinks.js";
+import { acceptAll, failingSink, makeEvent, results, sentIn, sequences, sinkWith } from "./_sink.js";
 
 
 const neverAnswers = (_url: string | URL | Request, init?: RequestInit) =>
@@ -16,11 +16,7 @@ function httpSink(fetchImpl: typeof fetch, options: { bufferSize?: number; shutd
   return sinkWith(fetchImpl, { maxRetries: 0, ...options });
 }
 
-const writeRejects: Sink = {
-  write: () => Promise.reject(new Error("disk full")),
-  flush: () => Promise.resolve(),
-  aclose: () => Promise.resolve(),
-};
+const writeRejects = failingSink();
 
 function collectWarnings(): { seen: string[]; restore: () => void } {
   const seen: string[] = [];

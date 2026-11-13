@@ -1,7 +1,7 @@
 import type { Event } from "../../events.js";
 import { safeWrite, type Sink } from "../../sinks.js";
 import { PROCESS_DROPS } from "../../drops.js";
-import { printable } from "../../warn.js";
+import { printable, stderrLine } from "../../warn.js";
 
 /** Fail-open event construction + write. `build()` runs Zod validation —
  * a scrubber that breaks a payload's wire shape (e.g. replaces a record
@@ -14,7 +14,7 @@ export async function emit(sink: Sink, build: () => Event): Promise<void> {
     event = build();
   } catch (err) {
     PROCESS_DROPS.add("encode_failed");
-    process.stderr.write(`baton: event construction failed; event dropped: ${printable(err)}\n`);
+    stderrLine(`baton: event construction failed; event dropped: ${printable(err)}`);
     return;
   }
   await safeWrite(sink, event);

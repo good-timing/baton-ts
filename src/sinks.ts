@@ -6,9 +6,8 @@
  *
  * The same four sinks as `sinks.py`:
  *
- * - `StdoutSink` — JSONL to a writable stream (default `process.stderr`,
- *   for the same reason as Python: MCP stdio transport reserves stdout for
- *   JSON-RPC framing).
+ * - `StdoutSink` — JSONL to stderr, or to a stream the vendor passes (MCP
+ *   stdio transport reserves stdout for JSON-RPC framing).
  * - `FileSink` — JSONL appended to a file.
  * - `HttpSink` — POST batches to any HTTP endpoint with bearer auth;
  *   bounded buffer, retry with backoff, circuit breaker. This is the contract a
@@ -16,15 +15,15 @@
  * - `MultiSink` — every event to each of several sinks.
  */
 
-import { appendFileSync } from "node:fs";
-import { open, type FileHandle } from "node:fs/promises";
+import * as fs from "node:fs";
+import * as fsp from "node:fs/promises";
 import { capCodePoints, escapeForLog } from "./_text.js";
 import { MAX_TIMER_MS, raceDeadline, SHUTDOWN_FLUSH_TIMEOUT_MS, TIMED_OUT } from "./deadline.js";
 import { PROCESS_DROPS } from "./drops.js";
 import { ClientReportEventSchema, type Event } from "./events.js";
-import { globalFetch, onWorkers } from "./runtime.js";
+import { globalFetch, onProcess, onWorkers } from "./runtime.js";
 import { nextClockSequence } from "./sequence.js";
-import { printable, warn } from "./warn.js";
+import { printable, stderrLine, stderrLines, warn } from "./warn.js";
 
 const REFUSAL_BODY_MAX_LEN = 500;
 /** The least time between two refusal warnings with the same status, so a
@@ -81,12 +80,8 @@ export async function safeWrite(sink: Sink, event: Event): Promise<void> {
   } catch (err) {
     if (isSinkClosed(err)) return droppedAfterClose(sink);
     PROCESS_DROPS.add("write_failed");
-    process.stderr.write(`baton: sink.write failed; event dropped, tool call continues: ${printable(err)}\n`);
+    stderrLine(`baton: sink.write failed; event dropped, tool call continues: ${printable(err)}`);
   }
-}
-
-function stderrLine(message: string): void {
-  process.stderr.write(`${message}\n`);
 }
 
 function isTimerMs(value: unknown): value is number {
@@ -151,23 +146,26 @@ export async function boundedSinkCall(
 // =============================================================================
 
 export interface StdoutSinkOptions {
-  /** Defaults to `process.stderr` — stdio MCP transport reserves stdout for
-   * JSON-RPC framing. Pass `process.stdout` explicitly for non-MCP (library
-   * API) use if preferred. */
+  /** Defaults to stderr (`console.warn` where `process.stderr` is missing or
+   * cannot write): the MCP
+   * stdio transport reserves stdout for JSON-RPC framing. Pass
+   * `process.stdout` for non-MCP (library API) use if preferred. */
   stream?: NodeJS.WritableStream;
 }
 
 export class StdoutSink implements Sink {
-  private readonly stream: NodeJS.WritableStream;
+  private readonly stream: NodeJS.WritableStream | undefined;
   private closed = false;
 
   constructor(options: StdoutSinkOptions = {}) {
-    this.stream = options.stream ?? process.stderr;
+    this.stream = options.stream;
   }
 
   async write(event: Event): Promise<void> {
     if (this.closed) throw new SinkClosedError("StdoutSink is closed");
-    this.stream.write(JSON.stringify(event) + "\n");
+    const line = JSON.stringify(event);
+    if (this.stream) this.stream.write(line + "\n");
+    else stderrLine(line);
   }
 
   async flush(): Promise<void> {
@@ -189,7 +187,7 @@ export class StdoutSink implements Sink {
  * an unused sink creates no file. Each line reaches the file before `write`
  * resolves, so `tail -f` sees it at once. */
 export class FileSink implements Sink {
-  private file: FileHandle | null = null;
+  private file: fsp.FileHandle | null = null;
   private closeOnce: Promise<void> | undefined;
   /** Writes run one after another: two at once on one file can interleave. */
   private last: Promise<unknown> = Promise.resolve();
@@ -201,7 +199,7 @@ export class FileSink implements Sink {
     if (this.closed) throw new SinkClosedError("FileSink is closed");
     const line = JSON.stringify(event) + "\n";
     const written = this.last.then(async () => {
-      this.file ??= await open(this.path, "a");
+      this.file ??= await fsp.open(this.path, "a");
       await this.file.appendFile(line);
     });
     this.last = written.catch(() => undefined);
@@ -287,39 +285,42 @@ const later = (run: () => void): void => {
 };
 
 const withUnwrittenEvents = new Set<QueuedSink>();
-let exitHooked = false;
+/** Each `process` the exit hand-off was tried on, once: a test may swap in a
+ * stand-in, and the real `process` still needs its own. */
+const exitTriedOn = new WeakSet<object>();
 
 /** At `process.exit()` nothing can be awaited: queued events go synchronously
  * to a `StdoutSink` on stdout/stderr or a `FileSink`, and are reported as
  * possibly lost for any other sink (SPEC §11.2 rules 7 and 8). */
 function hookExit(): void {
-  if (exitHooked) return;
-  exitHooked = true;
-  try {
-    process.on("exit", () => {
-      try {
-        let unsure = 0;
-        for (const sink of withUnwrittenEvents) unsure += sink.handOffAtExit();
-        if (unsure > 0) stderrLine(`baton: process exiting; ${unsure} event(s) may not have been written.`);
-      } catch {
-        // A throw here would turn the vendor's clean exit into a crash.
-      }
-    });
-  } catch {
-    // A runtime with no `process.on` has no exit to hook.
-  }
+  const target = typeof process !== "undefined" ? process : undefined;
+  if (target === undefined || exitTriedOn.has(target)) return;
+  exitTriedOn.add(target);
+  onProcess("exit", () => {
+    try {
+      let unsure = 0;
+      for (const sink of withUnwrittenEvents) unsure += sink.handOffAtExit();
+      if (unsure > 0) stderrLine(`baton: process exiting; ${unsure} event(s) may not have been written.`);
+    } catch {
+      // A throw here would turn the vendor's clean exit into a crash.
+    }
+  });
 }
 
 /** Writes `events` before it returns, for the sinks that can: at exit nothing
  * can be awaited. False for any other sink, or a stream that may write later. */
 function writeNow(sink: Sink, events: Event[]): boolean {
-  const lines = events.map((event) => JSON.stringify(event) + "\n").join("");
+  const json = (): string[] => events.map((event) => JSON.stringify(event));
+  const lines = (): string => json().map((line) => line + "\n").join("");
   if (sink instanceof StdoutSink) {
     const stream = sink["stream"];
-    if (stream !== process.stdout && stream !== process.stderr) return false;
-    if (!sink["closed"]) stream.write(lines);
+    // eslint-disable-next-line no-restricted-syntax -- reached only when the vendor passed a stream, and only compared
+    if (stream !== undefined && stream !== process.stdout && stream !== process.stderr) return false;
+    if (sink["closed"]) return true;
+    if (stream === undefined) stderrLines(json());
+    else stream.write(lines());
   } else if (sink instanceof FileSink) {
-    if (!sink["closed"]) appendFileSync(sink["path"], lines);
+    if (!sink["closed"]) fs.appendFileSync(sink["path"], lines());
   } else return false;
   return true;
 }
@@ -676,7 +677,9 @@ export class HttpSink implements Sink {
   private retryAt = 0;
   /** Set for the life of the sink by a 404 or 405 on the batch path. */
   private batchless = false;
-  private exitHooks: { beforeExit: () => void; exit: () => void } | null = null;
+  private exitHooks: { beforeExit: () => void; exit: () => void; off: () => void } | null = null;
+  /** The `process` the exit hooks were last tried on, so a refusal is not retried per write. */
+  private exitHooksTriedOn: object | undefined;
   /** The least time between two of this sink's loss reports. */
   private static reportIntervalMs = 60_000;
   /** Totals only grow, so their sum tells whether they changed. */
@@ -786,11 +789,8 @@ export class HttpSink implements Sink {
       warn(`baton: the sink closed with ${unsent} event(s) unsent.`);
     }
     this.warnUnloggedRefusals("the sink closed");
-    if (this.exitHooks) {
-      process.off("beforeExit", this.exitHooks.beforeExit);
-      process.off("exit", this.exitHooks.exit);
-      this.exitHooks = null;
-    }
+    this.exitHooks?.off();
+    this.exitHooks = null;
   }
 
   /** SPEC §11.2 rule 7: an explicit flush or close returns within `ms` and
@@ -899,7 +899,9 @@ export class HttpSink implements Sink {
    * both hooks: a vendor needing that guarantee must call `aclose()` from
    * their own handler. */
   private ensureExitHooksRegistered(): void {
-    if (this.exitHooks) return;
+    const target = typeof process !== "undefined" ? process : undefined;
+    if (this.exitHooks || target === undefined || target === this.exitHooksTriedOn) return;
+    this.exitHooksTriedOn = target;
     const beforeExit = (): void => {
       // Node re-fires `beforeExit` once the pass's work is done; one pass only.
       if (this.unsent === 0 || this.exitPassRan) {
@@ -923,9 +925,15 @@ export class HttpSink implements Sink {
         // A throw here would turn the vendor's clean exit into a crash.
       }
     };
-    this.exitHooks = { beforeExit, exit };
-    process.on("beforeExit", beforeExit);
-    process.on("exit", exit);
+    const offBeforeExit = onProcess("beforeExit", beforeExit);
+    const offExit = onProcess("exit", exit);
+    if (offBeforeExit === undefined || offExit === undefined) {
+      // Both or neither: workersRuntime.test.ts, "HttpSink leaves no exit hook behind".
+      offBeforeExit?.();
+      offExit?.();
+      return;
+    }
+    this.exitHooks = { beforeExit, exit, off: () => (offBeforeExit(), offExit()) };
   }
 
   /** One attempt per batch, no retry, within `shutdownFlushTimeoutMs` in
