@@ -204,8 +204,21 @@ const runners = { overhead, large_result: largeResult, burst: load, outage_hang:
 const measures = {};
 const maxRssBytes = () => process.resourceUsage().maxRSS * 1024;
 let peak = 0;
+// Reads 'since' as compare_bench does, so the two never disagree on what ran.
+function runsHere(m) {
+  if (m.since === undefined) return true;
+  if (m.since.typescript === undefined) return false;
+  return source === "checkout" || !olderThan(version, m.since.typescript);
+}
+
+function olderThan(a, b) {
+  const [x, y] = [a, b].map((v) => v.split("-")[0].split(".").map(Number));
+  for (let i = 0; i < 3; i += 1) if (x[i] !== y[i]) return x[i] < y[i];
+  return false;
+}
+
 for (const m of bench.measures) {
-  if (only !== undefined && m.name !== only) continue;
+  if ((only !== undefined && m.name !== only) || !runsHere(m)) continue;
   if (m.name.startsWith("memory") && !peak) peak = maxRssBytes();
   measures[m.name] = await runners[m.name](m);
 }
