@@ -10,7 +10,8 @@
  *
  * dsn        = scheme "://" key "@" authority "/" workspace "/" server
  * scheme     = "https" | "http"
- * key        = "baton_pk_" tail          ; "baton_sk_" warns and still works
+ * key        = "baton_pk_" tail          ; "baton_sk_" warns and still works;
+ *                                        ; "baton_tk_" (a test key) does not warn
  * authority  = host [ ":" port ]
  * workspace  = "ten_" ( 8(hexdigit) | 32(hexdigit) )
  * server     = the vendor_id pattern below
@@ -106,6 +107,8 @@ const NOT_IN_A_KEY = /[\x00\t\n\r]/;
 
 const PUBLISHABLE_PREFIX = "baton_pk_";
 const SECRET_PREFIX = "baton_sk_";
+const TEST_PREFIX = "baton_tk_";
+const KEY_PREFIXES = [PUBLISHABLE_PREFIX, SECRET_PREFIX, TEST_PREFIX];
 
 /**
  * A credential-shaped run: a prefix followed by enough tail to BE one.
@@ -119,12 +122,10 @@ const SECRET_PREFIX = "baton_sk_";
  * deliberately unvalidated and one may contain it — so eight is far below any
  * credential and far above an ellipsis.
  */
-const KEY_RUN = /baton_(?:pk|sk)_[A-Za-z0-9_%-]{8,}/g;
+const KEY_RUN = /baton_(?:pk|sk|tk)_[A-Za-z0-9_%-]{8,}/g;
 
 function looksLikeAKey(value: string): boolean {
-  return (
-    value.startsWith(PUBLISHABLE_PREFIX) || value.startsWith(SECRET_PREFIX)
-  );
+  return KEY_PREFIXES.some((prefix) => value.startsWith(prefix));
 }
 
 /**
@@ -132,7 +133,7 @@ function looksLikeAKey(value: string): boolean {
  *
  * ⚠ **`startsWith` was the blind spot, and it was load-bearing in two
  * places.** A segment with a key glued to it — `srv-baton_pk_…`, the shape a
- * paste into a half-filled field makes — starts with neither prefix, so it
+ * paste into a half-filled field makes — starts with no key prefix, so it
  * slipped past the key-in-slot refusal that names the slot and past the "the
  * key is in the PATH" hint, landing on a pattern-mismatch message that
  * interpolates the segment instead. Expressed through the scan rather than a

@@ -27,6 +27,7 @@ import { VENDOR_ID_PATTERN, parseDsn, redact, selectDsn } from "../src/dsn.js";
 
 const WORKSPACE = "ten_655b084e118b43f88992ee6357fcc23c";
 const KEY = "baton_pk_" + "a".repeat(43);
+const TEST_KEY = "baton_tk_" + "e".repeat(43);
 const DSN = `https://${KEY}@ingest.goodtiming.ai/${WORKSPACE}/echo-server`;
 
 // Every shape this parser refuses, in ONE list. Two file-wide properties are
@@ -284,6 +285,7 @@ describe("what it refuses", () => {
   const refusals: [name: string, raw: string, expected: RegExp][] = [
     ["a bare publishable key", KEY, /bare key/],
     ["a bare secret key", "baton_sk_" + "c".repeat(43), /bare key/],
+    ["a bare test key", TEST_KEY, /bare key/],
     ["no scheme", `ingest.goodtiming.ai/${WORKSPACE}/srv`, /https:\/\//],
     [
       "wrong scheme",
@@ -331,17 +333,35 @@ describe("what it refuses", () => {
 
   const credentialCases = EVERY_REFUSAL;
 
-  it.each(credentialCases)("never repeats the credential: %s", (_name, raw) => {
-    // The one thing a parse error must not do. Every message above passes
-    // through `redact`; this is the test that keeps the next one doing so.
-    expect(() => parseDsn(raw)).toThrow();
-    try {
-      parseDsn(raw);
-    } catch (error) {
-      const message = String(error);
-      expect(message).not.toContain(KEY);
-      expect(message).not.toContain("a".repeat(43));
-    }
+  describe.each([
+    ["publishable", KEY],
+    ["test", TEST_KEY],
+  ])("a %s key", (_kind, key) => {
+    it.each(credentialCases)(
+      "never repeats the credential: %s",
+      (_name, raw) => {
+        // The one thing a parse error must not do. Every message above passes
+        // through `redact`; this is the test that keeps the next one doing so.
+        const withKey = raw.replaceAll(KEY, key);
+        expect(() => parseDsn(withKey)).toThrow();
+        try {
+          parseDsn(withKey);
+        } catch (error) {
+          const message = String(error);
+          expect(message).not.toContain(key);
+          expect(message).not.toContain(key.slice("baton_pk_".length));
+        }
+      },
+    );
+
+    it("does not echo a bare key back either", () => {
+      expect(() => parseDsn(key)).toThrow();
+      try {
+        parseDsn(key);
+      } catch (error) {
+        expect(String(error)).not.toContain(key);
+      }
+    });
   });
 
   it("tells a bare key where to find the real one", () => {
@@ -350,14 +370,16 @@ describe("what it refuses", () => {
     // rather than a parse error.
     expect(() => parseDsn(KEY)).toThrow(/\/account/);
   });
+});
 
-  it("does not echo a bare key back either", () => {
-    try {
-      parseDsn(KEY);
-      expect.unreachable("a bare key must not parse");
-    } catch (error) {
-      expect(String(error)).not.toContain(KEY);
-    }
+describe("a test key parses without a warning", () => {
+  it("parses and warns about nothing", () => {
+    const warnings = captureWarnings();
+    const parsed = parseDsn(
+      `https://${TEST_KEY}@h.example.com/${WORKSPACE}/srv`,
+    );
+    expect(parsed.key).toBe(TEST_KEY);
+    expect(warnings.text()).toBe("");
   });
 });
 

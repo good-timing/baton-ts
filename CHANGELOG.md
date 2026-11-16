@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **A test key (`baton_tk_`) is never repeated in an error.** A DSN with a
+  test key in the wrong place, or a bare test key, is refused with the key
+  replaced, as for `baton_pk_` and `baton_sk_` keys. A test key gets no
+  warning.
+
 ## 1.1.1: Workers test runners and the report tool schema
 
 ### Fixed
