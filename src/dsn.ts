@@ -120,9 +120,12 @@ const KEY_PREFIXES = [PUBLISHABLE_PREFIX, SECRET_PREFIX, TEST_PREFIX];
  * leave the reader with `<key>` where the example belongs. A real key's tail
  * is 43 URL-safe base64 characters — `%` is admitted too, since the tail is
  * deliberately unvalidated and one may contain it — so eight is far below any
- * credential and far above an ellipsis.
+ * credential and far above an ellipsis. An older key has no type letters, so
+ * that branch needs a floor longer than any legal server name: a server called
+ * `baton_<name>` must not read as a key.
  */
-const KEY_RUN = /baton_(?:pk|sk|tk)_[A-Za-z0-9_%-]{8,}/g;
+const KEY_RUN =
+  /baton_(?:(?:pk|sk|tk)_[A-Za-z0-9_%-]{8,}|[A-Za-z0-9_%-]{43,})/g;
 
 function looksLikeAKey(value: string): boolean {
   return KEY_PREFIXES.some((prefix) => value.startsWith(prefix));

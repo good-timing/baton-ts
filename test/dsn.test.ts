@@ -28,6 +28,7 @@ import { VENDOR_ID_PATTERN, parseDsn, redact, selectDsn } from "../src/dsn.js";
 const WORKSPACE = "ten_655b084e118b43f88992ee6357fcc23c";
 const KEY = "baton_pk_" + "a".repeat(43);
 const TEST_KEY = "baton_tk_" + "e".repeat(43);
+const OLD_KEY = "baton_" + "o".repeat(43);
 const DSN = `https://${KEY}@ingest.goodtiming.ai/${WORKSPACE}/echo-server`;
 
 // Every shape this parser refuses, in ONE list. Two file-wide properties are
@@ -189,6 +190,22 @@ describe("deliberate permissiveness", () => {
     expect(config.VENDOR_ID_PATTERN).toBe(VENDOR_ID_PATTERN);
   });
 
+  const longestKeyLikeServer = Array.from(
+    { length: 60 },
+    (_, n) => "baton_" + "s".repeat(n),
+  )
+    .filter((name) => VENDOR_ID_PATTERN.test(name))
+    .at(-1);
+  it.each(["baton_onboarding", longestKeyLikeServer])(
+    "does not read a server named %s as a key",
+    (server) => {
+      expect(
+        parseDsn(`https://${KEY}@h.example.com/${WORKSPACE}/${server}`)
+          .vendorId,
+      ).toBe(server);
+    },
+  );
+
   it("accepts a 48-character server and refuses 49", () => {
     // The boundary is READ OFF the validator rather than typed in, so this
     // test cannot outlive a change to it.
@@ -336,6 +353,7 @@ describe("what it refuses", () => {
   describe.each([
     ["publishable", KEY],
     ["test", TEST_KEY],
+    ["old", OLD_KEY],
   ])("a %s key", (_kind, key) => {
     it.each(credentialCases)(
       "never repeats the credential: %s",
@@ -349,7 +367,7 @@ describe("what it refuses", () => {
         } catch (error) {
           const message = String(error);
           expect(message).not.toContain(key);
-          expect(message).not.toContain(key.slice("baton_pk_".length));
+          expect(message).not.toContain(key.slice(-43));
         }
       },
     );
