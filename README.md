@@ -256,7 +256,7 @@ Three things can differ by audience.
 | `goal` | Whether the `user_goal` Baton adds is required or optional. A tool that declares its own `user_goal` keeps it as it is. | The next `tools/list` |
 | `reports` | Whether the caller sees the report tool. A report from a caller with reports off, such as one from an older tool list, is still recorded. | The next `tools/list` |
 
-The SDK reads the settings every 60 seconds, in the background: a read never delays startup or a call. Set `settingsRefreshMs` to change that, down to 15000. Until the first read succeeds, and while nothing is saved, the values in your config apply. Once settings are read, each event says which ones it ran under, in `capture`. One `createBaton` reads them once for every server it wraps.
+The SDK reads the settings every 60 seconds, in the background: a read never delays startup or a call. Set `settingsRefreshMs` to change how often, down to 15000. The one exception is `BATON_CANDIDATE`, a test change for the whole process: a connection's handshake, tool lists and tool calls wait up to 5 seconds for it at startup. Until the first read succeeds, and while nothing is saved, the values in your config apply. Once settings are read, each event says which ones it ran under, in `capture`. One `createBaton` reads them once for every server it wraps.
 
 `reportMode` is `"on"` by default here, so the Console decides who sees the report tool. Set `reportMode: "off"` to keep it off for everyone. The report sentence in your server's instructions stays while any audience has reports on. A client reads the instructions when it connects, so a change reaches new connections only.
 

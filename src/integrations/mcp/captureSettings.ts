@@ -3,10 +3,13 @@
 
 import * as crypto from "node:crypto";
 import { isRecord } from "../../_object.js";
+import { stripWhiteSpace } from "../../_text.js";
 import type { CaptureObserved } from "../../events.js";
+import { TIMED_OUT, raceDeadline } from "../../deadline.js";
 import { globalFetch } from "../../runtime.js";
 import { warn } from "../../warn.js";
 import { RESULT_CAPTURE_MODES, type ResultCaptureMode } from "./errorResult.js";
+import { type Overlay, overlayFor, readOverlays } from "./overlays.js";
 import type { IntentParamMode } from "./schemaCompat.js";
 
 export const SETTINGS_PATH = "/v0/settings";
@@ -16,6 +19,50 @@ export type SettingsMode = (typeof SETTINGS_MODES)[number];
 export const DEFAULT_SETTINGS_REFRESH_MS = 60_000;
 export const MIN_SETTINGS_REFRESH_MS = 15_000;
 const REQUEST_TIMEOUT_MS = 10_000;
+
+export const CANDIDATE_ENV = "BATON_CANDIDATE";
+export const CANDIDATE_HEADER = "baton-candidate";
+export const CANDIDATES_HELD = 32;
+export const CANDIDATE_READS_AT_ONCE = 4;
+export const CANDIDATE_START_TIMEOUT_MS = 5_000;
+// The header is the caller's: it becomes a query value and a cache key.
+const CANDIDATE_ID = /^[A-Za-z0-9_-]{1,128}$/;
+
+/** `value` as a change id, stripped, or `null` when it cannot be one. */
+export function candidateId(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const id = stripWhiteSpace(value);
+  return CANDIDATE_ID.test(id) ? id : null;
+}
+
+/** The `Baton-Candidate` header's change id. Never throws. */
+export function headerCandidate(headers: Headers | null): string | null {
+  try {
+    return candidateId(headers?.get(CANDIDATE_HEADER));
+  } catch {
+    return null;
+  }
+}
+
+/** `BATON_CANDIDATE`, or `null` when unset. A value that cannot be an id is reported. */
+export function envCandidate(): string | null {
+  const value = typeof process !== "undefined" ? process.env?.[CANDIDATE_ENV] : undefined;
+  if (!value) return null;
+  const id = candidateId(value);
+  if (id === null) warn(`baton: ${CANDIDATE_ENV} is not a change id; today's settings apply.`);
+  return id;
+}
+
+/** `BATON_CANDIDATE` is read only with Console settings; said loudly, since a
+ * test run would otherwise measure today's text. */
+export function candidateNeedsConsole(settings: SettingsMode | undefined): void {
+  if (settings !== "console" && envCandidate() !== null) {
+    warn(
+      `baton: ${CANDIDATE_ENV} is set, but this server's settings are not "console", ` +
+        "so the change is not fetched; today's settings apply.",
+    );
+  }
+}
 
 export type ReportMode = "on" | "off";
 const MATCH_KEYS: ReadonlySet<string> = new Set(["label", "client", "share"]);
@@ -30,6 +77,8 @@ export interface Caller {
   labels: readonly string[];
   clientName: string | null;
   shareKey: string | null;
+  /** From the request's header; selects a document, never an audience. */
+  candidate?: string | null;
 }
 
 /** The settings one call runs under. An unset mode means the config's value. */
@@ -38,6 +87,7 @@ export interface CallSettings {
   resultCaptureMode?: ResultCaptureMode;
   intentParamMode?: IntentParamMode;
   reportMode?: ReportMode;
+  overlay?: Overlay;
 }
 
 export function shareBucket(vendorId: string, key: string): number {
@@ -72,13 +122,22 @@ export class SettingsDocument {
   /** Whether some caller can get reports, so the instructions point to the
    * tool. Read only where the code's value is "on": no tool exists otherwise. */
   readonly reportsOnForAnyone: boolean;
+  /** The tools some audience's overlay hides. */
+  readonly hiddenSomewhere: ReadonlySet<string>;
+  /** The pieces of Baton's text some audience's overlay changes. */
+  readonly audiencePieces: ReadonlySet<string>;
 
   constructor(
     readonly version: number,
     private readonly audiences: readonly Audience[],
+    readonly serverOverlay?: Overlay,
+    candidate?: string,
   ) {
+    const overlays = audiences.flatMap((a) => (a.settings.overlay === undefined ? [] : [a.settings.overlay]));
+    this.hiddenSomewhere = new Set(overlays.flatMap((o) => [...o.hiddenTools]));
+    this.audiencePieces = new Set(overlays.flatMap((o) => o.actions.flatMap((a) => (a.piece === undefined ? [] : [a.piece]))));
     this.usesShare = audiences.some((a) => a.shareThreshold !== null);
-    this.unmatched = { capture: { settings_version: version } };
+    this.unmatched = { capture: { settings_version: version, ...(candidate === undefined ? {} : { candidate }) } };
     // With no catch-all audience, a caller can fall through to the code's value.
     this.reportsOnForAnyone =
       audiences.some((a) => a.settings.reportMode !== "off") || !audiences.some(matchesEveryone);
@@ -102,6 +161,8 @@ function readAudience(
   id: string,
   match: Record<string, unknown>,
   capture: Record<string, unknown>,
+  overlay: Overlay | undefined,
+  candidate: string | undefined,
 ): Audience | null {
   if (!Object.keys(match).every((key) => MATCH_KEYS.has(key))) return null;
   let labels: ReadonlySet<string> | null = null;
@@ -115,7 +176,15 @@ function readAudience(
     // SPEC §2.6's formula, pinned by "a half rounds up".
     shareThreshold = Math.floor(share * 10000 + 0.5);
   }
-  const settings: CallSettings = { capture: { settings_version: version, audience: id } };
+  const settings: CallSettings = {
+    capture: {
+      settings_version: version,
+      audience: id,
+      ...(overlay === undefined ? {} : { overlay: overlay.id }),
+      ...(candidate === undefined ? {} : { candidate }),
+    },
+  };
+  if (overlay !== undefined) settings.overlay = overlay;
   const { results, goal, reports } = capture;
   if (typeof results === "string" && RESULT_CAPTURE_MODE_SET.has(results)) {
     settings.resultCaptureMode = results as ResultCaptureMode;
@@ -125,8 +194,9 @@ function readAudience(
   return { settings, labels, clients, shareThreshold };
 }
 
-/** The document in `body`, or `null` when it is not a valid one (SPEC §2.6). */
-export function parseDocument(body: string): SettingsDocument | null {
+/** The document in `body`, or `null` when it is not a valid one (SPEC §2.6).
+ * With `candidate`, valid only when it names that change. */
+export function parseDocument(body: string, candidate?: string): SettingsDocument | null {
   let data: unknown;
   try {
     data = JSON.parse(body);
@@ -137,15 +207,18 @@ export function parseDocument(body: string): SettingsDocument | null {
   const { version, audiences } = data;
   if (typeof version !== "number" || !Number.isInteger(version) || version < 1) return null;
   if (!Array.isArray(audiences) || audiences.length === 0) return null;
+  if (candidate !== undefined && data.candidate !== candidate) return null;
+  const overlays = readOverlays(data.overlays);
   const parsed: Audience[] = [];
   for (const audience of audiences) {
     if (!isRecord(audience)) return null;
     const { id, match, capture } = audience;
     if (typeof id !== "string" || !isRecord(match) || !isRecord(capture)) return null;
-    const readable = readAudience(version, id, match, capture);
+    const overlay = overlayFor(overlays, audience.overlay, "audience");
+    const readable = readAudience(version, id, match, capture, overlay, candidate);
     if (readable !== null) parsed.push(readable);
   }
-  return new SettingsDocument(version, parsed);
+  return new SettingsDocument(version, parsed, overlayFor(overlays, data.server_overlay, "server"), candidate);
 }
 
 /** Where `CaptureSettings` gets its document: the fetcher, or a test's stand-in. */
@@ -153,7 +226,13 @@ export interface SettingsSource {
   readonly document: SettingsDocument | null;
   start(): void;
   stop(): void;
+  /** One read of change `candidate`. Never rejects. */
+  fetchCandidate(candidate: string, timeoutMs: number): Promise<CandidateRead>;
 }
+
+export type CandidateRead =
+  | { outcome: "loaded"; document: SettingsDocument }
+  | { outcome: "refused" | "unknown" | "failed" };
 
 export interface SettingsFetcherOptions {
   origin: string;
@@ -177,6 +256,7 @@ export class SettingsFetcher implements SettingsSource {
   private held: SettingsDocument | null = null;
   private timer: ReturnType<typeof setInterval> | null = null;
   private reading: AbortController | null = null;
+  private readonly candidateReads = new Set<AbortController>();
   private warned = false;
 
   constructor(options: SettingsFetcherOptions) {
@@ -203,6 +283,36 @@ export class SettingsFetcher implements SettingsSource {
     this.timer = null;
     this.reading?.abort();
     this.reading = null;
+    for (const read of this.candidateReads) read.abort();
+  }
+
+  async fetchCandidate(candidate: string, timeoutMs: number): Promise<CandidateRead> {
+    const reading = new AbortController();
+    const timeout = setTimeout(() => reading.abort(), timeoutMs);
+    (timeout as { unref?: () => void }).unref?.();
+    this.candidateReads.add(reading);
+    try {
+      const url = `${this.url}&${new URLSearchParams({ candidate }).toString()}`;
+      const response = await this.fetchImpl(url, {
+        method: "GET",
+        headers: this.#headers,
+        redirect: "manual",
+        signal: reading.signal,
+      });
+      if (response.status !== 200) void response.body?.cancel().catch(() => undefined);
+      if (response.status === 403) return { outcome: "refused" };
+      if (response.status === 404) return { outcome: "unknown" };
+      if (response.status === 200) {
+        const document = parseDocument(await response.text(), candidate);
+        if (document !== null) return { outcome: "loaded", document };
+      }
+    } catch {
+      // A failed read is tried again later.
+    } finally {
+      clearTimeout(timeout);
+      this.candidateReads.delete(reading);
+    }
+    return { outcome: "failed" };
   }
 
   /** One request. Never rejects: a failure keeps what is held. */
@@ -250,27 +360,133 @@ export class SettingsFetcher implements SettingsSource {
   }
 }
 
-/** Per-call settings from the matched audience (SPEC §2.6). */
+const PENDING = Symbol("pending");
+
+/** Per-call settings from the matched audience (SPEC §2.6), and the test
+ * changes a test key may fetch by id: `BATON_CANDIDATE` for the process, the
+ * `Baton-Candidate` header for one HTTP request, which wins. */
 export class CaptureSettings {
+  private processDocument: SettingsDocument | null = null;
+  /** `BATON_CANDIDATE`'s read; requests wait for it. */
+  ready: Promise<void> = Promise.resolve();
+  isReady = true;
+  // id -> its document, `null` for an unknown id, `PENDING`, or the time a failed read may be tried again.
+  private readonly held = new Map<string, SettingsDocument | null | typeof PENDING | number>();
+  // A 403 is about the key, so it answers every id for this process.
+  private refused = false;
+  private stopped = false;
+  retryAfterMs = REQUEST_TIMEOUT_MS;
+
   constructor(
     private readonly vendorId: string,
     private readonly source: SettingsSource,
+    private readonly candidate: string | null = null,
+    private readonly startTimeoutMs = CANDIDATE_START_TIMEOUT_MS,
   ) {}
 
   start(): void {
+    const candidate = this.candidate;
+    if (candidate !== null && this.processDocument === null) {
+      const cannotLoad = (why: string): void =>
+        warn(`baton: ${CANDIDATE_ENV}=${candidate} could not be loaded (${why}); today's settings apply.`);
+      const fetched = this.source.fetchCandidate(candidate, this.startTimeoutMs);
+      this.isReady = false;
+      // Bounded here too, so a fetch that ignores its signal cannot hold up requests.
+      this.ready = raceDeadline(fetched, this.startTimeoutMs).then((read) => {
+        this.isReady = true;
+        if (this.stopped) return;
+        if (read === TIMED_OUT) {
+          cannotLoad("no answer");
+          // A late answer is never served, so a run sees one set of settings;
+          // a 403 still says the key is the cause.
+          void fetched.then((late) => {
+            if (!this.stopped && late.outcome === "refused") this.record(candidate, late);
+          });
+          return;
+        }
+        this.record(candidate, read);
+        if (read.outcome === "loaded") this.processDocument = read.document;
+        else if (read.outcome !== "refused") cannotLoad(read.outcome === "unknown" ? "unknown id" : "no answer");
+      });
+    }
     this.source.start();
   }
 
   stop(): void {
+    this.stopped = true;
     this.source.stop();
   }
 
+  /** The document for a request with no header of its own. */
   get document(): SettingsDocument | null {
-    return this.source.document;
+    return this.processDocument ?? this.source.document;
   }
 
   /** `undefined` while no document is held, and the config's values apply. */
   forCaller(caller: Caller): CallSettings | undefined {
-    return this.document?.settingsFor(caller, this.vendorId);
+    const document =
+      caller.candidate == null ? this.document : (this.headerDocument(caller.candidate) ?? this.source.document);
+    return document?.settingsFor(caller, this.vendorId);
   }
+
+  /** Whether `test` holds for some document a request could be served under now. */
+  someDocument(test: (document: SettingsDocument) => boolean): boolean {
+    const today = this.document;
+    if (today !== null && test(today)) return true;
+    for (const held of this.held.values()) if (held instanceof SettingsDocument && test(held)) return true;
+    return false;
+  }
+
+  /** The header's change if it is held. The first sight of an id starts its
+   * read in the background, unless too many are already running. */
+  private headerDocument(candidate: string): SettingsDocument | null {
+    if (this.refused) return null;
+    const held = this.held.get(candidate);
+    if (held !== undefined && !(typeof held === "number" && held <= Date.now())) {
+      this.held.delete(candidate);
+      this.held.set(candidate, held);
+      return held instanceof SettingsDocument ? held : null;
+    }
+    if ([...this.held.values()].filter((v) => v === PENDING).length >= CANDIDATE_READS_AT_ONCE) return null;
+    this.held.delete(candidate);
+    this.held.set(candidate, PENDING);
+    this.evict();
+    void this.source.fetchCandidate(candidate, REQUEST_TIMEOUT_MS).then((read) => {
+      if (!this.stopped) this.record(candidate, read);
+    });
+    return null;
+  }
+
+  private record(candidate: string, read: CandidateRead): void {
+    if (read.outcome === "refused") {
+      if (!this.refused) {
+        warn("baton: this server's key is not a test key, so test changes are not fetched; today's settings apply.");
+      }
+      this.held.delete(candidate);
+      this.refused = true;
+    } else if (read.outcome === "failed") {
+      this.held.set(candidate, Date.now() + this.retryAfterMs);
+    } else {
+      this.held.set(candidate, read.outcome === "loaded" ? read.document : null);
+      this.evict();
+    }
+  }
+
+  private evict(): void {
+    // A read in flight is never dropped, so it cannot be started twice.
+    for (const [key, value] of this.held) {
+      if (this.held.size <= CANDIDATES_HELD) return;
+      if (value !== PENDING) this.held.delete(key);
+    }
+  }
+}
+
+/** Whether some audience's overlay changes `piece` of Baton's text. */
+export function overlayChanges(settings: CaptureSettings | undefined, piece: string): boolean {
+  return settings?.someDocument((d) => d.audiencePieces.has(piece)) ?? false;
+}
+
+/** Whether some audience's overlay, today or in a held change, hides `name`. */
+export function mayHide(settings: CaptureSettings | undefined, name: string): boolean {
+  return settings?.someDocument((d) => d.hiddenSomewhere.has(name)) ?? false;
 }

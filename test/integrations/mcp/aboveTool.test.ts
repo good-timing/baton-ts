@@ -45,10 +45,11 @@ import { MAJORS, CapturingSink, install, terminal } from "./_majors.js";
  * pinned here, where a change to it fails BY NAME.
  */
 describe("the registered failure_kind vocabulary", () => {
-  it("is exactly SPEC §11.4.3's five values, spelled as the Console's codes are", () => {
+  it("is exactly SPEC §11.4.3's six values, spelled as the Console's codes are", () => {
     expect([...FAILURE_KINDS]).toEqual([
       "unknown_tool",
       "tool_disabled",
+      "tool_hidden",
       "invalid_argument",
       "output_schema_mismatch",
       "refused",

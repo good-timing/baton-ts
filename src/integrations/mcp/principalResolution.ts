@@ -20,7 +20,7 @@ import {
 import type { ClientObserved } from "./clientObserved.js";
 import { raceDeadline, TIMED_OUT } from "../../deadline.js";
 import { warn } from "../../warn.js";
-import type { CallSettings, CaptureSettings } from "./captureSettings.js";
+import { type CallSettings, type CaptureSettings, headerCandidate } from "./captureSettings.js";
 import {
   type AuthInfo,
   type Extra,
@@ -159,6 +159,7 @@ export async function resolveCaller(
       labels: caller.labels,
       clientName: client?.info?.name ?? null,
       shareKey: caller.principal?.id ?? null,
+      candidate: headerCandidate(extraHeaders(call.extra)),
     });
     return callSettings === undefined ? caller : { ...caller, settings: callSettings };
   } catch {

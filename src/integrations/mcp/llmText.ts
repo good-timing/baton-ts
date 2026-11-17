@@ -15,6 +15,7 @@
 
 import { isBlank } from "../../_text.js";
 import { stderrLine } from "../../warn.js";
+import { type Overlay, overlaid } from "./overlays.js";
 
 // Holds no report rule: each is written once, in the report tool's description.
 const REPORT_POINTER_TEMPLATE = (vendorDisplayName: string, annotationToolName: string) =>
@@ -60,7 +61,8 @@ interface InstructionNames {
   annotationToolName: string;
 }
 
-function renderServerInstructions(options: InstructionNames): string {
+/** The report pointer paragraph, without the subagent sentence. */
+export function buildReportPointer(options: InstructionNames): string {
   return REPORT_POINTER_TEMPLATE(options.vendorDisplayName, options.annotationToolName);
 }
 
@@ -70,11 +72,11 @@ function renderServerInstructions(options: InstructionNames): string {
  * `annotationName.ts` to keep a name derived from the server only where it
  * fits. */
 export function fitsInstructionsCap(options: InstructionNames): boolean {
-  return renderServerInstructions(options).length <= INSTRUCTIONS_LENGTH_CAP;
+  return buildReportPointer(options).length <= INSTRUCTIONS_LENGTH_CAP;
 }
 
 export function buildServerInstructions(options: InstructionNames): string {
-  const rendered = renderServerInstructions(options);
+  const rendered = buildReportPointer(options);
   if (rendered.length > INSTRUCTIONS_LENGTH_CAP) {
     throw new Error(
       `Rendered server instructions are ${rendered.length} chars, which exceeds ` +
@@ -91,17 +93,18 @@ export function buildAnnotationToolDescription(options: { vendorDisplayName: str
   return ANNOTATION_TOOL_DESCRIPTION_TEMPLATE(options.vendorDisplayName);
 }
 
-/** What the annotation tool answers when a call has no account (SPEC §5.1.1). */
-export function buildRefusalText(options: { annotationToolName: string }): string {
-  return (
+/** What the annotation tool answers when a call has no account (SPEC §5.1.1),
+ * after the caller's `overlay`. */
+export function buildRefusalText(options: { annotationToolName: string; overlay?: Overlay | undefined }): string {
+  const text =
     `${options.annotationToolName} is reactive-only on this server. Call it only AFTER ` +
     "a tool call returns an unhelpful, empty, failed or contradictory result, or " +
     "when no tool covers what the user asked for. What the user is trying to do " +
     "is already recorded on each tool call, so no pre-call annotation is needed — " +
     "nothing was lost. If a tool call really went wrong, or no tool covers the " +
     "request, call this again and say what_happened. If neither is true, do NOT " +
-    "re-send: that would file a report for a call that did not go wrong."
-  );
+    "re-send: that would file a report for a call that did not go wrong.";
+  return overlaid(text, options.overlay, "report_tool.refusal");
 }
 
 // =============================================================================
@@ -219,52 +222,81 @@ export const INTENT_PARAMS: readonly IntentParam[] = Object.freeze([
 ]);
 
 const VENDOR_INSTRUCTIONS = Symbol("batonVendorInstructions");
-const escapeRegExp = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-// Where our paragraph begins under `reportMode` "on" and "off". The pointer is
-// matched whole: its opening, "Use `", is how a vendor's own paragraph may start.
-const OURS_STARTS = [
-  new RegExp(
-    "^" + REPORT_POINTER_TEMPLATE("\u0000", "\u0000").split("\u0000").map(escapeRegExp).join(".+?"),
-  ),
-  new RegExp("^" + escapeRegExp(INTENT_INSTRUCTIONS)),
-];
+const OURS = Symbol("batonInstructions");
+const SUBAGENT = Symbol("batonSubagentSentence");
 
 interface InstructionsHolder {
   _instructions?: string | undefined;
   [VENDOR_INSTRUCTIONS]?: string | undefined;
+  [OURS]?: string;
+  [SUBAGENT]?: string | undefined;
 }
 
-function endsInOurs(current: unknown, vendor: unknown): boolean {
-  if (typeof current !== "string") return false;
-  const prefix = typeof vendor === "string" && !isBlank(vendor) ? `${vendor}\n\n` : "";
-  if (!current.startsWith(prefix)) return false;
-  const rest = current.slice(prefix.length);
-  return OURS_STARTS.some((start) => start.test(rest));
+function joined(vendor: unknown, ours: string): string {
+  if (typeof vendor !== "string" || isBlank(vendor)) return ours;
+  return ours ? `${vendor}\n\n${ours}` : vendor;
 }
 
-/** SPEC §5.1.2: the vendor's own instructions first, ours below them.
+function vendorText(holder: InstructionsHolder): string | undefined {
+  const current = holder._instructions;
+  const written = holder[OURS];
+  const vendor = VENDOR_INSTRUCTIONS in holder ? holder[VENDOR_INSTRUCTIONS] : current;
+  return written !== undefined && current === joined(vendor, written) ? vendor : current;
+}
+
+/** Write `ours` below the vendor's instructions (SPEC §5.1.2). `subagent` is
+ * the subagent sentence `ours` ends with, if it does.
  *
+ * What was written is remembered on the server once the write succeeds, so a
+ * second install or a new setting replaces our paragraph rather than appending
+ * another; text the vendor set in between replaces what was remembered. */
+export function writeOurs(
+  server: object,
+  ours: string,
+  subagent: string | null,
+  write: (instructions: string) => void,
+  warn: (message: string) => void = stderrLine,
+): void {
+  const holder = server as InstructionsHolder;
+  const vendor = vendorText(holder);
+  write(withVendorInstructions(server, ours, warn));
+  holder[VENDOR_INSTRUCTIONS] = vendor;
+  holder[OURS] = ours;
+  holder[SUBAGENT] = subagent && ours.endsWith(subagent) ? subagent : undefined;
+}
+
+/** Take the subagent sentence out of what `writeOurs` wrote; whether there was one. */
+export function removeSubagentClause(
+  server: object,
+  write: (instructions: string) => void,
+  warn: (message: string) => void = stderrLine,
+): boolean {
+  const holder = server as InstructionsHolder;
+  const ours = holder[OURS];
+  const subagent = holder[SUBAGENT];
+  if (ours === undefined || !subagent || holder._instructions !== joined(holder[VENDOR_INSTRUCTIONS], ours)) {
+    return false;
+  }
+  const kept = ours.slice(0, ours.length - subagent.length);
+  writeOurs(server, kept.endsWith("\n\n") ? kept.slice(0, -2) : kept, null, write, warn);
+  return true;
+}
+
+/** The instructions `writeOurs` writes: the vendor's first, ours below.
  * The runtime cuts at `CLAUDE_CODE_TRUNCATION_CAP` from the end, so the order
- * decides whose text is lost. The vendor's text is remembered on the server, so
- * a second install replaces our paragraph rather than appending another; text
- * the vendor set in between replaces what was remembered. */
+ * decides whose text is lost. */
 export function withVendorInstructions(
   server: object,
   ours: string,
   warn: (message: string) => void = stderrLine,
 ): string {
-  const holder = server as InstructionsHolder;
-  const current = holder._instructions;
-  let vendor = VENDOR_INSTRUCTIONS in holder ? holder[VENDOR_INSTRUCTIONS] : current;
-  if (!endsInOurs(current, vendor)) {
-    vendor = current;
-    holder[VENDOR_INSTRUCTIONS] = vendor;
-  }
-  if (typeof vendor !== "string" || isBlank(vendor)) return ours;
-  const combined = `${vendor}\n\n${ours}`;
+  const vendor = vendorText(server);
+  const combined = joined(vendor, ours);
+  if (combined === ours) return ours;
+  const vendorLength = vendor?.length ?? 0;
   if (combined.length > CLAUDE_CODE_TRUNCATION_CAP) {
     warn(
-      `baton: the server instructions are ${combined.length} chars (yours ${vendor.length}, ` +
+      `baton: the server instructions are ${combined.length} chars (yours ${vendorLength}, ` +
         `Baton's ${ours.length}); Claude Code cuts them at ~${CLAUDE_CODE_TRUNCATION_CAP}, ` +
         "so the end of Baton's text is lost there",
     );

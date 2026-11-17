@@ -2,7 +2,43 @@
 
 ## Unreleased
 
+### Added
+
+- **Overlays** (experimental, SPEC §2.6). With `settings: "console"`, the
+  settings document can hold overlays. An audience's overlay changes that
+  audience's tool list: it adds to or replaces tool and param descriptions,
+  hides tools and params, marks a param required (shown to the agent only; a
+  call without it still runs), and changes Baton's `user_goal` and report
+  tool text, including the refusal. `server_overlay` adds text to the server
+  instructions and changes Baton's sentences there, for connections that
+  start after it loads. An overlay that can't be read is not applied, with
+  one warning; a bad action is skipped on its own. The surface snapshot
+  names the server overlay in `seam_augmentations.server_overlay`.
+- **`failure_kind: "tool_hidden"`** (SPEC §11.4.3). A call to a tool the
+  caller's overlay hides gets the same answer as a call to a tool the server
+  doesn't have, and its event records `tool_hidden`.
+- **Test changes by id** (experimental, SPEC §2.6). With
+  `settings: "console"`, a request's `Baton-Candidate: <id>` header (HTTP
+  only), or `BATON_CANDIDATE=<id>` for the whole process, serves a test
+  change the Console stores under that id. Only a test key can fetch one: a
+  production key gets one warning and today's settings. The variable's
+  change is fetched at startup, and the first connection waits up to 5 s
+  for it, so it reaches the server instructions on stdio too. A header's
+  change is fetched in the background the first time its id is seen, and
+  requests get today's settings until it arrives. A header's change does
+  not change the server instructions, which go out once per connection;
+  test a `server_overlay` change with the variable. Baton never refuses to
+  start over a change: one it cannot load, or a variable set without
+  Console settings, is reported and today's settings apply. Events served
+  under a change carry `capture.candidate`.
+- Both are for `withBaton` and `createBaton`. The library path has no
+  Console settings yet.
+
 ### Fixed
+
+- **Each connection's handshake applies the latest settings.** Before, a
+  connection that started after new settings arrived, and before any tool
+  call, got the instructions of the settings before them.
 
 - **A test key (`baton_tk_`) is never repeated in an error.** A DSN with a
   test key in the wrong place, or a bare test key, is refused with the key

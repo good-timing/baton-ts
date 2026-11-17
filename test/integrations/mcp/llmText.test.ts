@@ -17,6 +17,7 @@ import {
   INTENT_INSTRUCTIONS,
   requiredParamNames,
   withVendorInstructions,
+  writeOurs,
 } from "../../../src/integrations/mcp/llmText.js";
 
 // The retired agent-facing names. They still appear across the codebase, as
@@ -131,6 +132,10 @@ describe("the retired 'support-signal' wording", () => {
 
 describe("withVendorInstructions", () => {
   const ours = INTENT_INSTRUCTIONS;
+  const install = (server: { _instructions?: string }, text: string): void =>
+    writeOurs(server, text, null, (written) => {
+      server._instructions = written;
+    });
 
   it("puts the vendor's text first, and ours alone when they have none", () => {
     expect(withVendorInstructions({ _instructions: "Vendor text." }, ours)).toBe(
@@ -142,7 +147,7 @@ describe("withVendorInstructions", () => {
 
   it("replaces our paragraph on a second install rather than adding another", () => {
     const server: { _instructions?: string } = { _instructions: "Vendor text." };
-    server._instructions = withVendorInstructions(server, ours);
+    install(server, ours);
     const reports = buildServerInstructions({
       vendorDisplayName: "Acme",
       annotationToolName: "acme_annotate",
@@ -152,14 +157,14 @@ describe("withVendorInstructions", () => {
 
   it("takes text the vendor set between two installs as theirs", () => {
     const server: { _instructions?: string } = { _instructions: "Old." };
-    server._instructions = withVendorInstructions(server, ours);
+    install(server, ours);
     server._instructions = "New.";
     expect(withVendorInstructions(server, ours)).toBe(`New.\n\n${ours}`);
   });
 
   it("takes text opening like the retired reports head as the vendor's", () => {
     const server: { _instructions?: string } = {};
-    server._instructions = withVendorInstructions(server, ours);
+    install(server, ours);
     server._instructions = "This server is wrapped in the Acme gateway.";
     expect(withVendorInstructions(server, ours)).toBe(
       `This server is wrapped in the Acme gateway.\n\n${ours}`,
@@ -175,21 +180,21 @@ describe("withVendorInstructions", () => {
 
     it("is kept when set after an install with no vendor text", () => {
       const server: { _instructions?: string } = {};
-      server._instructions = withVendorInstructions(server, pointer);
+      install(server, pointer);
       server._instructions = vendor;
       expect(withVendorInstructions(server, pointer)).toBe(`${vendor}\n\n${pointer}`);
     });
 
     it("is kept when added below the vendor's text", () => {
       const server: { _instructions?: string } = { _instructions: "Base." };
-      server._instructions = withVendorInstructions(server, pointer);
+      install(server, pointer);
       server._instructions = `Base.\n\n${vendor}`;
       expect(withVendorInstructions(server, pointer)).toBe(`Base.\n\n${vendor}\n\n${pointer}`);
     });
 
     it("leaves our own pointer replaced", () => {
       const server: { _instructions?: string } = { _instructions: "Base." };
-      server._instructions = withVendorInstructions(server, pointer);
+      install(server, pointer);
       expect(withVendorInstructions(server, pointer)).toBe(`Base.\n\n${pointer}`);
     });
   });

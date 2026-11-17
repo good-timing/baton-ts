@@ -237,6 +237,7 @@ export const CaptureObservedSchema = z
     settings_version: z.number().int().min(1).optional(),
     audience: z.string().optional(),
     overlay: z.string().optional(),
+    candidate: z.string().optional(),
   })
   .strict();
 export type CaptureObserved = z.infer<typeof CaptureObservedSchema>;

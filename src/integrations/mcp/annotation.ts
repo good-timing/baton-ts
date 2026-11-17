@@ -20,7 +20,8 @@ import type { Sink } from "../../sinks.js";
 import { deriveAnnotationToolName } from "./annotationName.js";
 import { emit } from "./emit.js";
 import { type ResolvePrincipalHook, callerEnvelope, resolveCaller } from "./principalResolution.js";
-import type { CaptureSettings } from "./captureSettings.js";
+import { type CaptureSettings, overlayChanges } from "./captureSettings.js";
+import type { Overlay } from "./overlays.js";
 import { buildAnnotationToolDescription, buildRefusalText } from "./llmText.js";
 import { standardInputJsonSchema, toolInputJsonSchema } from "./schemaCompat.js";
 import { extraMeta, observeTransport, type Extra } from "./mcpTypes.js";
@@ -146,7 +147,14 @@ export function buildAnnotationTool(
   const description = buildAnnotationToolDescription({
     vendorDisplayName: options.vendorDisplayName,
   });
-  const refusal = buildRefusalText({ annotationToolName: name });
+  const refused = (overlay?: Overlay) => ({
+    content: [
+      {
+        type: "text" as const,
+        text: JSON.stringify({ ok: false, error: buildRefusalText({ annotationToolName: name, overlay }) }),
+      },
+    ],
+  });
 
   return {
     name,
@@ -156,32 +164,10 @@ export function buildAnnotationTool(
       // schema: an agent that must fill it to get a call through invents a
       // problem, and that corrupts the reports.
       const whatHappened = args.what_happened;
-      if (!isReport(whatHappened)) {
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: JSON.stringify({
-                ok: false,
-                error: refusal,
-              }),
-            },
-          ],
-        };
-      }
+      if (!isReport(whatHappened) && !overlayChanges(options.captureSettings, "report_tool.refusal")) return refused();
       // Sent as given (SPEC §5.1.1): "" means the agent said no tool exists,
       // null means it said nothing, and the two must not merge.
       const reportedTool = args.tool_name ?? null;
-
-      const meta = extraMeta(extra);
-      // As in the tool-call wrapper: coordinates coarsened before the
-      // vendor's scrubber.
-      const scrubbedMeta = scrubOrNull(
-        options.scrubber,
-        meta ? roundMetaCoordinates(meta) : null,
-        "_meta",
-      );
-      const session = await resolveSessionId(options.fallbackSessionId, extra);
 
       // Same hook, same context factory as the tool wrapper — and the
       // `toolName` handed over is THIS tool's own name, so a hook keyed on it
@@ -195,6 +181,17 @@ export function buildAnnotationTool(
         options.captureSettings,
         client,
       );
+      if (!isReport(whatHappened)) return refused(caller.settings?.overlay);
+
+      const meta = extraMeta(extra);
+      // As in the tool-call wrapper: coordinates coarsened before the
+      // vendor's scrubber.
+      const scrubbedMeta = scrubOrNull(
+        options.scrubber,
+        meta ? roundMetaCoordinates(meta) : null,
+        "_meta",
+      );
+      const session = await resolveSessionId(options.fallbackSessionId, extra);
 
       await emit(options.sink, () =>
         AnnotationEventSchema.parse({

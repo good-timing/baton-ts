@@ -21,6 +21,7 @@ import {
   RESULT_CAPTURE_MODE_SET,
   SETTINGS_MODES,
   SettingsFetcher,
+  envCandidate,
   type SettingsMode,
 } from "./captureSettings.js";
 
@@ -418,6 +419,7 @@ export function resolveBatonConfig(supplied: BatonConfig): ResolvedBatonConfig {
               vendorId: dsn.vendorId,
               refreshMs: identity.settingsRefreshMs ?? DEFAULT_SETTINGS_REFRESH_MS,
             }),
+            envCandidate(),
           ),
         }
       : {}),

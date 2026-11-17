@@ -20,6 +20,13 @@ export function stripWhiteSpace(value: string): string {
   return stripEdges(value, WHITE_SPACE);
 }
 
+/** `value` without trailing white space: SPEC §2.6's append rule. */
+export function stripWhiteSpaceEnd(value: string): string {
+  let end = value.length;
+  while (end > 0 && WHITE_SPACE.test(value[end - 1]!)) end--;
+  return value.slice(0, end);
+}
+
 export function isBlank(value: string): boolean {
   return ALL_WHITE_SPACE.test(value);
 }

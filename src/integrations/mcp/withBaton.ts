@@ -159,17 +159,18 @@ import {
   usableServerName,
 } from "./annotationName.js";
 import {
+  buildReportPointer,
   buildServerInstructions,
   declaresParam,
-  INSTRUCTIONS_SUBAGENT_CLAUSE,
   INTENT_INSTRUCTIONS,
   INTENT_SOURCE_PARAM,
   instructionsSuffixServed,
   mayDeclareParam,
   RETIRED_PARAM_NAMES,
   requiredParamNames,
+  removeSubagentClause,
   USER_GOAL_PARAM_NAME,
-  withVendorInstructions,
+  writeOurs,
 } from "./llmText.js";
 import {
   extraMeta,
@@ -185,7 +186,7 @@ import {
   callerEnvelope,
   resolveCaller,
 } from "./principalResolution.js";
-import type { CaptureSettings } from "./captureSettings.js";
+import { type CaptureSettings, candidateNeedsConsole, mayHide } from "./captureSettings.js";
 import { PerCallerSurface } from "./perCaller.js";
 import { ServerCounter, SessionCounter } from "./sessionCounter.js";
 import {
@@ -355,6 +356,11 @@ interface CallSlot {
   /** Set by the probe on `validateToolInput`; stays `"unseen"` when the call
    * was refused before the SDK validated it. */
   validation: InputValidation;
+  /** The caller, when the seam resolved it to check for a hidden tool, so
+   * the vendor's hook runs once per call. */
+  caller?: ResolvedCaller;
+  /** How a low-level Server's call treats `user_goal` on a tool it has not listed. */
+  unlisted?: Unlisted;
 }
 
 const INTENT_PARAM_NAMES = [USER_GOAL_PARAM_NAME, ...RETIRED_PARAM_NAMES] as const;
@@ -385,6 +391,7 @@ class SurfaceState {
     { disabled: boolean; tool: Record<string, unknown> }
   >();
   dirty = false;
+  servedOverlayId: string | null = null;
 
   constructor(
     private readonly serverMeta: ReturnType<typeof buildServerMeta>,
@@ -510,6 +517,7 @@ async function openCall(
    * `callSlots`: the request-side path runs outside its own slot. */
   stripped: StrippedParams,
   unlisted: Unlisted = "warn",
+  resolved?: ResolvedCaller,
 ): Promise<{ common: Record<string, unknown>; session: ResolvedSession; resultCaptureMode: ResultCaptureMode }> {
   // Snapshot BEFORE tool_call_start, from inside openCall so every caller inherits the order.
   await maybeEmitSurfaceSnapshot(ctx);
@@ -533,12 +541,9 @@ async function openCall(
   // exactly what the vendor's own handler receives — Baton's injected
   // params are never a caller's input and must not look like one.
   const client = observeClient(extra, ctx);
-  const caller = await resolveCaller(
-    ctx.resolvePrincipal,
-    { extra, toolName, arguments: params },
-    ctx.captureSettings,
-    client,
-  );
+  const caller =
+    resolved ??
+    (await resolveCaller(ctx.resolvePrincipal, { extra, toolName, arguments: params }, ctx.captureSettings, client));
   const resultCaptureMode = caller.settings?.resultCaptureMode ?? ctx.configResultCaptureMode;
 
   const common = {
@@ -589,6 +594,8 @@ function batonWrap(
   original: AnyHandler,
   ctx: WrapContext,
   unlisted: Unlisted = "warn",
+  /** The caller the low-level seam already resolved for this call. */
+  resolved?: ResolvedCaller,
 ): AnyHandler {
   return async (...callArgs: AnyArgs): Promise<unknown> => {
     const toolName = nameRef.current;
@@ -609,9 +616,17 @@ function batonWrap(
       unknown
     >;
     // Handed over once: a tool this handler calls in-process shares the slot.
-    const stripped = slot?.strippedFor === toolName ? slot.stripped : {};
+    const ours = slot?.strippedFor === toolName ? slot : undefined;
     if (slot) slot.strippedFor = null;
-    const { common, session, resultCaptureMode } = await openCall(ctx, toolName, extra, params, stripped, unlisted);
+    const { common, session, resultCaptureMode } = await openCall(
+      ctx,
+      toolName,
+      extra,
+      params,
+      ours?.stripped ?? {},
+      unlisted,
+      ours?.caller ?? resolved,
+    );
 
     /** Emit this call's terminal event, or PARK it for the outer `tools/call`
      * seam when one is running (see `CallSlot`). `replacement` is passed by
@@ -914,6 +929,11 @@ function stripIntentParams(
  * change, not a retry storm. The write only queues, so a snapshot counts as
  * sent once queued; a sink that later fails to write it counts it `write_failed`. */
 async function maybeEmitSurfaceSnapshot(ctx: WrapContext): Promise<void> {
+  const overlayId = ctx.perCaller?.serverOverlay?.id ?? null;
+  if (overlayId !== ctx.surfaceState.servedOverlayId) {
+    ctx.surfaceState.servedOverlayId = overlayId;
+    ctx.surfaceState.dirty = true;
+  }
   if (!ctx.surfaceState.dirty) return;
   ctx.surfaceState.dirty = false;
   let snapshot: Record<string, unknown>;
@@ -926,10 +946,10 @@ async function maybeEmitSurfaceSnapshot(ctx: WrapContext): Promise<void> {
     return;
   }
   const sent = ctx.surfaceState.sentSurfaces;
-  if (sent.wasSent(digest)) return;
+  if (sent.wasSent(digest, overlayId)) return;
   // Reserved before the write, so two servers sharing `sentSurfaces` cannot both
   // send it: `createBaton.test.ts`, "when the first requests arrive together".
-  sent.mark(digest);
+  sent.mark(digest, overlayId);
   const seam = buildSeamAugmentations({
     injectedToolNames: ctx.annotationToolName ? [ctx.annotationToolName] : [],
     intentParamNames: [USER_GOAL_PARAM_NAME],
@@ -937,6 +957,8 @@ async function maybeEmitSurfaceSnapshot(ctx: WrapContext): Promise<void> {
     requiredParamNames: requiredParamNames(ctx.intentParamMode),
     instructionsSuffix: instructionsSuffixServed(ctx.annotationToolName, ctx.servedInstructions()),
   });
+  // SPEC §11.4.2: present only from a producer that applies overlays.
+  if (ctx.captureSettings !== undefined) seam.server_overlay = overlayId;
   await ctx.emitSurface(ctx.fallbackSessionId, digest, { ...snapshot, seam_augmentations: seam });
 }
 
@@ -1117,6 +1139,7 @@ type LowLevelInternals = {
 const LOW_LEVEL_LIST_SEAM = Symbol("batonLowLevelListSeam");
 const LOW_LEVEL_CALL_SEAM = Symbol("batonLowLevelCallSeam");
 const LOW_LEVEL_HANDSHAKE_SEAM = Symbol("batonLowLevelHandshakeSeam");
+const SETTINGS_SEAM = Symbol("batonSettingsSeam");
 
 /** What one Baton knows of a low-level `Server`'s tools, shared by every
  * server it wraps, so a server made per request knows the tools another one
@@ -1271,13 +1294,29 @@ function installLowLevelToolSeams(
 
   installRequestSeam(lowLevel, TOOLS_CALL_METHOD, LOW_LEVEL_CALL_SEAM, (handler) => async (...args) => {
     catchUp();
-    ctx.perCaller?.followSettings();
     const request = args[0] as { params?: { name?: unknown; arguments?: unknown; task?: unknown } } | undefined;
     const name = request?.params?.name;
     if (typeof name !== "string") return handler(...args);
     if (name === reportTool?.name) return callAnnotationTool(reportTool, request?.params?.arguments, args[1] as Extra);
     const injected = ctx.paramRegistry.get(name)?.[USER_GOAL_PARAM_NAME] === "injected";
     const unlisted: Unlisted = injected ? "warn" : known.keepsGoal.has(name) || known.unread.has(name) ? "leave" : "goalOnly";
+    // Baton's params off `args` in place, by the rule `openCall` uses.
+    const strip = (args: Record<string, unknown>): StrippedParams =>
+      injected
+        ? stripIntentParams({ name, arguments: args }, ctx)
+        : { [USER_GOAL_PARAM_NAME]: extractGoalParam(args, USER_GOAL_PARAM_NAME, name, ctx.paramRegistry.get(name), unlisted) };
+    let slot: CallSlot | undefined;
+    if (mayHide(ctx.captureSettings, name)) {
+      // On a copy, so the hook and a hidden call's events see what any other call's would.
+      const hookArgs = isRecord(request?.params?.arguments) ? { ...request.params.arguments } : {};
+      const checked: CallSlot = { innerFired: false, flushTerminal: null, stripped: strip(hookArgs), strippedFor: name, validation: "unseen", unlisted };
+      if (await hiddenFrom(checked, name, hookArgs, args[1] as Extra, ctx)) {
+        // The vendor never sees this call, so its events take the stripped copy.
+        if (request?.params !== undefined && isRecord(request.params.arguments)) request.params.arguments = hookArgs;
+        return answerHidden(lowLevel, name, (outcome) => settleCall(checked, outcome, args, () => undefined, ctx, "tool_hidden"));
+      }
+      slot = checked;
+    }
     // The request's own object: `openCall` takes Baton's params off it in
     // place, before the SDK's parse hands the vendor a copy.
     const params = request?.params?.arguments;
@@ -1297,11 +1336,10 @@ function installLowLevelToolSeams(
     // A task-based call answers with the task, not the tool's result, so it
     // is not captured, as on an McpServer.
     if (request?.params?.task !== undefined) {
-      if (injected) stripIntentParams(request.params, ctx);
-      else extractGoalParam(toolArgs, USER_GOAL_PARAM_NAME, name, ctx.paramRegistry.get(name), unlisted);
+      strip(toolArgs);
       return handler(...args);
     }
-    return batonWrap({ current: name }, () => handler(...args), ctx, unlisted)(toolArgs, args[1]);
+    return batonWrap({ current: name }, () => handler(...args), ctx, unlisted, slot?.caller)(toolArgs, args[1]);
   });
 }
 
@@ -1817,7 +1855,6 @@ function installToolsCallSeam(
     TOOLS_CALL_SEAM,
     (handler) =>
       async (...args) => {
-        ctx.perCaller?.followSettings();
         const request = args[0] as { params?: { name?: unknown; arguments?: unknown } } | undefined;
         const name = request?.params?.name;
         const slot: CallSlot = {
@@ -1827,6 +1864,14 @@ function installToolsCallSeam(
           strippedFor: typeof name === "string" ? name : null,
           validation: "unseen",
         };
+        const toolArgs = request?.params?.arguments;
+        if (
+          typeof name === "string" &&
+          toolEntry(name) != null &&
+          (await hiddenFrom(slot, name, isRecord(toolArgs) ? toolArgs : {}, args[1] as Extra, ctx))
+        ) {
+          return answerHidden(lowLevel, name, (outcome) => settleCall(slot, outcome, args, toolEntry, ctx, "tool_hidden"));
+        }
         // Reassigned by both the try and the catch before `finally` reads it;
         // the initializer is for definite assignment, not a live default.
         let outcome: OuterOutcome = CLEAN_OUTCOME;
@@ -1849,6 +1894,52 @@ function installToolsCallSeam(
         }
       },
   );
+}
+
+/** Whether the caller's overlay hides `name`. Resolves the caller only when
+ * some audience hides it, and keeps it on `slot` for the call's capture. */
+async function hiddenFrom(
+  slot: CallSlot,
+  name: string,
+  params: Record<string, unknown>,
+  extra: Extra,
+  ctx: WrapContext,
+): Promise<boolean> {
+  try {
+    if (name === ctx.annotationToolName || !mayHide(ctx.captureSettings, name)) return false;
+    slot.caller = await resolveCaller(
+      ctx.resolvePrincipal,
+      { extra, toolName: name, arguments: params },
+      ctx.captureSettings,
+      observeClient(extra, ctx),
+    );
+    return slot.caller.settings?.overlay?.hiddenTools.has(name) ?? false;
+  } catch (err) {
+    stderrLine(`baton: could not check whether the tool is hidden; it is served: ${printable(err)}`);
+    return false;
+  }
+}
+
+/** The host's own answer to a call for a tool it does not have, on each
+ * major, after `settle` has the outcome. */
+async function answerHidden(
+  lowLevel: RequestHandlerInternals,
+  name: string,
+  settle: (outcome: OuterOutcome) => Promise<void>,
+): Promise<unknown> {
+  if (lowLevelMajor(lowLevel) === 1) {
+    const result = { content: [{ type: "text", text: `MCP error -32602: Tool ${name} not found` }], isError: true };
+    await settle({ failed: true, raised: false, result });
+    return result;
+  }
+  const err = new ProtocolError(`Tool ${name} not found`);
+  await settle({ failed: true, raised: true, err });
+  throw err;
+}
+
+/** Named as v2's own, so a hidden tool's `error_type` matches an unknown one's. */
+class ProtocolError extends Error {
+  readonly code = -32602;
 }
 
 // Module-local, like the seam markers: a second copy of this package wraps
@@ -1900,6 +1991,7 @@ async function settleCall(
   args: AnyArgs,
   toolEntry: (name: string) => ToolEntry | undefined,
   ctx: WrapContext,
+  kind?: FailureKind,
 ): Promise<void> {
   try {
     // The inner reached a terminal decision: flush it, or let the outcome
@@ -1926,7 +2018,7 @@ async function settleCall(
     // Nothing failed and the inner never fired: a tool this package does not
     // capture (the annotate tool, a task-based tool) was called and worked.
     if (!outcome.failed) return;
-    await emitRequestSideFailure(outcome, args, slot, toolEntry, ctx);
+    await emitRequestSideFailure(outcome, args, slot, toolEntry, ctx, kind);
   } catch (err) {
     PROCESS_DROPS.add("encode_failed");
     stderrLine(`baton: settling a tool call failed; events dropped: ${String(err)}`);
@@ -1968,6 +2060,7 @@ async function emitRequestSideFailure(
   slot: CallSlot,
   toolEntry: (name: string) => ToolEntry | undefined,
   ctx: WrapContext,
+  kind?: FailureKind,
 ): Promise<void> {
   const request = args[0] as { params?: { name?: unknown; arguments?: unknown } } | undefined;
   const toolName = request?.params?.name;
@@ -1998,14 +2091,15 @@ async function emitRequestSideFailure(
     args[1] as Extra,
     params,
     slot.stripped,
-    entry != null ? "warn" : "quiet",
+    slot.unlisted ?? (entry != null ? "warn" : "quiet"),
+    slot.caller,
   );
 
   // `undefined` where the SDK rejected the call for a reason this producer
   // cannot attribute — SPEC §11.4.3 permits omitting the member and
   // `requestSideFailureKind` says which shape that is. The event still goes:
   // the call failed, and the SDK's own message is on it.
-  const failureKind: FailureKind | undefined = requestSideFailureKind(entry, slot.validation);
+  const failureKind: FailureKind | undefined = kind ?? requestSideFailureKind(entry, slot.validation);
   const text = (): string => (outcome.raised ? messageOf(outcome.err) : errorText(outcome.result));
   await emit(ctx.sink, () =>
     ToolCallErrorEventSchema.parse({
@@ -2479,16 +2573,12 @@ function install(
     stderrLine(message);
   };
 
+  const warnLength = (message: string): void => warnOnce("instructions-length", message);
+  const setInstructions = (text: string): void => {
+    lowLevel._instructions = text;
+  };
   const dropSubagentClause = (name: string): void => {
-    const current = lowLevel._instructions;
-    if (current === INTENT_INSTRUCTIONS) {
-      lowLevel._instructions = "";
-    } else if (typeof current === "string" && current.includes(INSTRUCTIONS_SUBAGENT_CLAUSE)) {
-      // A replace, not a suffix strip: the vendor may have appended text after ours.
-      lowLevel._instructions = current.replace(INSTRUCTIONS_SUBAGENT_CLAUSE, "");
-    } else {
-      return;
-    }
+    if (!removeSubagentClause(lowLevel, setInstructions, warnLength)) return;
     warnOnce(
       "native-user-goal",
       `baton: tool ${JSON.stringify(name)} declares its own user_goal, so the subagent ` +
@@ -2558,10 +2648,8 @@ function install(
   // §5.1.2). No public setter exists post-construction; see module
   // docstring for why this reach-in has no "preferred path" to fall back
   // from, unlike Python's adapter.
-  const writeInstructions = (text: string): void => {
-    lowLevel._instructions = withVendorInstructions(lowLevel, text, (message) =>
-      warnOnce("instructions-length", message),
-    );
+  const writeInstructions = (text: string, subagent: string | null = INTENT_INSTRUCTIONS): void => {
+    writeOurs(lowLevel, text, subagent, setInstructions, warnLength);
   };
   writeInstructions(ours);
   const rewriteInstructions = (text: string): void => {
@@ -2577,11 +2665,14 @@ function install(
       get annotationToolName() {
         return ctx.annotationToolName;
       },
-      instructions: ours,
-      writeInstructions: rewriteInstructions,
+      pointer: () =>
+        reports && ctx.annotationToolName
+          ? buildReportPointer({ vendorDisplayName: reports.vendorDisplayName, annotationToolName: ctx.annotationToolName })
+          : undefined,
+      writeInstructions,
+      subagentLine: () => ![...ctx.paramRegistry.values()].some((d) => d[USER_GOAL_PARAM_NAME] === "native"),
       injectsGoal: (name) => ctx.paramRegistry.get(name)?.[USER_GOAL_PARAM_NAME] === "injected",
     });
-    // Now, not at the first request: `initialize` passes no seam of ours.
     ctx.perCaller.followSettings();
   }
 
@@ -2610,7 +2701,7 @@ function install(
       annotationOptions && buildAnnotationTool(server, annotationOptions),
       lowLevelTools,
       warnOnce,
-      () => rewriteInstructions(INTENT_INSTRUCTIONS),
+      () => (ctx.perCaller ? ctx.perCaller.refresh() : rewriteInstructions(INTENT_INSTRUCTIONS)),
     );
   }
 
@@ -2649,6 +2740,23 @@ function install(
   // advertised `required`: consoleSettings.test.ts, "two callers in different
   // audiences see different tool lists".
   installLifecycleSeams(lowLevel, ctx);
+
+  // Last, so it wraps every seam above: each request waits for
+  // `BATON_CANDIDATE`'s change, and a connection reads the instructions once,
+  // from its handshake.
+  const settings = config.captureSettings;
+  if (settings !== undefined) {
+    const waitFirst =
+      (handler: AnyHandler): AnyHandler =>
+      async (...args) => {
+        if (!settings.isReady) await settings.ready;
+        ctx.perCaller?.followSettings();
+        return handler(...args);
+      };
+    for (const method of ["initialize", "server/discover", TOOLS_LIST_METHOD, TOOLS_CALL_METHOD]) {
+      installRequestSeam(lowLevel, method, SETTINGS_SEAM, waitFirst);
+    }
+  }
 
   const handle = (name: string): BatonHandle =>
     new BatonHandle({
@@ -2705,6 +2813,7 @@ function warnAboutSettings(config: ResolvedBatonConfig): void {
         'with reportMode: "off", because no annotation tool is registered',
     );
   }
+  candidateNeedsConsole(config.settings);
   if (config.resultCaptureMode === WITHHELD) {
     warn(
       'baton: resultCaptureMode "off" does not withhold the message of a failed tool list, ' +

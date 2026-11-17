@@ -66,6 +66,7 @@ export const TOOL_ERROR_TYPE = "tool_error";
 export const FAILURE_KINDS = [
   "unknown_tool",
   "tool_disabled",
+  "tool_hidden",
   "invalid_argument",
   "output_schema_mismatch",
   "refused",

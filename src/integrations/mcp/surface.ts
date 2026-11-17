@@ -81,15 +81,22 @@ export const SENT_SURFACES_CAP = 256;
  * grow it for the life of the process; a dropped hash is only sent again. */
 export class SentSurfaces {
   private readonly hashes = new Set<string>();
+  private serverOverlay: string | null = null;
 
-  wasSent(digest: string): boolean {
-    if (!this.hashes.has(digest)) return false;
+  /** `serverOverlay` is not in `surface_hash`, and a snapshot is sent again
+   * whenever it changes (SPEC §11.4.2). */
+  wasSent(digest: string, serverOverlay: string | null = null): boolean {
+    if (serverOverlay !== this.serverOverlay || !this.hashes.has(digest)) return false;
     this.hashes.delete(digest);
     this.hashes.add(digest);
     return true;
   }
 
-  mark(digest: string): void {
+  mark(digest: string, serverOverlay: string | null = null): void {
+    if (serverOverlay !== this.serverOverlay) {
+      this.hashes.clear();
+      this.serverOverlay = serverOverlay;
+    }
     this.hashes.add(digest);
     if (this.hashes.size > SENT_SURFACES_CAP) {
       this.hashes.delete(this.hashes.values().next().value as string);

@@ -16,14 +16,16 @@ import {
   CaptureSettings,
   SettingsFetcher,
   parseDocument,
+  type CandidateRead,
   type SettingsDocument,
 } from "../../../src/integrations/mcp/captureSettings.js";
 import { PerCallerSurface } from "../../../src/integrations/mcp/perCaller.js";
 import {
   INTENT_INSTRUCTIONS,
+  buildReportPointer,
   buildServerInstructions,
   buildUserGoalParamDescription,
-  withVendorInstructions,
+  writeOurs,
 } from "../../../src/integrations/mcp/llmText.js";
 import type { Principal } from "../../../src/identity.js";
 import { MAJORS, type Major } from "./_majors.js";
@@ -368,6 +370,9 @@ class HeldDocument {
   }
   start(): void {}
   stop(): void {}
+  async fetchCandidate(): Promise<CandidateRead> {
+    return { outcome: "failed" };
+  }
 }
 
 const OURS = buildServerInstructions({ vendorDisplayName: "Server", annotationToolName: "srv_annotate" });
@@ -377,17 +382,21 @@ function surfaceOn(holder: { _instructions?: string }, source: HeldDocument): Pe
     settings: new CaptureSettings("srv", source),
     intentParamMode: "required",
     annotationToolName: "srv_annotate",
-    instructions: OURS,
-    writeInstructions: (text) => {
-      holder._instructions = withVendorInstructions(holder, text);
-    },
+    pointer: () => buildReportPointer({ vendorDisplayName: "Server", annotationToolName: "srv_annotate" }),
+    writeInstructions: (text, subagent) =>
+      writeOurs(holder, text, subagent, (written) => {
+        holder._instructions = written;
+      }),
+    subagentLine: () => true,
     injectsGoal: (name) => name === "lookup",
   });
 }
 
 function installed(vendor: string): { _instructions?: string } {
   const holder: { _instructions?: string } = { _instructions: vendor };
-  holder._instructions = withVendorInstructions(holder, OURS);
+  writeOurs(holder, OURS, INTENT_INSTRUCTIONS, (written) => {
+    holder._instructions = written;
+  });
   return holder;
 }
 
