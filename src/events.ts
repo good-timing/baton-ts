@@ -238,6 +238,7 @@ export const CaptureObservedSchema = z
     audience: z.string().optional(),
     overlay: z.string().optional(),
     candidate: z.string().optional(),
+    task: z.string().optional(),
   })
   .strict();
 export type CaptureObserved = z.infer<typeof CaptureObservedSchema>;

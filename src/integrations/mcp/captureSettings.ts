@@ -27,21 +27,47 @@ export const CANDIDATE_READS_AT_ONCE = 4;
 export const CANDIDATE_START_TIMEOUT_MS = 5_000;
 // The header is the caller's: it becomes a query value and a cache key.
 const CANDIDATE_ID = /^[A-Za-z0-9_-]{1,128}$/;
+export const TASK_ENV = "BATON_TASK";
+export const TASK_HEADER = "baton-task";
+const TASK_ID = /^[A-Za-z0-9_.:-]{1,128}$/;
+
+function matchingId(pattern: RegExp, value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const id = stripWhiteSpace(value);
+  return pattern.test(id) ? id : null;
+}
+
+function headerId(headers: Headers | null, name: string, parse: (value: unknown) => string | null): string | null {
+  try {
+    return parse(headers?.get(name));
+  } catch {
+    return null;
+  }
+}
 
 /** `value` as a change id, stripped, or `null` when it cannot be one. */
 export function candidateId(value: unknown): string | null {
-  if (typeof value !== "string") return null;
-  const id = stripWhiteSpace(value);
-  return CANDIDATE_ID.test(id) ? id : null;
+  return matchingId(CANDIDATE_ID, value);
 }
 
 /** The `Baton-Candidate` header's change id. Never throws. */
 export function headerCandidate(headers: Headers | null): string | null {
-  try {
-    return candidateId(headers?.get(CANDIDATE_HEADER));
-  } catch {
-    return null;
-  }
+  return headerId(headers, CANDIDATE_HEADER, candidateId);
+}
+
+/** `value` as a test run's task id, stripped, or `null` when it cannot be one. */
+export function taskId(value: unknown): string | null {
+  return matchingId(TASK_ID, value);
+}
+
+/** The `Baton-Task` header's task id. Never throws. */
+export function headerTask(headers: Headers | null): string | null {
+  return headerId(headers, TASK_HEADER, taskId);
+}
+
+/** `BATON_TASK`; a value that cannot be a task id is dropped. */
+export function envTask(): string | null {
+  return taskId(typeof process !== "undefined" ? process.env?.[TASK_ENV] : undefined);
 }
 
 /** `BATON_CANDIDATE`, or `null` when unset. A value that cannot be an id is reported. */
@@ -77,8 +103,10 @@ export interface Caller {
   labels: readonly string[];
   clientName: string | null;
   shareKey: string | null;
-  /** From the request's header; selects a document, never an audience. */
+  /** From the request's headers: `candidate` selects a document, never an
+   * audience; `task` only tags the events served under it. */
   candidate?: string | null;
+  task?: string | null;
 }
 
 /** The settings one call runs under. An unset mode means the config's value. */
@@ -381,6 +409,7 @@ export class CaptureSettings {
     private readonly vendorId: string,
     private readonly source: SettingsSource,
     private readonly candidate: string | null = null,
+    private readonly task: string | null = null,
     private readonly startTimeoutMs = CANDIDATE_START_TIMEOUT_MS,
   ) {}
 
@@ -426,7 +455,10 @@ export class CaptureSettings {
   forCaller(caller: Caller): CallSettings | undefined {
     const document =
       caller.candidate == null ? this.document : (this.headerDocument(caller.candidate) ?? this.source.document);
-    return document?.settingsFor(caller, this.vendorId);
+    const settings = document?.settingsFor(caller, this.vendorId);
+    const task = caller.candidate == null ? this.task : caller.task;
+    if (settings === undefined || task == null || settings.capture.candidate === undefined) return settings;
+    return { ...settings, capture: { ...settings.capture, task } };
   }
 
   /** Whether `test` holds for some document a request could be served under now. */

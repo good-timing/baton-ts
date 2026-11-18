@@ -17,10 +17,12 @@ import {
   CaptureSettings,
   SettingsFetcher,
   headerCandidate,
+  headerTask,
   mayHide,
   parseDocument,
   type SettingsDocument,
   type SettingsSource,
+  taskId,
 } from "../../../src/integrations/mcp/captureSettings.js";
 import { resolveBatonConfig } from "../../../src/integrations/mcp/config.js";
 import { withBaton } from "../../../src/integrations/mcp/withBaton.js";
@@ -269,7 +271,7 @@ describe("the variable", () => {
     vi.spyOn(process, "emitWarning").mockImplementation(() => {});
     const source = new Source({ [CHANGE]: CHANGED });
     source.hold();
-    const settings = new CaptureSettings("srv", source, CHANGE, 20);
+    const settings = new CaptureSettings("srv", source, CHANGE, null, 20);
     settings.start();
     await settings.ready;
     expect(served(settings, null)).toEqual(["Today's text.", undefined]);
@@ -282,7 +284,7 @@ describe("the variable", () => {
     const warning = vi.spyOn(process, "emitWarning").mockImplementation(() => {});
     const source = new Source({ [CHANGE]: 403 });
     source.hold();
-    const settings = new CaptureSettings("srv", source, CHANGE, 20);
+    const settings = new CaptureSettings("srv", source, CHANGE, null, 20);
     settings.start();
     await settings.ready;
     source.release();
@@ -312,6 +314,66 @@ describe("the variable", () => {
     vi.stubEnv("BATON_CANDIDATE", CHANGE);
     const settings = resolveBatonConfig({ dsn: DSN, settings: "console" }).captureSettings as any;
     expect(settings.candidate).toBe(CHANGE);
+  });
+});
+
+describe("the task id", () => {
+  const TASK = "task_1";
+  const withTask = (candidate: string | null, task: string | null) => ({ ...caller(candidate), task });
+
+  it("rides with the variable's change", async () => {
+    const settings = new CaptureSettings("srv", new Source({ [CHANGE]: CHANGED }), CHANGE, TASK);
+    settings.start();
+    await settings.ready;
+    expect(settings.forCaller(withTask(null, null))!.capture).toMatchObject({ candidate: CHANGE, task: TASK });
+  });
+
+  it("is not sent without a change", () => {
+    const settings = new CaptureSettings("srv", new Source({}), null, TASK);
+    settings.start();
+    expect(settings.forCaller(withTask(null, TASK))!.capture).not.toHaveProperty("task");
+  });
+
+  it("is not sent when the variable's change did not load", async () => {
+    vi.spyOn(process, "emitWarning").mockImplementation(() => {});
+    const settings = new CaptureSettings("srv", new Source({ [CHANGE]: 404 }), CHANGE, TASK);
+    settings.start();
+    await settings.ready;
+    expect(settings.forCaller(withTask(null, null))!.capture).not.toHaveProperty("task");
+  });
+
+  it("the header's task rides with the header's change, not the variable's task", async () => {
+    const settings = new CaptureSettings("srv", new Source({ [CHANGE]: CHANGED }), null, "task_env");
+    settings.start();
+    settings.forCaller(withTask(CHANGE, TASK));
+    await tick();
+    expect(settings.forCaller(withTask(CHANGE, TASK))!.capture).toMatchObject({ candidate: CHANGE, task: TASK });
+    expect(settings.forCaller(withTask(CHANGE, null))!.capture).not.toHaveProperty("task");
+  });
+
+  it.each([
+    ["run:7.task_1-a", "run:7.task_1-a"],
+    ["  task_1 ", "task_1"],
+    ["x".repeat(128), "x".repeat(128)],
+    ["x".repeat(129), null],
+    ["", null],
+    ["a/b", null],
+    ["a b", null],
+    [7, null],
+  ])("keeps only an id of the spec's shape: %j", (value, expected) => {
+    expect(taskId(value)).toBe(expected);
+  });
+
+  it("the header is read case-insensitively", () => {
+    expect(headerTask(new Headers({ "Baton-Task": TASK }))).toBe(TASK);
+    expect(headerTask(null)).toBeNull();
+  });
+
+  it("console settings read the variable, and drop one that cannot be an id", () => {
+    vi.stubEnv("BATON_TASK", TASK);
+    expect((resolveBatonConfig({ dsn: DSN, settings: "console" }).captureSettings as any).task).toBe(TASK);
+    vi.stubEnv("BATON_TASK", "no spaces");
+    expect((resolveBatonConfig({ dsn: DSN, settings: "console" }).captureSettings as any).task).toBeNull();
   });
 });
 
@@ -455,7 +517,7 @@ describe("over HTTP", () => {
       await tick();
       for (let i = 0; i < 2; i++) {
         const client = new Client({ name: "eval", version: "1.0.0" });
-        const headers = { "Baton-Candidate": CHANGE };
+        const headers = { "Baton-Candidate": CHANGE, "Baton-Task": "task_1" };
         await client.connect(new StreamableHTTPClientTransport(http.url, { requestInit: { headers } }) as any);
         const { tools } = await client.listTools();
         descriptions.push(tools.find((t) => t.name === "lookup")!.description!);
@@ -476,6 +538,7 @@ describe("over HTTP", () => {
     expect(descriptions.at(-1)).toBe("The change's text.");
     const ends = events.filter((e) => e.event_type === "tool_call_end");
     expect(ends.at(-1)!.capture.candidate).toBe(CHANGE);
+    expect(ends.at(-1)!.capture.task).toBe("task_1");
   });
 
   it("a prod key with the header gets today's tool list", async () => {
@@ -484,6 +547,7 @@ describe("over HTTP", () => {
     expect(descriptions).toEqual(["Today's text.", "Today's text."]);
     for (const end of events.filter((e) => e.event_type === "tool_call_end")) {
       expect(end.capture).not.toHaveProperty("candidate");
+      expect(end.capture).not.toHaveProperty("task");
     }
   });
 });

@@ -20,7 +20,7 @@ import {
 import type { ClientObserved } from "./clientObserved.js";
 import { raceDeadline, TIMED_OUT } from "../../deadline.js";
 import { warn } from "../../warn.js";
-import { type CallSettings, type CaptureSettings, headerCandidate } from "./captureSettings.js";
+import { type CallSettings, type CaptureSettings, headerCandidate, headerTask } from "./captureSettings.js";
 import {
   type AuthInfo,
   type Extra,
@@ -155,11 +155,14 @@ export async function resolveCaller(
   const caller = await resolveIdentity(hook, call);
   if (settings === undefined) return caller;
   try {
+    const headers = extraHeaders(call.extra);
+    const candidate = headerCandidate(headers);
     const callSettings = settings.forCaller({
       labels: caller.labels,
       clientName: client?.info?.name ?? null,
       shareKey: caller.principal?.id ?? null,
-      candidate: headerCandidate(extraHeaders(call.extra)),
+      candidate,
+      task: candidate === null ? null : headerTask(headers),
     });
     return callSettings === undefined ? caller : { ...caller, settings: callSettings };
   } catch {
