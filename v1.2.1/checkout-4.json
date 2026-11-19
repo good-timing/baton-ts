@@ -1,0 +1,84 @@
+{
+  "sdk": "typescript",
+  "version": "1.2.1",
+  "source": "checkout",
+  "runtime": "node 22.23.4",
+  "cpu": "AMD EPYC 9V45 96-Core Processor",
+  "max_rss_bytes": 202407936,
+  "measures": {
+    "overhead": {
+      "plain_p50_ms": 0.035482999999999265,
+      "plain_p99_ms": 0.16664199999999596,
+      "baton_p50_ms": 0.09228899999999385,
+      "baton_p99_ms": 1.0690539999999373,
+      "added_p50_ms": 0.05680599999999458,
+      "added_p99_ms": 0.9024119999999414
+    },
+    "burst": {
+      "emitted": 20400,
+      "delivered": 20400,
+      "lost": 0,
+      "close_ms": 1.7373919999999998,
+      "plain_wall_ms": 295.278456,
+      "plain_call_p50_ms": 0.23842999999999392,
+      "plain_call_p99_ms": 1.2030359999999973,
+      "wall_ms": 903.621357,
+      "call_p50_ms": 0.7114639999999781,
+      "call_p99_ms": 2.309607000000142,
+      "added_call_p50_ms": 0.4730339999999842,
+      "added_call_p99_ms": 1.1065710000001445
+    },
+    "outage_hang": {
+      "emitted": 20400,
+      "delivered": 0,
+      "lost": 20400,
+      "close_ms": 2999.4300630000002,
+      "plain_wall_ms": 300.2441869999998,
+      "plain_call_p50_ms": 0.24449000000004162,
+      "plain_call_p99_ms": 1.0692850000000362,
+      "wall_ms": 617.6617410000003,
+      "call_p50_ms": 0.5110520000002907,
+      "call_p99_ms": 1.5594340000002376,
+      "added_call_p50_ms": 0.2665620000002491,
+      "added_call_p99_ms": 0.49014900000020134
+    },
+    "outage_down": {
+      "emitted": 20400,
+      "delivered": 0,
+      "lost": 20400,
+      "close_ms": 760.332187,
+      "plain_wall_ms": 311.89985700000034,
+      "plain_call_p50_ms": 0.23886099999981525,
+      "plain_call_p99_ms": 1.1486949999998615,
+      "wall_ms": 628.1879650000001,
+      "call_p50_ms": 0.5183719999995446,
+      "call_p99_ms": 1.696179999999913,
+      "added_call_p50_ms": 0.2795109999997294,
+      "added_call_p99_ms": 0.5474850000000515
+    },
+    "memory": {
+      "heap_after_warmup_bytes": 22591160,
+      "heap_at_half_bytes": 23117000,
+      "heap_at_end_bytes": 23173368,
+      "growth_per_call_bytes": 5.6368
+    },
+    "memory_outage": {
+      "heap_after_warmup_bytes": 23324648,
+      "heap_at_half_bytes": 24544984,
+      "heap_at_end_bytes": 24517984,
+      "growth_per_call_bytes": -2.7
+    },
+    "large_result": {
+      "plain_p50_ms": 0.0290339999992284,
+      "plain_p99_ms": 0.07522299999982351,
+      "baton_p50_ms": 0.25769899999977497,
+      "baton_p99_ms": 2.268464999999196,
+      "added_p50_ms": 0.22866500000054657,
+      "added_p99_ms": 2.1932419999993726,
+      "emitted": 2200,
+      "delivered": 2200,
+      "lost": 0,
+      "heap_growth_bytes": 754376
+    }
+  }
+}
