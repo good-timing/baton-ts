@@ -1,5 +1,39 @@
 # Changelog
 
+## 1.2.2: agent_text, and your instructions kept intact
+
+### Added
+
+- **`seam_augmentations.agent_text`** in the surface snapshot (experimental,
+  SPEC §11.4.2): the Baton text the agent was shown, piece by piece, and
+  whether your settings changed it. Python already sends it.
+
+### Fixed
+
+- **Baton's paragraph in the server instructions is written once.** If you
+  add text to the instructions after install, before or after Baton's
+  paragraph, Baton no longer adds its paragraph a second time. Instructions
+  of your own that quote Baton's sentence are left as they are.
+- **A key typed in capitals is hidden in DSN errors**, as one in lower case
+  already was.
+- **The length limit names Baton's report sentence.** Its error says the
+  limit is on Baton's own sentence, not on your instructions.
+- **An empty `user_goal` in a report is sent as `null`**, as Python sends it.
+- **The report tool takes `null`** for `what_happened`,
+  `suggested_improvement` and `context`, as Python's does. An agent that
+  sends `null` no longer has its report refused by validation.
+- **On a low-level `Server`, a report-tool name clash warns at install.**
+  With `tools` given as an array, a tool with the report tool's name is found
+  then, not at the first request. The array is still read in full at the
+  first request, so tools you add before then are seen.
+- **`reportTool()` refuses a blank `vendorDisplayName`.**
+
+### Notes
+
+- Your own tests should call `handle.flush()` (or `flush()` on what
+  `createBaton()` returns) before they read your sink, because events reach
+  it after the call returns.
+
 ## 1.2.1: the test run's task id
 
 ### Added
