@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.2.1: the test run's task id
+
+### Added
+
+- **The test run's task id** (experimental, SPEC §2.6). Beside a test
+  change, a request's `Baton-Task: <id>` header, or `BATON_TASK=<id>` for the
+  whole process, puts the id on events as `capture.task`. It is sent only
+  with `capture.candidate`, and from the same place: the header's task goes
+  with the header's change, the variable's with the variable's. An id that
+  is not 1 to 128 characters from `A-Za-z0-9_.:-` is dropped without a
+  warning.
+
 ## 1.2.0: overlays and test changes by id
 
 ### Added
