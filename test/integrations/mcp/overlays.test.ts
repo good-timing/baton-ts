@@ -253,6 +253,16 @@ describe.each(MAJORS)("$label", (major) => {
     const snapshots = events.filter((e) => e.event_type === "surface_snapshot");
     expect(snapshots).toHaveLength(1);
     expect(snapshots[0]!.payload.seam_augmentations.server_overlay).toBe("ov_server_1");
+    const agentText = snapshots[0]!.payload.seam_augmentations.agent_text;
+    expect(agentText["instructions.report_pointer"]).toEqual({
+      text: "If a booking keeps failing, say so with the report tool.",
+      source: "replaced",
+    });
+    expect(agentText["instructions.subagent"]).toEqual({
+      text: `${INTENT_INSTRUCTIONS}\n\nPass the user's timezone to subagents.`,
+      source: "appended",
+    });
+    expect(agentText["report_tool.description"].source).toBe("default");
   });
 
   it("with no server overlay the snapshot sends null", async () => {

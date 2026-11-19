@@ -1,6 +1,7 @@
 /** The annotation tool as data, for a vendor offering it through its own API (SPEC §5.6). */
 
 import { isRecord } from "../_object.js";
+import { isBlank } from "../_text.js";
 import {
   ANNOTATION_INPUT_SHAPE,
   isReport,
@@ -14,7 +15,7 @@ import {
   buildAnnotationToolDescription,
   buildRefusalText,
   buildServerInstructions,
-  fitsInstructionsCap,
+  fitsBatonSentenceCap,
   USER_GOAL_PARAM_NAME,
 } from "../integrations/mcp/llmText.js";
 import { toolInputJsonSchema } from "../integrations/mcp/schemaCompat.js";
@@ -65,18 +66,21 @@ function annotateArgs(args: Readonly<Record<string, unknown>>): AnnotateOptions 
  * `vendorDisplayName`. `name` overrides the name made from it. */
 export function reportTool(options: { vendorDisplayName: string; name?: string }): ReportTool {
   const { vendorDisplayName } = options;
+  if (isBlank(vendorDisplayName)) {
+    throw new Error("vendorDisplayName is blank. Baton's report sentence names the server by it.");
+  }
   const derived = options.name ?? toolNameForDisplayName(vendorDisplayName);
   if (derived === undefined) {
     throw new Error(
       `vendorDisplayName ${JSON.stringify(vendorDisplayName)} gives no usable tool name, ` +
-        "or one too long for the instructions. Pass name.",
+        "or one too long for Baton's report sentence. Pass name.",
     );
   }
   const name = validateAnnotationToolName(derived);
-  if (!fitsInstructionsCap({ vendorDisplayName, annotationToolName: name })) {
+  if (!fitsBatonSentenceCap({ vendorDisplayName, annotationToolName: name })) {
     throw new Error(
       `vendorDisplayName and name ${JSON.stringify(name)} are too long together for ` +
-        "the instructions. Shorten one of them.",
+        "Baton's report sentence. Shorten one of them.",
     );
   }
   return {

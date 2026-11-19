@@ -404,6 +404,9 @@ describe("cross-SDK emitter conformance (Phase 3)", () => {
 
   it.each(CASES)("$name: payload matches the Python vector field-for-field", ({ name }) => {
     const event = JSON.parse(JSON.stringify(emitted.get(name)!)) as Record<string, unknown>;
+    // The vectors leave out what not every producer sends yet (SPEC §11.4.6).
+    delete ((event.payload as Record<string, unknown>).seam_augmentations as Record<string, unknown> | undefined)
+      ?.agent_text;
     const emittedPayload = withoutNulls(event.payload as Record<string, unknown>);
     const referencePayload = withoutNulls(
       vector(name).payload as Record<string, unknown>,
@@ -461,6 +464,16 @@ describe("cross-SDK emitter conformance (Phase 3)", () => {
       // which grew `soft_fail` in the same change (`baton-spec` f1e0280).
       const tools = snapshot.payload.tools as Array<{ name: string }>;
       expect(tools.map((t) => t.name)).toEqual(["boom", "lookup", "soft_fail"]);
+      const agentText = (snapshot.payload.seam_augmentations as { agent_text: Record<string, { source: string }> })
+        .agent_text;
+      expect(Object.keys(agentText).sort()).toEqual([
+        "goal_param.description",
+        "instructions.report_pointer",
+        "instructions.subagent",
+        "report_tool.description",
+        "report_tool.refusal",
+      ]);
+      expect(new Set(Object.values(agentText).map((piece) => piece.source))).toEqual(new Set(["default"]));
     }
   });
 

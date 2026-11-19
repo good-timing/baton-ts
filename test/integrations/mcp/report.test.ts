@@ -161,6 +161,32 @@ describe.each(MAJORS)("reports on $label", (major) => {
     expect(annotations(sink)[0]!.payload.tool_name).toBeNull();
   });
 
+  it("sends an empty user_goal as null", async () => {
+    const { sink, annotate } = await connected();
+    expect(await annotate({ user_goal: "", what_happened: "it failed" })).toEqual({ ok: true });
+    expect(annotations(sink)[0]!.payload.intent).toBeNull();
+  });
+
+  it("takes a report whose agent sends null for the optional fields", async () => {
+    const { sink, annotate } = await connected();
+    expect(
+      await annotate({
+        user_goal: "look something up",
+        what_happened: "it failed",
+        tool_name: null,
+        suggested_improvement: null,
+        context: null,
+      }),
+    ).toEqual({ ok: true });
+    expect(annotations(sink)[0]!.payload).toMatchObject({ suggested_improvement: null, context: null });
+  });
+
+  it("refuses a report whose what_happened is null, as one left out", async () => {
+    const { sink, annotate } = await connected();
+    expect((await annotate({ user_goal: "look something up", what_happened: null })).ok).toBe(false);
+    expect(annotations(sink)).toHaveLength(0);
+  });
+
   it("takes a stale client's report that still sends the retired fields", async () => {
     const { sink, client, name } = await connected();
     const result = await client.callTool({

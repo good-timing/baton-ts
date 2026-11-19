@@ -354,6 +354,7 @@ describe("what it refuses", () => {
     ["publishable", KEY],
     ["test", TEST_KEY],
     ["old", OLD_KEY],
+    ["test in capitals", TEST_KEY.toUpperCase()],
   ])("a %s key", (_kind, key) => {
     it.each(credentialCases)(
       "never repeats the credential: %s",

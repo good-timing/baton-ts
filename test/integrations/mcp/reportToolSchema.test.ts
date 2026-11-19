@@ -19,6 +19,11 @@ function emptySchemas(schema: unknown, path = "$"): string[] {
   return Object.entries(schema).flatMap(([key, value]) => emptySchemas(value, `${path}.${key}`));
 }
 
+/** `context`'s object branch: the field is nullable, so it is `anyOf` an object and null. */
+function contextObject(schema: any): any {
+  return schema?.properties?.context?.anyOf?.find((branch: any) => branch.type === "object");
+}
+
 function mcpServer(major: Major): any {
   const server = major.make();
   major.tool(server, "lookup", { name: z.string() }, () => ({ content: [] }));
@@ -42,14 +47,14 @@ describe.each(MAJORS)("the report tool's input schema ($label)", (major) => {
     const { tools } = await client.listTools();
     await client.close();
     const schema = tools.find((tool: any) => tool.name === annotationToolName)?.inputSchema;
-    expect(schema?.properties?.context?.additionalProperties).toBe(true);
+    expect(contextObject(schema)?.additionalProperties).toBe(true);
     expect(emptySchemas(schema)).toEqual([]);
   });
 });
 
 it("the library report tool's input schema has no empty subschema", () => {
   const schema = reportTool({ vendorDisplayName: "Acme" }).inputSchema as any;
-  expect(schema.properties.context.additionalProperties).toBe(true);
+  expect(contextObject(schema)?.additionalProperties).toBe(true);
   expect(emptySchemas(schema)).toEqual([]);
 });
 

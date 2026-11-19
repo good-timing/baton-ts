@@ -11,6 +11,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { Client, SinkClosedError, withBaton, type Event, type Sink } from "../../src/index.js";
 import { SENT_SURFACES_CAP } from "../../src/integrations/mcp/surface.js";
+import { buildUserGoalParamDescription } from "../../src/integrations/mcp/llmText.js";
 import { PROCESS_DROPS } from "../../src/drops.js";
 
 class CollectingSink implements Sink {
@@ -147,6 +148,26 @@ describe("Client.listTools", () => {
       },
     });
     expect(snapshot!.payload.surface_hash).toMatch(/^sha256:[0-9a-f]{64}$/);
+  });
+
+  it("sends agent_text with the vendor's pieces null, as the vendor serves them", async () => {
+    const { sink, client } = setup();
+    await client.listTools(TOOLS);
+    const [snapshot] = await snapshots(client, sink);
+    expect(snapshot!.payload.seam_augmentations.agent_text).toEqual({
+      "goal_param.description": { text: buildUserGoalParamDescription({ intentParamMode: "required" }), source: "default" },
+      "instructions.subagent": null,
+      "instructions.report_pointer": null,
+      "report_tool.description": null,
+      "report_tool.refusal": null,
+    });
+  });
+
+  it("sends no goal_param.description when every tool declares its own user_goal", async () => {
+    const { sink, client } = setup();
+    await client.listTools([{ name: "plan", inputSchema: { type: "object", properties: { user_goal: { type: "string" } } } }]);
+    const [snapshot] = await snapshots(client, sink);
+    expect(snapshot!.payload.seam_augmentations.agent_text).not.toHaveProperty("goal_param.description");
   });
 
   it("sends one snapshot for the same tools and does not change the input", async () => {

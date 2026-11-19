@@ -40,7 +40,7 @@
 
 import { stripEdges } from "../../_text.js";
 import { warn } from "../../warn.js";
-import { fitsInstructionsCap } from "./llmText.js";
+import { fitsBatonSentenceCap } from "./llmText.js";
 
 /** The strictest known client pattern (Claude Desktop): dots, slashes and
  * other separators are rejected. One copy, for the explicit name and the
@@ -50,9 +50,9 @@ export const TOOL_NAME_PATTERN = /^[a-zA-Z0-9_-]{1,64}$/;
 const SUFFIX = "_annotate";
 
 /** Cap on the SLUG, and the binding constraint is not the pattern's 64: the
- * tool name shares the instructions budget with the display name, so a longer
+ * tool name shares the report-sentence budget with the display name, so a longer
  * one buys a shorter legal display name. Python's number, kept identical. The
- * cap is not the safety property; `fitsInstructionsCap` is. */
+ * cap is not the safety property; `fitsBatonSentenceCap` is. */
 export const SLUG_CAP = 30;
 
 /** What a library calls a server nobody named. These two are Python's: its
@@ -138,7 +138,7 @@ export function slugServerName(serverName: string): string | undefined {
 }
 
 /** `{slug}_annotate` from a vendor-chosen name, pattern-checked, or
- * `undefined`. Not yet checked against the instructions budget: the display
+ * `undefined`. Not yet checked against the report-sentence budget: the display
  * name is rendered beside this candidate before the tool name's own check. */
 function toolNameCandidate(serverName: string): string | undefined {
   const slug = slugServerName(serverName);
@@ -165,10 +165,10 @@ export function displayNameFromServer(
   if (serverName === undefined) return undefined;
   const proposed =
     tool.annotationToolName || toolNameCandidate(serverName) || `${tool.vendorId}${SUFFIX}`;
-  if (!fitsInstructionsCap({ vendorDisplayName: serverName, annotationToolName: proposed })) {
+  if (!fitsBatonSentenceCap({ vendorDisplayName: serverName, annotationToolName: proposed })) {
     warn(
       `baton: the server name (${serverName.length} chars) does not fit the ` +
-        "server-instructions budget as the display name beside the annotation " +
+        "budget of Baton's report sentence as the display name beside the annotation " +
         `tool ${JSON.stringify(proposed)}; keeping the DSN's server segment. ` +
         "Pass vendorDisplayName to name the server in fewer characters.",
     );
@@ -193,10 +193,10 @@ export function annotationToolNameFromServer(
   if (serverName === undefined) return undefined;
   const candidate = toolNameCandidate(serverName);
   if (candidate === undefined) return undefined;
-  if (!fitsInstructionsCap({ vendorDisplayName, annotationToolName: candidate })) {
+  if (!fitsBatonSentenceCap({ vendorDisplayName, annotationToolName: candidate })) {
     warn(
       `baton: the server-derived annotation tool name ${JSON.stringify(candidate)} ` +
-        "does not fit the server-instructions budget beside the display name " +
+        "does not fit the budget of Baton's report sentence beside the display name " +
         `(${vendorDisplayName.length} chars); keeping {vendorId}_annotate. ` +
         "A shorter display name gets the readable one.",
     );
@@ -211,7 +211,7 @@ export function toolNameForDisplayName(vendorDisplayName: string): string | unde
   if (isPlaceholderLiteral(vendorDisplayName)) return undefined;
   const candidate = toolNameCandidate(vendorDisplayName);
   return candidate !== undefined &&
-    fitsInstructionsCap({ vendorDisplayName, annotationToolName: candidate })
+    fitsBatonSentenceCap({ vendorDisplayName, annotationToolName: candidate })
     ? candidate
     : undefined;
 }

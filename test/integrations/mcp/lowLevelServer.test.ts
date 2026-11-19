@@ -797,4 +797,27 @@ describe.each(MAJORS)("$label: a low-level Server", (major) => {
     expect(client.getInstructions() ?? "").not.toContain(reportName);
     expect(client.getInstructions()).toContain("subagent");
   });
+
+  it("warns at install when a given tool has the report tool's name, past one it cannot read", () => {
+    const reportName = withBaton(lowLevelServer(major).server, { ...CFG, sink: new CapturingSink(), reportMode: "on" })
+      .annotationToolName;
+    const unreadable = {
+      get name(): string {
+        throw new Error("no");
+      },
+    };
+    const tools = [unreadable, { name: reportName, inputSchema: { type: "object", properties: {} } }];
+    const warned = stderrLines();
+    withBaton(lowLevelServer(major).server, { ...CFG, sink: new CapturingSink(), reportMode: "on", tools });
+    expect(warned("lists its own tool")).toHaveLength(1);
+  });
+
+  it("reads a tool added to the given list after install", async () => {
+    const tools: { name: string; inputSchema: Record<string, unknown> }[] = [];
+    const vendor = lowLevelServer(major);
+    withBaton(vendor.server, { ...CFG, sink: new CapturingSink(), tools });
+    tools.push({ name: "lookup", inputSchema: { type: "object", properties: { user_goal: { type: "string" } } } });
+    await dispatch(vendor.server, "tools/call", { name: "lookup", arguments: { name: "alice", user_goal: GOAL } });
+    expect(vendor.received).toEqual([{ name: "alice", user_goal: GOAL }]);
+  });
 });

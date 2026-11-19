@@ -39,10 +39,10 @@ import type { SessionCounter } from "./sessionCounter.js";
  * rather than passing silently. */
 interface AnnotationArgs extends Record<string, unknown> {
   user_goal: string;
-  what_happened?: string | undefined;
+  what_happened?: string | null | undefined;
   tool_name?: string | null | undefined;
-  suggested_improvement?: string | undefined;
-  context?: Record<string, unknown> | undefined;
+  suggested_improvement?: string | null | undefined;
+  context?: Record<string, unknown> | null | undefined;
 }
 
 export interface RegisterAnnotationToolOptions {
@@ -68,13 +68,13 @@ export const TOOL_NAME_PARAM_NAME = "tool_name";
 
 export const ANNOTATION_INPUT_SHAPE = {
   user_goal: z.string(),
-  what_happened: z.string().optional(),
   // Nullable so a report whose agent sends an explicit null is taken,
   // not rejected by validation.
+  what_happened: z.string().nullable().optional(),
   tool_name: z.string().nullable().optional(),
-  suggested_improvement: z.string().optional(),
+  suggested_improvement: z.string().nullable().optional(),
   // zod renders "any value" as `{}`, which some MCP clients refuse (reportToolSchema.test.ts).
-  context: z.record(z.string(), z.unknown()).meta({ additionalProperties: true }).optional(),
+  context: z.record(z.string(), z.unknown()).meta({ additionalProperties: true }).nullable().optional(),
 };
 
 /** SPEC §11.4: an annotation is a report when its account is filled. */
@@ -209,7 +209,7 @@ export function buildAnnotationTool(
           payload: {
             // The agent-facing `user_goal` is stored as the wire key `intent`.
             // eslint-disable-next-line no-restricted-syntax -- inside the emit() build thunk: a throw is already contained, and null here would fabricate a shape
-            intent: options.scrubber(args.user_goal),
+            intent: args.user_goal ? options.scrubber(args.user_goal) : null,
             // eslint-disable-next-line no-restricted-syntax -- inside the emit() build thunk: a throw is already contained, and null here would fabricate a shape
             what_happened: options.scrubber(whatHappened),
             // eslint-disable-next-line no-restricted-syntax -- inside the emit() build thunk: a throw is already contained, and null here would fabricate a shape

@@ -39,6 +39,18 @@ export function takesUserGoalJson(schema: Record<string, unknown>): boolean {
   return isRecord(properties) && !ROOT_COMBINERS.some((key) => key in schema);
 }
 
+/** Which of Baton's `user_goal` texts the vendor-true `tools` are served with
+ * (SPEC §11.4.2): the subagent sentence unless a tool declares its own, and
+ * the param's description if Baton adds it to any tool. */
+export function goalTextsServed(tools: unknown): { goalParamServed: boolean; subagentServed: boolean } {
+  const schemas = Array.isArray(tools) ? tools.map((tool) => (isRecord(tool) ? tool.inputSchema : undefined)) : [];
+  const native = schemas.map((schema) => declaresParam(schema, USER_GOAL_PARAM_NAME));
+  return {
+    goalParamServed: schemas.some((schema, i) => isRecord(schema) && !native[i] && takesUserGoalJson(schema)),
+    subagentServed: !native.some(Boolean),
+  };
+}
+
 /** `schema` with `user_goal` added as `injectGoalParams` adds it to a zod one.
  * A schema that declares its own, or that `takesUserGoalJson` refuses, is
  * returned as it is. */

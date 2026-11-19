@@ -15,7 +15,7 @@
 
 import { isBlank } from "../../_text.js";
 import { stderrLine } from "../../warn.js";
-import { type Overlay, overlaid } from "./overlays.js";
+import { changedText, INSTRUCTION_PIECES, type Overlay, overlaid, type TextSource } from "./overlays.js";
 
 // Holds no report rule: each is written once, in the report tool's description.
 const REPORT_POINTER_TEMPLATE = (vendorDisplayName: string, annotationToolName: string) =>
@@ -54,7 +54,7 @@ request also missing_capability_field and requested_capability.`;
 // Where Claude Code truncates InitializeResult.instructions. The cap below it
 // leaves room for the fixed subagent sentence.
 const CLAUDE_CODE_TRUNCATION_CAP = 2087;
-const INSTRUCTIONS_LENGTH_CAP = 1500;
+const BATON_SENTENCE_LENGTH_CAP = 1500;
 
 interface InstructionNames {
   vendorDisplayName: string;
@@ -71,16 +71,16 @@ export function buildReportPointer(options: InstructionNames): string {
  * count and the cap both live here. Used by
  * `annotationName.ts` to keep a name derived from the server only where it
  * fits. */
-export function fitsInstructionsCap(options: InstructionNames): boolean {
-  return buildReportPointer(options).length <= INSTRUCTIONS_LENGTH_CAP;
+export function fitsBatonSentenceCap(options: InstructionNames): boolean {
+  return buildReportPointer(options).length <= BATON_SENTENCE_LENGTH_CAP;
 }
 
 export function buildServerInstructions(options: InstructionNames): string {
   const rendered = buildReportPointer(options);
-  if (rendered.length > INSTRUCTIONS_LENGTH_CAP) {
+  if (rendered.length > BATON_SENTENCE_LENGTH_CAP) {
     throw new Error(
-      `Rendered server instructions are ${rendered.length} chars, which exceeds ` +
-        `the ${INSTRUCTIONS_LENGTH_CAP}-char safety cap (Claude Code truncates at ` +
+      `Baton's report sentence would be ${rendered.length} chars, over its ` +
+        `${BATON_SENTENCE_LENGTH_CAP}-char limit (Claude Code cuts server instructions at ` +
         `~${CLAUDE_CODE_TRUNCATION_CAP}). Shorten vendorDisplayName or annotationToolName.`,
     );
   }
@@ -198,6 +198,43 @@ export function mayDeclareParam(schema: unknown, name: string): boolean {
   return walk(schema);
 }
 
+const VENDOR_SERVED_PIECES = [...INSTRUCTION_PIECES, "report_tool.description", "report_tool.refusal"];
+
+/** `seam_augmentations.agent_text` (SPEC §11.4.2): Baton's own text as
+ * served, after `serverOverlay`. A piece not served is absent. With
+ * `vendorServesText` the instructions and report tool are the vendor's to
+ * serve, so their pieces are null. */
+export function servedAgentText(options: {
+  reportNames: InstructionNames | undefined;
+  intentParamMode: string;
+  goalParamServed: boolean;
+  subagentServed: boolean;
+  serverOverlay?: Overlay | undefined;
+  vendorServesText?: boolean;
+}): Record<string, { text: string; source: TextSource } | null> {
+  const served: Record<string, string> = {};
+  if (options.subagentServed) served["instructions.subagent"] = INTENT_INSTRUCTIONS;
+  if (options.goalParamServed) {
+    served["goal_param.description"] = buildUserGoalParamDescription({ intentParamMode: options.intentParamMode });
+  }
+  if (options.reportNames !== undefined) {
+    served["instructions.report_pointer"] = buildReportPointer(options.reportNames);
+    served["report_tool.description"] = buildAnnotationToolDescription(options.reportNames);
+    served["report_tool.refusal"] = buildRefusalText({ annotationToolName: options.reportNames.annotationToolName });
+  }
+  const pieces: Record<string, { text: string; source: TextSource } | null> = {};
+  for (const [piece, text] of Object.entries(served)) {
+    if (options.serverOverlay !== undefined && INSTRUCTION_PIECES.includes(piece)) {
+      const changed = changedText(text, options.serverOverlay.pieceActions(piece));
+      pieces[piece] = { text: changed.text ?? text, source: changed.source };
+    } else {
+      pieces[piece] = { text, source: "default" };
+    }
+  }
+  if (options.vendorServesText) for (const piece of VENDOR_SERVED_PIECES) pieces[piece] = null;
+  return pieces;
+}
+
 /** Whether Baton's text is in the served instructions. Without the annotation
  * tool it is only the subagent sentence, which a tool declaring its own
  * `user_goal` removes. */
@@ -240,8 +277,22 @@ function joined(vendor: unknown, ours: string): string {
 function vendorText(holder: InstructionsHolder): string | undefined {
   const current = holder._instructions;
   const written = holder[OURS];
+  if (written === undefined) return current;
   const vendor = VENDOR_INSTRUCTIONS in holder ? holder[VENDOR_INSTRUCTIONS] : current;
-  return written !== undefined && current === joined(vendor, written) ? vendor : current;
+  if (current === joined(vendor, written)) return vendor;
+  return withoutOurs(current, written) ?? current;
+}
+
+/** `current` with our paragraphs cut out, when the vendor added paragraphs
+ * around them. The last copy is ours: we write below the vendor. */
+function withoutOurs(current: string | undefined, ours: string): string | undefined {
+  if (!ours || typeof current !== "string") return undefined;
+  const at = current.lastIndexOf(ours);
+  if (at < 0) return undefined;
+  const before = current.slice(0, at);
+  const after = current.slice(at + ours.length);
+  if ((before && !before.endsWith("\n\n")) || (after && !after.startsWith("\n\n"))) return undefined;
+  return joined(before.slice(0, -2), after.slice(2));
 }
 
 /** Write `ours` below the vendor's instructions (SPEC §5.1.2). `subagent` is
@@ -274,9 +325,7 @@ export function removeSubagentClause(
   const holder = server as InstructionsHolder;
   const ours = holder[OURS];
   const subagent = holder[SUBAGENT];
-  if (ours === undefined || !subagent || holder._instructions !== joined(holder[VENDOR_INSTRUCTIONS], ours)) {
-    return false;
-  }
+  if (ours === undefined || !subagent || vendorText(holder) === holder._instructions) return false;
   const kept = ours.slice(0, ours.length - subagent.length);
   writeOurs(server, kept.endsWith("\n\n") ? kept.slice(0, -2) : kept, null, write, warn);
   return true;

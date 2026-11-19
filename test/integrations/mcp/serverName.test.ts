@@ -33,7 +33,7 @@ import {
 import {
   buildServerInstructions,
   INSTRUCTIONS_SUBAGENT_CLAUSE,
-  fitsInstructionsCap,
+  fitsBatonSentenceCap,
 } from "../../../src/integrations/mcp/llmText.js";
 
 const KEY = "baton_pk_" + "a".repeat(43);
@@ -277,7 +277,7 @@ describe("the instructions cap", () => {
   it("still throws on text over the cap: the budget is real", () => {
     expect(() =>
       buildServerInstructions({ vendorDisplayName: "x".repeat(1500), annotationToolName: "t" }),
-    ).toThrow(/exceeds the 1500-char safety cap/);
+    ).toThrow(/over its 1500-char limit/);
   });
 
   it("drops a display name too long to fit and keeps the derived tool name", () => {
@@ -287,7 +287,7 @@ describe("the instructions cap", () => {
     expect(s.instructions).toMatch(new RegExp(`^Use \`[^\`]*\` to report a ${SEGMENT} tool call`));
     expect(s.handleToolName).toBe(`${"x".repeat(30)}_annotate`);
     expect(budgeted(s.instructions)).toBeLessThanOrEqual(CAP);
-    expect(warnings.join("\n")).toMatch(/does not fit the server-instructions budget as the display name/);
+    expect(warnings.join("\n")).toMatch(/does not fit the budget of Baton's report sentence as the display name/);
   });
 
   it("gives the readable name to the TOOL when only one of the two fits", () => {
@@ -298,8 +298,8 @@ describe("the instructions cap", () => {
     let tie = 0;
     for (let n = 31; n <= 1500 && tie === 0; n++) {
       const name = "q".repeat(n);
-      const both = fitsInstructionsCap({ vendorDisplayName: name, annotationToolName: readable(n) });
-      const displayOnly = fitsInstructionsCap({
+      const both = fitsBatonSentenceCap({ vendorDisplayName: name, annotationToolName: readable(n) });
+      const displayOnly = fitsBatonSentenceCap({
         vendorDisplayName: name,
         annotationToolName: `${SEGMENT}_annotate`,
       });

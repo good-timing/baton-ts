@@ -14,6 +14,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { z } from "zod";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { withBaton } from "../../../src/integrations/mcp/withBaton.js";
+import { buildUserGoalParamDescription, INTENT_INSTRUCTIONS } from "../../../src/integrations/mcp/llmText.js";
 import { HOOK_TIMEOUT_MS } from "../../../src/integrations/mcp/principalResolution.js";
 import { CLIENT_INFO_META_KEY } from "../../../src/integrations/mcp/clientObserved.js";
 import type { BatonConfig } from "../../../src/integrations/mcp/config.js";
@@ -931,7 +932,29 @@ describe("withBaton — surface_snapshot", () => {
         mode: "required",
       },
       instructions_suffix: true,
+      agent_text: {
+        "instructions.subagent": { text: INTENT_INSTRUCTIONS, source: "default" },
+        "goal_param.description": {
+          text: buildUserGoalParamDescription({ intentParamMode: "required" }),
+          source: "default",
+        },
+      },
     });
+  });
+
+  it("sends neither the subagent sentence nor the goal param text when the only tool declares user_goal", async () => {
+    const server = new McpServer({ name: "vendor", version: "1.0.0" });
+    server.registerTool(
+      "plan",
+      { inputSchema: { user_goal: z.string(), step: z.string() } },
+      async () => ({ content: [{ type: "text" as const, text: "ok" }] }),
+    );
+    withBaton(server, { vendorId: "acme", vendorDisplayName: "Acme", consentToken: "ct", sink });
+    const client = await connectClient(server);
+    await client.callTool({ name: "plan", arguments: { user_goal: "1: plan", step: "a" } });
+
+    const snapshot = sink.events.find((e) => e.event_type === "surface_snapshot")!;
+    expect(snapshot.payload.seam_augmentations.agent_text).toEqual({});
   });
 
   it("emits exactly once per observed hash, not once per call", async () => {

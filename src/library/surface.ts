@@ -2,8 +2,8 @@
  * its agents, and the `surface_snapshot` of the list it started from (SPEC
  * §5.6, §11.4.2). */
 
-import { requiredParamNames, USER_GOAL_PARAM_NAME } from "../integrations/mcp/llmText.js";
-import { DEFAULT_INTENT_PARAM_MODE, withUserGoalJson } from "../integrations/mcp/schemaCompat.js";
+import { requiredParamNames, servedAgentText, USER_GOAL_PARAM_NAME } from "../integrations/mcp/llmText.js";
+import { DEFAULT_INTENT_PARAM_MODE, goalTextsServed, withUserGoalJson } from "../integrations/mcp/schemaCompat.js";
 import { assembleSurface, buildSeamAugmentations, surfaceHash, type ServerMeta } from "../integrations/mcp/surface.js";
 import { printable, stderrLine } from "../warn.js";
 import { isRecord } from "../_object.js";
@@ -67,6 +67,12 @@ export function snapshotPayload({ surface, digest }: Surface): Record<string, un
       intentParamMode: DEFAULT_INTENT_PARAM_MODE,
       requiredParamNames: requiredParamNames(DEFAULT_INTENT_PARAM_MODE),
       instructionsSuffix: null,
+      agentText: servedAgentText({
+        reportNames: undefined,
+        intentParamMode: DEFAULT_INTENT_PARAM_MODE,
+        ...goalTextsServed(surface.tools),
+        vendorServesText: true,
+      }),
     }),
   };
 }

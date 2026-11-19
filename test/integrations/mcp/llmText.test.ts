@@ -11,14 +11,18 @@ import { describe, expect, it, vi } from "vitest";
 import vectors from "./llmTextVectors.json" with { type: "json" };
 import {
   buildAnnotationToolDescription,
+  buildReportPointer,
   buildServerInstructions,
   buildUserGoalParamDescription,
   INSTRUCTIONS_SUBAGENT_CLAUSE,
   INTENT_INSTRUCTIONS,
+  removeSubagentClause,
   requiredParamNames,
+  servedAgentText,
   withVendorInstructions,
   writeOurs,
 } from "../../../src/integrations/mcp/llmText.js";
+import { Overlay } from "../../../src/integrations/mcp/overlays.js";
 
 // The retired agent-facing names. They still appear across the codebase, as
 // wire keys or as names a stale client may send — but never in text an agent
@@ -171,6 +175,57 @@ describe("withVendorInstructions", () => {
     );
   });
 
+  it("keeps vendor text added after our paragraph once", () => {
+    const server: { _instructions?: string } = { _instructions: "Vendor." };
+    install(server, ours);
+    server._instructions += "\n\nAppended.";
+    install(server, ours);
+    expect(server._instructions).toBe(`Vendor.\n\nAppended.\n\n${ours}`);
+  });
+
+  it("keeps vendor text added before our paragraph once", () => {
+    const server: { _instructions?: string } = {};
+    install(server, ours);
+    server._instructions = `Prepended.\n\n${server._instructions}`;
+    install(server, ours);
+    expect(server._instructions).toBe(`Prepended.\n\n${ours}`);
+  });
+
+  it("removes the subagent sentence after the vendor appended text", () => {
+    const server: { _instructions?: string } = { _instructions: "Vendor." };
+    const pointer = buildServerInstructions({ vendorDisplayName: "Acme", annotationToolName: "acme_annotate" });
+    writeOurs(server, `${pointer}\n\n${ours}`, ours, (written) => {
+      server._instructions = written;
+    });
+    server._instructions += "\n\nAppended.";
+    const write = (written: string): void => {
+      server._instructions = written;
+    };
+    expect(removeSubagentClause(server, write)).toBe(true);
+    expect(server._instructions).toBe(`Vendor.\n\nAppended.\n\n${pointer}`);
+  });
+
+  it("leaves a copy of our sentence inside vendor text alone", () => {
+    const server: { _instructions?: string } = {};
+    writeOurs(server, ours, ours, (written) => {
+      server._instructions = written;
+    });
+    server._instructions = `Vendor quotes: ${ours}`;
+    const write = (written: string): void => {
+      server._instructions = written;
+    };
+    expect(removeSubagentClause(server, write)).toBe(false);
+    expect(server._instructions).toBe(`Vendor quotes: ${ours}`);
+  });
+
+  it("takes the last copy as ours", () => {
+    const server: { _instructions?: string } = {};
+    install(server, ours);
+    server._instructions = `${ours}\n\nVendor.\n\n${ours}`;
+    install(server, ours);
+    expect(server._instructions).toBe(`${ours}\n\nVendor.\n\n${ours}`);
+  });
+
   describe("a vendor paragraph that opens like our report pointer", () => {
     const pointer = buildServerInstructions({
       vendorDisplayName: "Acme",
@@ -207,5 +262,41 @@ describe("withVendorInstructions", () => {
     } finally {
       write.mockRestore();
     }
+  });
+});
+
+describe("servedAgentText", () => {
+  const reportNames = { vendorDisplayName: "Acme", annotationToolName: "acme_annotate" };
+
+  it("marks an instructions piece the server overlay changed, and only that one", () => {
+    const overlay = new Overlay("o1", [
+      { index: 0, change: "append", text: "Extra.", piece: "instructions.report_pointer" },
+      { index: 1, change: "replace", text: "Other.", piece: "report_tool.description" },
+    ]);
+    const pieces = servedAgentText({
+      reportNames,
+      intentParamMode: "required",
+      goalParamServed: false,
+      subagentServed: true,
+      serverOverlay: overlay,
+    });
+    expect(pieces["instructions.report_pointer"]).toEqual({
+      text: `${buildReportPointer(reportNames)}\n\nExtra.`,
+      source: "appended",
+    });
+    expect(pieces["report_tool.description"]?.source).toBe("default");
+    expect(pieces["instructions.subagent"]).toEqual({ text: INTENT_INSTRUCTIONS, source: "default" });
+    expect(pieces).not.toHaveProperty("goal_param.description");
+  });
+
+  it("leaves out the report pieces when the report tool is off", () => {
+    const pieces = servedAgentText({
+      reportNames: undefined,
+      intentParamMode: "optional",
+      goalParamServed: true,
+      subagentServed: false,
+    });
+    expect(Object.keys(pieces)).toEqual(["goal_param.description"]);
+    expect(pieces["goal_param.description"]?.text).toBe(buildUserGoalParamDescription({ intentParamMode: "optional" }));
   });
 });

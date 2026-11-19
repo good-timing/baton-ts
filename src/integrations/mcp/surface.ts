@@ -115,6 +115,7 @@ export function buildSeamAugmentations(options: {
   /** Whether Baton's text reached the served instructions; `null` when the
    * producer cannot tell. */
   instructionsSuffix: boolean | null;
+  agentText: Record<string, unknown>;
 }): Record<string, unknown> {
   return {
     injected_tools: [...options.injectedToolNames].sort(),
@@ -124,5 +125,6 @@ export function buildSeamAugmentations(options: {
       mode: options.intentParamMode,
     },
     instructions_suffix: options.instructionsSuffix,
+    agent_text: options.agentText,
   };
 }

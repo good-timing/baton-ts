@@ -165,6 +165,7 @@ import {
   INTENT_INSTRUCTIONS,
   INTENT_SOURCE_PARAM,
   instructionsSuffixServed,
+  servedAgentText,
   mayDeclareParam,
   RETIRED_PARAM_NAMES,
   requiredParamNames,
@@ -198,6 +199,7 @@ import {
   type IntentParamDispositions,
   type IntentParamMode,
   DEFAULT_INTENT_PARAM_MODE,
+  goalTextsServed,
   takesUserGoalJson,
   withUserGoalJson,
   standardInputJsonSchema,
@@ -224,6 +226,8 @@ interface WrapContext {
   server: SupportedServer;
   scrubber: (value: unknown) => unknown;
   annotationToolName: string;
+  /** The report tool's names, read live; `undefined` when it is off. */
+  reportNames: () => { vendorDisplayName: string; annotationToolName: string } | undefined;
   intentParamMode: IntentParamMode;
   /** The config's `resultCaptureMode` (SPEC §11.4), validated once at the
    * config door. A call runs under the one `openCall` returns, which Console
@@ -956,6 +960,12 @@ async function maybeEmitSurfaceSnapshot(ctx: WrapContext): Promise<void> {
     intentParamMode: ctx.intentParamMode,
     requiredParamNames: requiredParamNames(ctx.intentParamMode),
     instructionsSuffix: instructionsSuffixServed(ctx.annotationToolName, ctx.servedInstructions()),
+    agentText: servedAgentText({
+      reportNames: ctx.reportNames(),
+      intentParamMode: ctx.intentParamMode,
+      ...goalTextsServed(snapshot.tools),
+      serverOverlay: ctx.perCaller?.serverOverlay,
+    }),
   });
   // SPEC §11.4.2: present only from a producer that applies overlays.
   if (ctx.captureSettings !== undefined) seam.server_overlay = overlayId;
@@ -1179,7 +1189,7 @@ function installLowLevelToolSeams(
   warnOnce: (key: string, message: string) => void,
   /** The vendor lists a tool with the report tool's name: drop the pointer to it. */
   reportToolTaken: () => void,
-): void {
+): () => void {
   let reportTool = annotationTool;
   const listedReportTool = reportTool && {
     name: reportTool.name,
@@ -1214,17 +1224,24 @@ function installLowLevelToolSeams(
     }
   };
 
+  const leaveReportNameToVendor = (name: string): void => {
+    warnOnce(
+      "report-tool-name-taken",
+      `baton: the server lists its own tool ${JSON.stringify(name)}, so Baton's report ` +
+        "tool is not added; set annotationToolName to another name",
+    );
+    reportTool = undefined;
+    ctx.annotationToolName = "";
+    reportToolTaken();
+  };
+
+  const takeReportNameIfListed = (tools: ToolInfo[]): void => {
+    const name = reportTool?.name;
+    if (name !== undefined && tools.some((tool) => tool.name === name)) leaveReportNameToVendor(name);
+  };
+
   const read = (tools: ToolInfo[], { surface }: ReadOptions): void => {
-    if (surface && reportTool !== undefined && tools.some((tool) => tool.name === reportTool?.name)) {
-      warnOnce(
-        "report-tool-name-taken",
-        `baton: the server lists its own tool ${JSON.stringify(reportTool.name)}, so Baton's report ` +
-          "tool is not added; set annotationToolName to another name",
-      );
-      reportTool = undefined;
-      ctx.annotationToolName = "";
-      reportToolTaken();
-    }
+    if (surface) takeReportNameIfListed(tools);
     readToolList(tools, ctx, surface, skipNote);
   };
 
@@ -1341,6 +1358,13 @@ function installLowLevelToolSeams(
     }
     return batonWrap({ current: name }, () => handler(...args), ctx, unlisted, slot?.caller)(toolArgs, args[1]);
   });
+
+  // A given list is checked for the report tool's name at install, so the
+  // clash is reported then. It is read in full at the first request, since the
+  // vendor may add to it before then.
+  return () => {
+    if (Array.isArray(known.given)) takeReportNameIfListed(toolInfos(known.given, () => {}));
+  };
 }
 
 /** v2's `Protocol` has the result-validation hook; 1.x's has not. */
@@ -2630,6 +2654,10 @@ function install(
     server,
     scrubber,
     annotationToolName,
+    reportNames: () =>
+      reports && ctx.annotationToolName
+        ? { vendorDisplayName: reports.vendorDisplayName, annotationToolName: ctx.annotationToolName }
+        : undefined,
     intentParamMode,
     configResultCaptureMode: config.resultCaptureMode ?? "full",
     paramRegistry: new Map(),
@@ -2665,10 +2693,10 @@ function install(
       get annotationToolName() {
         return ctx.annotationToolName;
       },
-      pointer: () =>
-        reports && ctx.annotationToolName
-          ? buildReportPointer({ vendorDisplayName: reports.vendorDisplayName, annotationToolName: ctx.annotationToolName })
-          : undefined,
+      pointer: () => {
+        const names = ctx.reportNames();
+        return names && buildReportPointer(names);
+      },
       writeInstructions,
       subagentLine: () => ![...ctx.paramRegistry.values()].some((d) => d[USER_GOAL_PARAM_NAME] === "native"),
       injectsGoal: (name) => ctx.paramRegistry.get(name)?.[USER_GOAL_PARAM_NAME] === "injected",
@@ -2694,8 +2722,9 @@ function install(
   };
 
   // Innermost, so every seam below sees the list with Baton's additions.
+  let checkGivenTools: (() => void) | undefined;
   if (shape === "lowLevel") {
-    installLowLevelToolSeams(
+    checkGivenTools = installLowLevelToolSeams(
       lowLevel,
       ctx,
       annotationOptions && buildAnnotationTool(server, annotationOptions),
@@ -2766,7 +2795,10 @@ function install(
       sessionId: fallbackSessionId,
       annotationToolName: name,
     });
-  if (shape === "lowLevel") return handle(annotationToolName);
+  if (shape === "lowLevel") {
+    checkGivenTools?.();
+    return handle(annotationToolName);
+  }
 
   const resolvedAnnotationToolName = annotationOptions
     ? registerAnnotationTool(server as SupportedMcpServer, annotationOptions)

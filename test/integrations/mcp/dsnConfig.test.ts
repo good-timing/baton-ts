@@ -402,9 +402,9 @@ describe("an install where nothing says where events go (SPEC §11.2 rule 10)", 
 
   it("still throws for instructions over their length cap", () => {
     const config = { reportMode: "on" as const, vendorDisplayName: "V".repeat(2000) };
-    expect(() => withBaton(vendorServer(), config)).toThrow(/safety cap/);
+    expect(() => withBaton(vendorServer(), config)).toThrow(/1500-char limit/);
     expect(warned().join("\n")).not.toContain("installed nothing");
-    expect(() => createBaton(config).wrap(vendorServer())).toThrow(/safety cap/);
+    expect(() => createBaton(config).wrap(vendorServer())).toThrow(/1500-char limit/);
   });
 
   it("still throws for an object that is not a server", () => {

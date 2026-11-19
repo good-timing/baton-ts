@@ -123,6 +123,10 @@ describe("reportTool", () => {
     },
   );
 
+  it.each(["", "  ", "\u0085"])("refuses a blank display name %j", (displayName) => {
+    expect(() => reportTool({ vendorDisplayName: displayName, name: "acme_report" })).toThrow(/is blank/);
+  });
+
   it("says which names to shorten when an explicit name does not fit", () => {
     expect(() => reportTool({ vendorDisplayName: "A".repeat(2000), name: "acme_report" })).toThrow(
       /Shorten one of them/,
