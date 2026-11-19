@@ -127,7 +127,7 @@ Baton runs on Workers with the `nodejs_compat` flag, in a plain `fetch` handler 
   };
   ```
 
-- **`settings: "console"` is not supported on Workers yet.** Baton warns once and the capture values in your config apply. The report tool it turns on stays on.
+- **`settings: "console"` is not supported on Workers yet**, for `withBaton`, `createBaton` or `Client`. Baton warns once and the capture values in your config apply. The report tool it turns on stays on.
 - **A tool that only computes can show a duration of 0 ms.** A Worker's clock moves only across I/O.
 - **In tests, Baton may still send events after a test ends.** If a test puts back the real `fetch` afterwards, those sends go to your DSN's host. Leave `fetch` stubbed, or give Baton no `dsn` in tests.
 
@@ -157,7 +157,51 @@ app.use((req, res, next) =>
 
 `INTENT_PARAMS` holds the name and wording of the one param `withBaton` adds to MCP tools. Use them to ask for the same values in your own API, then pass the answers to `trace()`.
 
-**Serving MCP yourself**, with a server `withBaton` does not wrap:
+### Serving MCP yourself
+
+If your server answers MCP's JSON-RPC with its own code, with no `McpServer` or `Server` for `withBaton` to wrap, put your handling in one function from a message to its answer, and pass each message through `serve()`. This is experimental.
+
+```ts
+import { Client } from "@goodtiming/baton-sdk";
+
+const baton = new Client({                    // once, at startup
+  dsn: process.env.BATON_DSN,
+  settings: "console",
+  vendorDisplayName: "Acme",
+  tools: YOUR_TOOLS,                          // optional, see below
+});
+
+async function dispatch(message) {            // your existing handling
+  // initialize, tools/list, tools/call, the rest
+  return { jsonrpc: "2.0", id: message.id, result };
+}
+
+// in your handler, after your own auth:
+const answer = await baton.serve(message, dispatch, {
+  principal: {
+    principalId: user.id,
+    organization: { organizationId: user.companyId, labels: [user.plan] },
+  },
+  headers: req.headers,
+});
+```
+
+`serve()` calls `dispatch` once and adds what `withBaton` adds:
+
+- `initialize`: Baton's paragraphs go below your `instructions`.
+- `tools/list`: each tool gets the `user_goal` param, and the report tool is added (with `settings: "console"`; set `reportMode` to choose yourself). A snapshot of your own tools is sent once per change.
+- `tools/call`: `user_goal` is removed before your code sees the call, and the call is recorded with its result or error. Baton answers calls to the report tool itself, and a call to a tool the caller's Console settings hide, with the answer the MCP SDK gives for a tool it does not have.
+- Anything else goes to `dispatch` as it came.
+
+`serve()` always returns a Promise; `dispatch` may return its answer or a Promise of it. If anything in Baton's own work fails, you get your own answer back unchanged, and `dispatch` still runs only once. What `dispatch` throws comes back to you unchanged. With `BATON_DISABLED=1`, `serve()` just calls `dispatch`.
+
+`principal` is who is calling. On a stateless server each request is its own session, so it is also what groups one person's calls. The labels on it are what the Console's audiences match, so you can, for example, turn results off for your enterprise customers without a code change. `headers` and `sessionId` are as on `session()`.
+
+**Pass `tools`** (your full tool list, or a plain function that returns it) if you run more than one process, or if one of your tools has its own `user_goal` param or the report tool's name. Each process otherwise learns your tools from the lists it serves, and until it has served one, it removes `user_goal` from every call.
+
+**Moving from the hand-wired setup below?** Remove all of it: `INTENT_INSTRUCTIONS` or `tool.instructions` in your instructions, `listTools(...)` and the report tool in `tools/list`, and `session(...)`, `trace(...)` and the report-tool branch in `tools/call`. Left in, every call is recorded twice. `serve()` writes an error to stderr when it sees `trace()` in a tool call or `listTools()` in a tool list.
+
+#### Without `serve()`
 
 - **`await listTools(tools, { serverInfo, capabilities, instructions })`** returns your `tools/list` entries with `user_goal` added to each `inputSchema`, exactly as `withBaton` adds it. It also sends a `surface_snapshot` of the tools you passed, once for each distinct surface. Pass your tools before anything else is added to them, and your own `initialize` values. Your list is not changed.
 - **`session({ meta })`** takes the request's `_meta`. It is sent as `runtime_meta`, and a client declaration in it wins over `clientInfo`.
@@ -259,6 +303,8 @@ Three things can differ by audience.
 The SDK reads the settings every 60 seconds, in the background: a read never delays startup or a call. Set `settingsRefreshMs` to change how often, down to 15000. The one exception is `BATON_CANDIDATE`, a test change for the whole process: a connection's handshake, tool lists and tool calls wait up to 5 seconds for it at startup. Until the first read succeeds, and while nothing is saved, the values in your config apply. Once settings are read, each event says which ones it ran under, in `capture`. One `createBaton` reads them once for every server it wraps.
 
 `reportMode` is `"on"` by default here, so the Console decides who sees the report tool. Set `reportMode: "off"` to keep it off for everyone. The report sentence in your server's instructions stays while any audience has reports on. A client reads the instructions when it connects, so a change reaches new connections only.
+
+On the library path, pass `settings: "console"` to `Client`; the caller is the `principal` you pass to `serve()` or `session()`, and it is matched on every call.
 
 Labels come from your `resolvePrincipal` hook, as `labels` on the `Principal` or the `Organization` it returns. Up to 20 per caller, sent on every event, so send only names you are happy for Baton to see. A share of callers is picked by the principal's id, so the same person always lands in the same group. A caller with no principal is never in a share, even with a company: to target a company, give it a label.
 

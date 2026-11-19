@@ -57,11 +57,12 @@ export function serveTools<T>(
   }
 }
 
-export function snapshotPayload({ surface, digest }: Surface): Record<string, unknown> {
+/** `seam` defaults to `listTools()`'s, where the vendor serves Baton's text. */
+export function snapshotPayload({ surface, digest }: Surface, seam?: Record<string, unknown>): Record<string, unknown> {
   return {
     surface_hash: digest,
     ...surface,
-    seam_augmentations: buildSeamAugmentations({
+    seam_augmentations: seam ?? buildSeamAugmentations({
       injectedToolNames: [],
       intentParamNames: [USER_GOAL_PARAM_NAME],
       intentParamMode: DEFAULT_INTENT_PARAM_MODE,

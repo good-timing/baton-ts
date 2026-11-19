@@ -1,5 +1,37 @@
 # Changelog
 
+## 1.3.0: serve(), and Console settings on the library path
+
+### Added
+
+- **`client.serve(message, dispatch, options)`** (experimental, SPEC §5.6),
+  for a server that answers MCP with its own code. It calls your `dispatch`
+  once and adds what `withBaton` adds: Baton's instructions on `initialize`,
+  `user_goal` and the report tool on `tools/list`, and a traced
+  `tools/call` with `user_goal` removed. Baton answers the report tool, and
+  a tool the caller's Console settings hide. Python's `serve()` does the same.
+- **`Client` takes `settings`, `settingsRefreshMs`, `reportMode`,
+  `vendorDisplayName` and `tools`**, as `withBaton` and Python's `Client` do.
+  With `settings: "console"`, `trace()`, `annotate()` and `serve()` run each
+  call under its caller's Console settings, and each event says which ones
+  in `capture`. Test changes work here too: `BATON_CANDIDATE`, and the
+  `Baton-Candidate` and `Baton-Task` headers passed in `headers`.
+- **An error when old wiring is left inside `serve()`**: `trace()` in a tool
+  call or `listTools()` in a tool list is recorded twice, so `serve()` says so
+  once on stderr.
+
+### Changed
+
+- **Under results off, `trace()` withholds a thrown message.** The error
+  event's `error_body` is empty and it carries `result_capture: "off"`, as
+  on `withBaton` and in Python. A message you pass to `trace.observed()` by
+  name is still sent.
+
+### Notes
+
+- On Cloudflare Workers, `Client` drops `settings: "console"` with the same
+  warning `withBaton` gives.
+
 ## 1.2.2: agent_text, and your instructions kept intact
 
 ### Added

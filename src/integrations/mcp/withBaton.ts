@@ -170,6 +170,7 @@ import {
   RETIRED_PARAM_NAMES,
   requiredParamNames,
   removeSubagentClause,
+  unknownToolText,
   USER_GOAL_PARAM_NAME,
   writeOurs,
 } from "./llmText.js";
@@ -1952,7 +1953,7 @@ async function answerHidden(
   settle: (outcome: OuterOutcome) => Promise<void>,
 ): Promise<unknown> {
   if (lowLevelMajor(lowLevel) === 1) {
-    const result = { content: [{ type: "text", text: `MCP error -32602: Tool ${name} not found` }], isError: true };
+    const result = { content: [{ type: "text", text: unknownToolText(name) }], isError: true };
     await settle({ failed: true, raised: false, result });
     return result;
   }

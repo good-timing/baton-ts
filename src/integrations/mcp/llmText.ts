@@ -93,6 +93,11 @@ export function buildAnnotationToolDescription(options: { vendorDisplayName: str
   return ANNOTATION_TOOL_DESCRIPTION_TEMPLATE(options.vendorDisplayName);
 }
 
+/** What the MCP SDK's `McpServer` answers a call to a tool it does not have, on 1.x. */
+export function unknownToolText(name: string): string {
+  return `MCP error -32602: Tool ${name} not found`;
+}
+
 /** What the annotation tool answers when a call has no account (SPEC §5.1.1),
  * after the caller's `overlay`. */
 export function buildRefusalText(options: { annotationToolName: string; overlay?: Overlay | undefined }): string {
@@ -269,7 +274,7 @@ interface InstructionsHolder {
   [SUBAGENT]?: string | undefined;
 }
 
-function joined(vendor: unknown, ours: string): string {
+export function joined(vendor: unknown, ours: string): string {
   if (typeof vendor !== "string" || isBlank(vendor)) return ours;
   return ours ? `${vendor}\n\n${ours}` : vendor;
 }

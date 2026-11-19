@@ -13,12 +13,20 @@ import {
   type ClientObserved,
   type HeaderInput,
 } from "../integrations/mcp/clientObserved.js";
+import {
+  CANDIDATE_HEADER,
+  type CallSettings,
+  type CaptureSettings,
+  candidateId,
+  TASK_HEADER,
+  taskId,
+} from "../integrations/mcp/captureSettings.js";
 import { roundMetaCoordinates } from "../metaCoordinates.js";
 import { scrubOrNull } from "../integrations/mcp/safeScrub.js";
 import { uuid7 } from "../uuid7.js";
 import { isRecord } from "../_object.js";
 import { stripWhiteSpace } from "../_text.js";
-import { stderrLine } from "../warn.js";
+import { printable, stderrLine } from "../warn.js";
 
 const TRANSPORT_LIBRARY = "library";
 const TURN_ID_META_KEY = "baton/turn_id";
@@ -32,6 +40,11 @@ export interface LibrarySession {
   readonly labels: readonly string[];
   readonly clientObserved: ClientObserved | null;
   readonly runtimeMeta: Record<string, unknown> | null;
+  /** From the vendor's `headers`: a test change and its task. */
+  readonly candidate: string | null;
+  readonly task: string | null;
+  /** The Console settings its calls run under; `undefined` means the client's own values. */
+  readonly settings?: CallSettings;
 }
 
 export function sessionEnvelope(session: LibrarySession): Record<string, unknown> {
@@ -44,6 +57,7 @@ export function sessionEnvelope(session: LibrarySession): Record<string, unknown
     labels: wireLabels(session.labels),
     client_observed: session.clientObserved,
     runtime_meta: session.runtimeMeta,
+    capture: session.settings?.capture ?? null,
   };
 }
 
@@ -70,7 +84,7 @@ function vendorId(name: string, value: unknown): string | null {
 }
 
 function blank(sessionId: string, origin: LibrarySession["origin"]): LibrarySession {
-  return { sessionId, origin, ...NO_CALLER, clientObserved: null, runtimeMeta: null };
+  return { sessionId, origin, ...NO_CALLER, clientObserved: null, runtimeMeta: null, candidate: null, task: null };
 }
 
 function requestMeta(meta: unknown): Record<string, unknown> | null {
@@ -110,7 +124,25 @@ export function newSession(
     ...callerFor(values.principal, (_key, message) => warn(`principal ${message}`)),
     clientObserved: clientObservedFrom(values.clientInfo, values.headers, scrubber, meta),
     runtimeMeta: runtimeMeta(meta, vendorId("turnId", values.turnId), scrubber),
+    candidate: vendorHeader(values.headers, CANDIDATE_HEADER, candidateId),
+    task: vendorHeader(values.headers, TASK_HEADER, taskId),
   };
+}
+
+/** One header of the vendor's `headers`, which may keep the client's spelling of the name. */
+function vendorHeader(
+  headers: HeaderInput | undefined,
+  name: string,
+  parse: (value: unknown) => string | null,
+): string | null {
+  try {
+    if (headers === undefined) return null;
+    if (typeof (headers as Headers).get === "function") return parse((headers as Headers).get(name));
+    const key = Object.keys(headers).find((k) => k.toLowerCase() === name);
+    return key === undefined ? null : parse((headers as Record<string, unknown>)[key]);
+  } catch {
+    return null;
+  }
 }
 
 // The owning client is stored with the block so one client's block never
@@ -121,9 +153,32 @@ export function runInSession<T>(owner: object, session: LibrarySession, fn: () =
   return current.run({ owner, session }, fn);
 }
 
-/** `owner`'s open block, or a minted session for this call alone. */
-export function sessionForCall(owner: object): LibrarySession {
-  const entry = current.getStore();
-  return entry !== undefined && entry.owner === owner ? entry.session : blank(uuid7(), "minted");
+let settingsWarned = false;
+
+/** `owner`'s open block, or a minted session for this call alone, under the
+ * settings in force now: a block can outlive a Console change. */
+export function sessionForCall(owner: object, settings?: CaptureSettings): LibrarySession {
+  const session = inBlock(owner) ? current.getStore()!.session : blank(uuid7(), "minted");
+  if (settings === undefined) return session;
+  try {
+    const callSettings = settings.forCaller({
+      labels: session.labels,
+      clientName: session.clientObserved?.info?.name ?? null,
+      shareKey: session.principal?.id ?? null,
+      candidate: session.candidate,
+      task: session.task,
+    });
+    return callSettings === undefined ? session : { ...session, settings: callSettings };
+  } catch (err) {
+    if (!settingsWarned) {
+      settingsWarned = true;
+      warn(`applying capture settings failed; this call uses the client's values: ${printable(err)}`);
+    }
+    return session;
+  }
+}
+
+export function inBlock(owner: object): boolean {
+  return current.getStore()?.owner === owner;
 }
 

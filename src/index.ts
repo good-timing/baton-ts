@@ -118,10 +118,12 @@ export type {
   AnnotateOptions,
   ClientOptions,
   ObservedError,
+  ServeOptions,
   SessionOptions,
   TraceOptions,
 } from "./library/client.js";
 export type { ListToolsOptions } from "./library/surface.js";
+export type { VendorTools } from "./library/serve.js";
 export { reportTool } from "./library/reportTool.js";
 export type { ReportTool } from "./library/reportTool.js";
 export type { HeaderInput } from "./integrations/mcp/clientObserved.js";

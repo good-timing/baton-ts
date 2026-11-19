@@ -3,7 +3,7 @@
  * mirror of `baton` (Python)'s `integrations/_config.py::VendorConfig`.
  */
 
-import { dsnFromEnvironment, parseDsn, selectDsn, VENDOR_ID_PATTERN } from "../../dsn.js";
+import { dsnFromEnvironment, parseDsn, selectDsn, type Dsn, VENDOR_ID_PATTERN } from "../../dsn.js";
 import { displayNameFromServer } from "./annotationName.js";
 import type { ResolvePrincipalHook } from "./principalResolution.js";
 import { DEFAULT_CONSENT_TOKEN } from "../../events.js";
@@ -304,14 +304,19 @@ export interface ResolvedBatonConfig extends BatonConfig {
 let consoleOffWarned = false;
 
 /** A Worker cannot keep reading the settings in the background, so there
- * `settings: "console"` is dropped and this config's capture values apply.
- * The report tool it turns on stays on. */
-function withoutConsoleOnWorkers(config: BatonConfig): BatonConfig {
-  if (config.settings !== "console" || !onWorkers()) return config;
+ * `settings: "console"` is dropped, with one warning per process. */
+export function consoleDroppedOnWorkers(settings: string | undefined): boolean {
+  if (settings !== "console" || !onWorkers()) return false;
   if (!consoleOffWarned) {
     consoleOffWarned = true;
     warn('baton: settings: "console" is not supported on Cloudflare Workers yet; the Console\'s settings are not read and this config\'s capture values apply.');
   }
+  return true;
+}
+
+/** This config's capture values apply on Workers; the report tool `settings: "console"` turns on stays on. */
+function withoutConsoleOnWorkers(config: BatonConfig): BatonConfig {
+  if (!consoleDroppedOnWorkers(config.settings)) return config;
   const rest: BatonConfig = { ...config, reportMode: config.reportMode ?? "on" };
   delete rest.settings;
   return rest;
@@ -411,18 +416,7 @@ export function resolveBatonConfig(supplied: BatonConfig): ResolvedBatonConfig {
     sink: new HttpSink(dsn.origin, { apiKey: dsn.key }),
     ...(identity.settings === "console"
       ? {
-          captureSettings: new CaptureSettings(
-            dsn.vendorId,
-            new SettingsFetcher({
-              origin: dsn.origin,
-              apiKey: dsn.key,
-              tenantId: dsn.tenantId,
-              vendorId: dsn.vendorId,
-              refreshMs: identity.settingsRefreshMs ?? DEFAULT_SETTINGS_REFRESH_MS,
-            }),
-            envCandidate(),
-            envTask(),
-          ),
+          captureSettings: consoleCaptureSettings(dsn, identity.settingsRefreshMs),
         }
       : {}),
   };
@@ -453,6 +447,47 @@ const RENAMED_KEYS: Record<string, string> = {
   resolveUser: "resolvePrincipal",
 };
 
+export function consoleCaptureSettings(dsn: Dsn, refreshMs: number | undefined): CaptureSettings {
+  const fetcher = new SettingsFetcher({
+    origin: dsn.origin,
+    apiKey: dsn.key,
+    tenantId: dsn.tenantId,
+    vendorId: dsn.vendorId,
+    refreshMs: refreshMs ?? DEFAULT_SETTINGS_REFRESH_MS,
+  });
+  return new CaptureSettings(dsn.vendorId, fetcher, envCandidate(), envTask());
+}
+
+export function validateReportMode(config: { reportMode?: string | undefined }, owner: string): void {
+  if (config.reportMode !== undefined && !REPORT_MODES.has(config.reportMode)) {
+    throw new Error(
+      `${owner}.reportMode ${JSON.stringify(config.reportMode)} must be one of ` +
+        `${JSON.stringify([...REPORT_MODES].sort())}.`,
+    );
+  }
+}
+
+export function validateSettings(
+  config: { settings?: string | undefined; settingsRefreshMs?: number | undefined },
+  owner: string,
+): void {
+  if (config.settings !== undefined && !(SETTINGS_MODES as readonly string[]).includes(config.settings)) {
+    throw new Error(
+      `${owner}.settings ${JSON.stringify(config.settings)} must be one of ${JSON.stringify(SETTINGS_MODES)}.`,
+    );
+  }
+  const refresh: unknown = config.settingsRefreshMs;
+  if (
+    refresh !== undefined &&
+    (typeof refresh !== "number" || !(refresh >= MIN_SETTINGS_REFRESH_MS && refresh <= MAX_TIMER_MS))
+  ) {
+    throw new Error(
+      `${owner}.settingsRefreshMs must be a number of milliseconds from ${String(MIN_SETTINGS_REFRESH_MS)} ` +
+        `to ${String(MAX_TIMER_MS)}.`,
+    );
+  }
+}
+
 export function validateBatonConfig(config: BatonConfig): asserts config is ResolvedBatonConfig {
   for (const [was, now] of Object.entries(RENAMED_KEYS)) {
     if (was in config) {
@@ -471,12 +506,7 @@ export function validateBatonConfig(config: BatonConfig): asserts config is Reso
         "— used as the default annotation tool name prefix.",
     );
   }
-  if (config.reportMode !== undefined && !REPORT_MODES.has(config.reportMode)) {
-    throw new Error(
-      `BatonConfig.reportMode ${JSON.stringify(config.reportMode)} must be one of ` +
-        `${JSON.stringify([...REPORT_MODES].sort())}.`,
-    );
-  }
+  validateReportMode(config, "BatonConfig");
   if (!config.vendorDisplayName && config.reportMode === "on") {
     throw new Error(
       "BatonConfig needs a vendorDisplayName with reportMode: \"on\" — used in server " +
@@ -527,21 +557,7 @@ export function validateBatonConfig(config: BatonConfig): asserts config is Reso
         `${JSON.stringify([...RESULT_CAPTURE_MODES].sort())}.`,
     );
   }
-  if (config.settings !== undefined && !(SETTINGS_MODES as readonly string[]).includes(config.settings)) {
-    throw new Error(
-      `BatonConfig.settings ${JSON.stringify(config.settings)} must be one of ${JSON.stringify(SETTINGS_MODES)}.`,
-    );
-  }
-  const refresh: unknown = config.settingsRefreshMs;
-  if (
-    refresh !== undefined &&
-    (typeof refresh !== "number" || !(refresh >= MIN_SETTINGS_REFRESH_MS && refresh <= MAX_TIMER_MS))
-  ) {
-    throw new Error(
-      `BatonConfig.settingsRefreshMs must be a number of milliseconds from ${String(MIN_SETTINGS_REFRESH_MS)} ` +
-        `to ${String(MAX_TIMER_MS)}.`,
-    );
-  }
+  validateSettings(config, "BatonConfig");
   if (config.scrubber !== undefined && typeof config.scrubber !== "function") {
     // Refused AT INSTALL, and `scrubOrNull` is what makes this necessary rather
     // than merely tidy. Before the fail-open guard existed, a non-function here

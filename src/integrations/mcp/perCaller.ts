@@ -4,7 +4,7 @@
 import { isRecord } from "../../_object.js";
 import { stripWhiteSpaceEnd } from "../../_text.js";
 import { printable, stderrLine } from "../../warn.js";
-import type { CaptureSettings, SettingsDocument } from "./captureSettings.js";
+import type { CallSettings, CaptureSettings, SettingsDocument } from "./captureSettings.js";
 import { INTENT_INSTRUCTIONS, USER_GOAL_PARAM_NAME, buildUserGoalParamDescription, declaresParam } from "./llmText.js";
 import { type Action, type Overlay, changedText, overlaid, warnSkipped } from "./overlays.js";
 import type { ResolvedCaller } from "./principalResolution.js";
@@ -68,35 +68,43 @@ export class PerCallerSurface {
 
   /** `result` with the caller's goal, reports and overlay; as served on any failure. */
   toolsFor(result: unknown, caller: ResolvedCaller): unknown {
-    const settings = caller.settings;
-    if (settings === undefined) return result;
-    const { intentParamMode, annotationToolName, injectsGoal } = this.options;
-    const goal = settings.intentParamMode ?? intentParamMode;
-    const hideReports = annotationToolName !== "" && settings.reportMode === "off";
-    const overlay = settings.overlay;
-    if (goal === intentParamMode && !hideReports && overlay === undefined) return result;
-    try {
-      const tools = (result as { tools?: unknown } | null | undefined)?.tools;
-      if (!Array.isArray(tools)) return result;
-      const served: unknown[] = [];
-      const injected: boolean[] = [];
-      for (const tool of tools) {
-        const name = (tool as { name?: unknown } | null)?.name;
-        if (hideReports && name === annotationToolName) continue;
-        const ours =
-          typeof name === "string" &&
-          injectsGoal(name) &&
-          declaresParam((tool as { inputSchema?: unknown } | null)?.inputSchema, USER_GOAL_PARAM_NAME);
-        served.push(goal !== intentParamMode && ours ? withGoalMode(tool, goal) : tool);
-        injected.push(ours);
-      }
-      const rewritten =
-        overlay === undefined ? served : withOverlay(served, injected, overlay, annotationToolName || undefined);
-      return { ...(result as Record<string, unknown>), tools: rewritten };
-    } catch (err) {
-      stderrLine(`baton: could not apply capture settings to the tool list: ${printable(err)}`);
-      return result;
+    return toolsForCaller(result, caller.settings, this.options);
+  }
+}
+
+/** `result` with the goal, reports and overlay of `settings`; as served on any failure. */
+export function toolsForCaller(
+  result: unknown,
+  settings: CallSettings | undefined,
+  options: Pick<PerCallerOptions, "intentParamMode" | "annotationToolName" | "injectsGoal">,
+): unknown {
+  if (settings === undefined) return result;
+  const { intentParamMode, annotationToolName, injectsGoal } = options;
+  const goal = settings.intentParamMode ?? intentParamMode;
+  const hideReports = annotationToolName !== "" && settings.reportMode === "off";
+  const overlay = settings.overlay;
+  if (goal === intentParamMode && !hideReports && overlay === undefined) return result;
+  try {
+    const tools = (result as { tools?: unknown } | null | undefined)?.tools;
+    if (!Array.isArray(tools)) return result;
+    const served: unknown[] = [];
+    const injected: boolean[] = [];
+    for (const tool of tools) {
+      const name = (tool as { name?: unknown } | null)?.name;
+      if (hideReports && name === annotationToolName) continue;
+      const ours =
+        typeof name === "string" &&
+        injectsGoal(name) &&
+        declaresParam((tool as { inputSchema?: unknown } | null)?.inputSchema, USER_GOAL_PARAM_NAME);
+      served.push(goal !== intentParamMode && ours ? withGoalMode(tool, goal) : tool);
+      injected.push(ours);
     }
+    const rewritten =
+      overlay === undefined ? served : withOverlay(served, injected, overlay, annotationToolName || undefined);
+    return { ...(result as Record<string, unknown>), tools: rewritten };
+  } catch (err) {
+    stderrLine(`baton: could not apply capture settings to the tool list: ${printable(err)}`);
+    return result;
   }
 }
 
