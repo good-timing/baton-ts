@@ -156,16 +156,33 @@ describe.each(MAJORS)("surface at tools/list ($label)", (major) => {
     it.each([
       ["answered with a next cursor", {}, { nextCursor: "2" }],
       ["asked for a later page", { cursor: "2" }, {}],
-    ])("sends no snapshot and no hash for a list %s", async (_label, params, page) => {
+    ])("sends no snapshot and no hash for a list %s, nor at a later call", async (_label, params, page) => {
       const sink = new CapturingSink();
       const server = lowLevel(() => ({ tools: [tool("lookup")], ...page }));
       const handle = withBaton(server, { ...CFG, sink });
       await dispatch(server, "tools/list", params);
+      await dispatch(server, "tools/call", { name: "lookup", arguments: { name: "alice", user_goal: GOAL } });
       await handle.flush();
 
       expect(ofType(sink, "surface_snapshot")).toEqual([]);
       const [end] = ofType(sink, "tool_list_end");
       expect(end.payload).not.toHaveProperty("surface_hash");
+    });
+
+    it("reports a surface it cannot hash once, not on every listing", async () => {
+      const warned = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+      warned.mockClear();
+      const sink = new CapturingSink();
+      const tools = [{ name: "lookup", inputSchema: { type: "object", default: 1n } }];
+      const server = lowLevel(() => ({ tools }));
+      const handle = withBaton(server, { ...CFG, sink });
+      await dispatch(server, "tools/list");
+      await dispatch(server, "tools/list");
+      await handle.flush();
+
+      const failures = warned.mock.calls.filter(([line]) => String(line).includes("surface snapshot capture failed"));
+      expect(failures).toHaveLength(1);
+      expect(ofType(sink, "tool_list_end").map((e) => e.payload.surface_hash)).toEqual([undefined, undefined]);
     });
   });
 });

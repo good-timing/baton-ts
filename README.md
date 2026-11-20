@@ -57,7 +57,7 @@ Sending to your own collector instead, or trying the package before you have a k
   withBaton(server, { dsn: process.env.BATON_DSN, tools: TOOLS }); // or tools: () => TOOLS
   ```
 
-  Baton reads `tools` once per `withBaton` or `createBaton`, and never calls your `tools/list` handler itself. It also needs `tools` to leave its subagent sentence out of the instructions when a tool declares its own `user_goal`. The snapshot of your tools comes from the lists you serve, never from `tools`, so a process sends none until it has served a list.
+  Baton reads `tools` once per `withBaton` or `createBaton`, and never calls your `tools/list` handler itself. It also needs `tools` to leave its subagent sentence out of the instructions when a tool declares its own `user_goal`. The snapshot of your tools comes from the lists you serve, never from `tools`, so a server sends none until it has served its whole list in one page.
 - If your list has a tool with the report tool's name, yours is kept, Baton's report tool is not added, and the instructions stop naming it; the handle's `annotationToolName` still does. Until Baton has seen that list, a call to that name reaches Baton's report tool, so pass `tools` or set `annotationToolName` to another name.
 - Baton has no tool registry to check a call against here, so `failure_kind` is never `unknown_tool`, `invalid_argument` or `output_schema_mismatch`. Such a failure is recorded as an error with no `failure_kind`.
 

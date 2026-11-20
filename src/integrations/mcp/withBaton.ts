@@ -386,6 +386,11 @@ const callSlots = new asyncHooks.AsyncLocalStorage<CallSlot>();
  * `surface_snapshot` capture. Sent at `tools/list`, and at a tool call for a
  * client that never lists. An McpServer's tools come from its registry; a
  * low-level Server's only from the lists it serves. */
+interface CapturedSurface {
+  snapshot: Record<string, unknown>;
+  digest: string;
+}
+
 class SurfaceState {
   /** Every tool this install has seen, keyed by its CURRENT name. `disabled`
    * is tracked alongside rather than pruned, so re-enabling costs nothing and
@@ -398,6 +403,8 @@ class SurfaceState {
   dirty = false;
   servedOverlayId: string | null = null;
   private listed = false;
+  /** `null` when this version of the surface could not be captured. */
+  private captured: CapturedSurface | null | undefined;
 
   constructor(
     private readonly serverMeta: ReturnType<typeof buildServerMeta>,
@@ -409,14 +416,32 @@ class SurfaceState {
     return this.fromRegistry || this.listed;
   }
 
-  /** A low-level Server served a list; `whole` when it came in one page, which
-   * then is the surface: `surfaceAtList.test.ts`, "snapshots each list as served". */
-  servedList(names: ReadonlySet<string>, whole: boolean): void {
+  /** A low-level Server served a whole list, which then is the surface:
+   * `surfaceAtList.test.ts`, "snapshots each list as served". */
+  servedList(names: ReadonlySet<string>): void {
     this.listed = true;
-    if (!whole) return;
     for (const name of [...this.rawTools.keys()]) {
       if (!names.has(name)) this.pruneTool(name);
     }
+  }
+
+  /** The surface as it stands, and its hash; built once per change, so a
+   * surface that cannot be hashed is reported once, not on every request. */
+  capture(): CapturedSurface | null {
+    if (this.captured !== undefined) return this.captured;
+    try {
+      const snapshot = this.buildSnapshot();
+      this.captured = { snapshot, digest: surfaceHash(snapshot) };
+    } catch (err) {
+      stderrLine(`baton: surface snapshot capture failed: ${printable(err)}`);
+      this.captured = null;
+    }
+    return this.captured;
+  }
+
+  private changed(): void {
+    this.dirty = true;
+    this.captured = undefined;
   }
 
   /** `inputSchemaJson` is already converted — by `ctx.vendorToolJsonSchema`,
@@ -434,11 +459,11 @@ class SurfaceState {
       if (same) return;
     }
     this.rawTools.set(name, { disabled: before?.disabled ?? false, tool });
-    this.dirty = true;
+    this.changed();
   }
 
   pruneTool(name: string): void {
-    if (this.rawTools.delete(name)) this.dirty = true;
+    if (this.rawTools.delete(name)) this.changed();
   }
 
   /** Follow a `update({name})` rename, keeping the snapshot keyed the way
@@ -448,7 +473,7 @@ class SurfaceState {
     if (!entry) return;
     this.rawTools.delete(from);
     this.rawTools.set(to, { ...entry, tool: { ...entry.tool, name: to } });
-    this.dirty = true;
+    this.changed();
   }
 
   /** Both majors filter `tools/list` on `tool.enabled`, so a disabled tool is
@@ -459,10 +484,10 @@ class SurfaceState {
     const entry = this.rawTools.get(name);
     if (!entry || entry.disabled === !enabled) return;
     entry.disabled = !enabled;
-    this.dirty = true;
+    this.changed();
   }
 
-  buildSnapshot(): Record<string, unknown> {
+  private buildSnapshot(): Record<string, unknown> {
     const names = [...this.rawTools.keys()].sort().filter((n) => !this.rawTools.get(n)!.disabled);
     return assembleSurface(
       this.serverMeta,
@@ -942,11 +967,8 @@ function stripIntentParams(
   return stripped;
 }
 
-/** Fail-open surface_snapshot capture at a tool call — after any change to
- * the surface, it re-hashes and sends unless `sendSurface` already has.
- * `dirty` is cleared FIRST so a hashing/serialization error (deterministic —
- * would just re-throw identically every call) costs one attempt per surface
- * change, not a retry storm. */
+/** Fail-open surface_snapshot capture at a tool call: after any change to
+ * the surface, it sends unless `sendSurface` already has. */
 async function maybeEmitSurfaceSnapshot(ctx: WrapContext): Promise<void> {
   if (!ctx.surfaceState.hasSurface) return;
   const overlayId = ctx.perCaller?.serverOverlay?.id ?? null;
@@ -956,28 +978,14 @@ async function maybeEmitSurfaceSnapshot(ctx: WrapContext): Promise<void> {
   }
   if (!ctx.surfaceState.dirty) return;
   ctx.surfaceState.dirty = false;
-  let snapshot: Record<string, unknown>;
-  try {
-    snapshot = ctx.surfaceState.buildSnapshot();
-  } catch (err) {
-    stderrLine(`baton: surface snapshot capture failed: ${String(err)}`);
-    return;
-  }
-  await sendSurface(ctx, snapshot);
+  const surface = ctx.surfaceState.capture();
+  if (surface !== null) await sendSurface(ctx, surface);
 }
 
-/** Send `snapshot` unless its hash is among the last `SENT_SURFACES_CAP`
- * sent, and return the hash; `undefined` when it cannot be hashed. The write
- * only queues, so a snapshot counts as sent once queued; a sink that later
- * fails to write it counts it `write_failed`. */
-async function sendSurface(ctx: WrapContext, snapshot: Record<string, unknown>): Promise<string | undefined> {
-  let digest: string;
-  try {
-    digest = surfaceHash(snapshot);
-  } catch (err) {
-    stderrLine(`baton: surface snapshot capture failed: ${String(err)}`);
-    return undefined;
-  }
+/** Send the snapshot unless its hash is among the last `SENT_SURFACES_CAP`
+ * sent, and return the hash. The write only queues, so a snapshot counts as
+ * sent once queued; a sink that later fails to write it counts it `write_failed`. */
+async function sendSurface(ctx: WrapContext, { snapshot, digest }: CapturedSurface): Promise<string> {
   const overlayId = ctx.perCaller?.serverOverlay?.id ?? null;
   const sent = ctx.surfaceState.sentSurfaces;
   if (sent.wasSent(digest, overlayId)) return digest;
@@ -1008,15 +1016,7 @@ async function sendSurface(ctx: WrapContext, snapshot: Record<string, unknown>):
  * came, and not read from `SurfaceState`, because another listing can change
  * that state before this one's end is sent:
  * `surfaceAtList.test.ts`, "gives two listings that finish together each its own hash". */
-const LISTED_SURFACES = new WeakMap<object, Record<string, unknown>>();
-
-function noteListedSurface(request: object, ctx: WrapContext): void {
-  try {
-    LISTED_SURFACES.set(request, ctx.surfaceState.buildSnapshot());
-  } catch (err) {
-    stderrLine(`baton: surface snapshot capture failed: ${printable(err)}`);
-  }
-}
+const LISTED_SURFACES = new WeakMap<object, CapturedSurface>();
 
 function isWholeList(requestParams: Record<string, unknown>, result: unknown): boolean {
   return requestParams.cursor === undefined && !(isRecord(result) && result.nextCursor !== undefined);
@@ -1027,12 +1027,11 @@ function isWholeList(requestParams: Record<string, unknown>, result: unknown): b
 async function listedSurfaceHash(ctx: WrapContext, request: unknown, served: unknown): Promise<string | undefined> {
   try {
     if (!isRecord(request)) return undefined;
-    let snapshot = LISTED_SURFACES.get(request);
     const requestParams = isRecord(request.params) ? request.params : {};
-    if (snapshot === undefined && ctx.surfaceState.fromRegistry && isWholeList(requestParams, served)) {
-      snapshot = ctx.surfaceState.buildSnapshot();
-    }
-    return snapshot && (await sendSurface(ctx, snapshot));
+    const surface =
+      LISTED_SURFACES.get(request) ??
+      (ctx.surfaceState.fromRegistry && isWholeList(requestParams, served) ? ctx.surfaceState.capture() : null);
+    return surface === null ? undefined : await sendSurface(ctx, surface);
   } catch (err) {
     stderrLine(`baton: surface snapshot capture failed: ${printable(err)}`);
     return undefined;
@@ -1311,10 +1310,7 @@ function installLowLevelToolSeams(
     if (name !== undefined && tools.some((tool) => tool.name === name)) leaveReportNameToVendor(name);
   };
 
-  const read = (tools: ToolInfo[], { surface }: ReadOptions): void => {
-    if (surface) takeReportNameIfListed(tools);
-    readToolList(tools, ctx, surface, skipNote);
-  };
+  const read = (tools: ToolInfo[], { surface }: ReadOptions): void => readToolList(tools, ctx, surface, skipNote);
 
   // Per caller lists may differ: keep every tool, and a version that declares
   // its own `user_goal` over one that does not, so a server reading this map
@@ -1360,15 +1356,17 @@ function installLowLevelToolSeams(
       if (listed === null) return result;
       const tools = toolInfos(listed, skipTool);
       learn(tools);
+      takeReportNameIfListed(tools);
       read(tools, { surface: true });
       const requestParams = (args[0] as { params?: Record<string, unknown> } | undefined)?.params ?? {};
-      const whole = isWholeList(requestParams, result);
-      ctx.surfaceState.servedList(new Set(tools.map((tool) => tool.name)), whole);
+      if (isWholeList(requestParams, result)) {
+        ctx.surfaceState.servedList(new Set(tools.map((tool) => tool.name)));
+        const surface = ctx.surfaceState.capture();
+        if (surface !== null && isRecord(args[0])) LISTED_SURFACES.set(args[0], surface);
+      }
       // On the first page, which every client reads.
       const firstPage = requestParams.cursor === undefined;
-      const served = servedToolList(result as Record<string, unknown>, listed, ctx, firstPage && reportTool ? listedReportTool : undefined);
-      if (whole && isRecord(args[0])) noteListedSurface(args[0], ctx);
-      return served;
+      return servedToolList(result as Record<string, unknown>, listed, ctx, firstPage && reportTool ? listedReportTool : undefined);
     } catch (err) {
       stderrLine(`baton: tools/list capture failed; serving the vendor's own result: ${printable(err)}`);
       return result;
