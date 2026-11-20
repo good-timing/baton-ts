@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.3.2: the surface snapshot at tools/list, with outputSchema
 
 ### Added
 
