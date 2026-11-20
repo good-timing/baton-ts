@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.3.1: the tool list with zod 4.2 to 4.4.2
+
+### Fixed
+
+- **`tools/list` no longer fails when your zod is 4.2.0 to 4.4.2** and the
+  report tool is on. With those versions npm installs a second zod for Baton,
+  and the SDK read the report tool's schema with yours, which threw. This hit
+  both SDK majors, and `settings: "console"` turns the report tool on. On an
+  `McpServer`, Baton now gives the SDK the report tool without a schema and
+  lists the schema itself, as it does on a low-level `Server`. The SDK still
+  checks the report's arguments, so a bad call gets the same error as before.
+
 ## 1.3.0: serve(), and Console settings on the library path
 
 ### Added

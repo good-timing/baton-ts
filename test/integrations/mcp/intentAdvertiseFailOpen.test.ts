@@ -1,7 +1,7 @@
 /**
  * The `tools/list` seam fails OPEN, through the real protocol path: with its
  * transform forced to throw, the vendor's `tools/list` still answers with the
- * SDK's own result, and calls still run.
+ * SDK's own result and the report tool's schema, and calls still run.
  *
  * A module mock is the only way to make Baton's own code throw inside a real
  * request, and `vi.mock` applies to the whole file, so this lives apart from
@@ -31,7 +31,7 @@ afterEach(() => {
 });
 
 describe.each(MAJORS.map((m) => [m.label, m] as const))("on %s", (_label, major) => {
-  it("serves the SDK's own tools/list when the seam throws, and logs it", async () => {
+  it("serves the SDK's own tools/list and the report tool's schema when the seam throws, and logs it", async () => {
     const written: string[] = [];
     vi.spyOn(process.stderr, "write").mockImplementation((chunk: any) => {
       written.push(String(chunk));
@@ -42,11 +42,12 @@ describe.each(MAJORS.map((m) => [m.label, m] as const))("on %s", (_label, major)
     major.tool(server, "lookup", { name: z.string() }, async (args: any) => ({
       content: [{ type: "text" as const, text: `found ${String(args.name)}` }],
     }));
-    withBaton(server, {
+    const { annotationToolName } = withBaton(server, {
       vendorId: "acme",
       vendorDisplayName: "Acme",
       consentToken: "ct",
       sink: new CapturingSink(),
+      reportMode: "on",
     });
     const client = await major.connect(server);
 
@@ -55,8 +56,10 @@ describe.each(MAJORS.map((m) => [m.label, m] as const))("on %s", (_label, major)
     // The SDK's own rendering: injection is there, the advertisement is not.
     expect(lookup.inputSchema.required).toEqual(["name"]);
     expect(lookup.inputSchema.properties).toHaveProperty("user_goal");
+    const report = (tools as any[]).find((t) => t.name === annotationToolName);
+    expect(Object.keys(report.inputSchema.properties)).toEqual(expect.arrayContaining(["user_goal", "what_happened"]));
     expect(written.join("")).toMatch(
-      /baton: tools\/list advertisement failed; serving the SDK's own result: Error: seam boom/,
+      /baton: tools\/list advertisement failed; serving the list without it: Error: seam boom/,
     );
 
     const res = await client.callTool({ name: "lookup", arguments: { name: "alice" } });

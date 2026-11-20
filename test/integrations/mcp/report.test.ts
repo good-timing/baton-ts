@@ -56,6 +56,7 @@ describe.each(MAJORS)("reports on $label", (major) => {
       what_happened: "asked for a match; got an error with no reason",
       tool_name: "lookup",
       suggested_improvement: "say why",
+      context: { attempt: 2 },
     });
 
     expect(answer).toEqual({ ok: true });
@@ -67,7 +68,7 @@ describe.each(MAJORS)("reports on $label", (major) => {
       signal_type: null,
       workflow: null,
       suggested_improvement: "say why",
-      context: null,
+      context: { attempt: 2 },
       tool_name: "lookup",
     });
   });

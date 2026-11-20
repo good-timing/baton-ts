@@ -366,6 +366,8 @@ interface CallSlot {
   caller?: ResolvedCaller;
   /** How a low-level Server's call treats `user_goal` on a tool it has not listed. */
   unlisted?: Unlisted;
+  /** A report call's arguments, which the SDK does not hand the report tool. */
+  arguments?: unknown;
 }
 
 const INTENT_PARAM_NAMES = [USER_GOAL_PARAM_NAME, ...RETIRED_PARAM_NAMES] as const;
@@ -1059,7 +1061,7 @@ type SeamedHandler = AnyHandler & { [tag: symbol]: boolean | undefined };
  * ⚠ **Shared by both seams, which is what makes installing two of them
  * safe.** Each one patches `setRequestHandler`, so the second install must
  * reach the first's patch rather than the pristine setter — which it does,
- * because `originalSet` is read at install time, after the earlier patch has
+ * because the setter is read at install time, after the earlier patch has
  * landed. That composition held when this was one hand-written function per
  * seam too; one helper makes it structural rather than a property of the call
  * order in `install`.
@@ -1073,11 +1075,9 @@ function installRequestSeam(
   seamTag: symbol,
   wrap: (handler: AnyHandler) => AnyHandler,
 ): void {
-  const table = lowLevel._requestHandlers;
-  const originalSet = lowLevel.setRequestHandler;
-  if (!(table instanceof Map) || typeof originalSet !== "function") return;
-  const handlers = table as Map<string, unknown>;
-  const setRequestHandler = originalSet as AnyHandler;
+  if (!takesRequestSeams(lowLevel)) return;
+  const handlers = lowLevel._requestHandlers as Map<string, unknown>;
+  const setRequestHandler = lowLevel.setRequestHandler as AnyHandler;
 
   const wrapCurrent = (): void => {
     const handler = handlers.get(method) as SeamedHandler | undefined;
@@ -1099,6 +1099,10 @@ function installRequestSeam(
   };
 }
 
+function takesRequestSeams(lowLevel: RequestHandlerInternals): boolean {
+  return lowLevel._requestHandlers instanceof Map && typeof lowLevel.setRequestHandler === "function";
+}
+
 /**
  * The `tools/list` RESPONSE seam, which is what lets a name be advertised as
  * required without the validator enforcing it (see
@@ -1108,13 +1112,14 @@ function installRequestSeam(
  * every mode (SPEC §5.1.1).
  *
  * On an McpServer the annotate tool lists Baton's own rendering of its
- * schema, as a low-level Server's list already does: the SDK renders it with
- * the vendor's zod, which may differ (reportToolSchema.test.ts).
+ * schema, as a low-level Server's list already does: the SDK holds none, see
+ * `registerAnnotationTool`.
  *
  * ⚠ Fail-open, twice. A throw from the transform is logged and the SDK's own
- * result goes out untouched, because a vendor's `tools/list` may never break
- * on Baton's account. And a server with no reachable handler map gets no seam,
- * which costs the advertisement and nothing else.
+ * result goes out, with the report tool's schema if that much was done,
+ * because a vendor's `tools/list` may never break on Baton's account. And a
+ * server with no reachable handler map gets no seam, which costs the
+ * advertisement and nothing else: the report tool then registers with its schema.
  */
 function installToolsListSeam(lowLevel: RequestHandlerInternals, ctx: WrapContext, listsOwnReportTool: boolean): void {
   const names = [...requiredParamNames(ctx.intentParamMode), TOOL_NAME_PARAM_NAME];
@@ -1123,16 +1128,17 @@ function installToolsListSeam(lowLevel: RequestHandlerInternals, ctx: WrapContex
       ? paramName === TOOL_NAME_PARAM_NAME
       : ctx.paramRegistry.get(toolName)?.[paramName] === "injected";
   const advertise = (result: unknown): unknown => {
+    let served = result;
     try {
-      const served = listsOwnReportTool || ctx.annotationToolName === ""
-        ? result
-        : withToolInputSchema(result, ctx.annotationToolName, annotationInputJsonSchema(lowLevelMajor(lowLevel)));
+      if (!listsOwnReportTool && ctx.annotationToolName !== "") {
+        served = withToolInputSchema(result, ctx.annotationToolName, annotationInputJsonSchema(lowLevelMajor(lowLevel)));
+      }
       return advertiseIntentParamsRequired(served, names, isInjected);
     } catch (err) {
       stderrLine(
-        `baton: tools/list advertisement failed; serving the SDK's own result: ${String(err)}`,
+        `baton: tools/list advertisement failed; serving the list without it: ${String(err)}`,
       );
-      return result;
+      return served;
     }
   };
 
@@ -1859,10 +1865,11 @@ function dispatchTarget(entry: ToolEntry): TaggedHandler | undefined {
  * supplies the missing events itself, and it hands the inner's parked
  * terminal event the outcome so a false success can be replaced.
  *
- * ⚠ **Unconditional**: the correction it makes is not configurable. A
- * server with no reachable handler map gets no seam, and then
- * this producer has one seam again and correctly omits `failure_kind`
- * entirely — `CallSlot` and `terminate` carry that degradation.
+ * ⚠ **Unconditional**: the correction it makes is not configurable, and the
+ * report tool reads its arguments off the slot. A server with no reachable
+ * handler map gets no seam, and then this producer has one seam again and
+ * correctly omits `failure_kind` entirely — `CallSlot` and `terminate` carry
+ * that degradation — and the report tool registers with its schema.
  *
  * ⚠ **Fail-open, as the whole capture path must be (SPEC §11.2).** Both the
  * flush and the request-side emission go through `emit`, and `settleCall`'s
@@ -1882,14 +1889,15 @@ function installToolsCallSeam(
       async (...args) => {
         const request = args[0] as { params?: { name?: unknown; arguments?: unknown } } | undefined;
         const name = request?.params?.name;
+        const toolArgs = request?.params?.arguments;
         const slot: CallSlot = {
           innerFired: false,
           flushTerminal: null,
           stripped: stripIntentParams(request?.params, ctx),
           strippedFor: typeof name === "string" ? name : null,
           validation: "unseen",
+          arguments: name === ctx.annotationToolName ? toolArgs : undefined,
         };
-        const toolArgs = request?.params?.arguments;
         if (
           typeof name === "string" &&
           toolEntry(name) != null &&
@@ -1975,7 +1983,8 @@ const VALIDATION_PROBE = Symbol("baton.validationProbe");
  * Record on the call's slot what the SDK's `validateToolInput` did, so the
  * `tools/call` seam can tell a rejected argument from a refusal above the
  * executor without reading the message. Both majors call it on the instance,
- * right before `executeToolHandler`. A later replacement that does not call
+ * right before `executeToolHandler`; the report tool calls it again inside
+ * its executor, which no failure kind reads. A later replacement that does not call
  * through leaves every slot `"unseen"`, and a rejected argument reads as
  * `refused` (SPEC §11.4.3: the producer cannot tell why).
  */
@@ -2801,9 +2810,13 @@ function install(
     return handle(annotationToolName);
   }
 
-  const resolvedAnnotationToolName = annotationOptions
-    ? registerAnnotationTool(server as SupportedMcpServer, annotationOptions)
-    : "";
+  if (annotationOptions) {
+    registerAnnotationTool(
+      server as SupportedMcpServer,
+      annotationOptions,
+      takesRequestSeams(lowLevel) ? () => callSlots.getStore()?.arguments : undefined,
+    );
+  }
 
   // Retroactive: sweep whatever's already registered, regardless of call order.
   const existing = internals._registeredTools;
@@ -2828,7 +2841,7 @@ function install(
     return registered;
   };
 
-  return handle(resolvedAnnotationToolName);
+  return handle(annotationToolName);
 }
 
 /** The display name the reports need, or `undefined` under `reportMode: "off"`. */

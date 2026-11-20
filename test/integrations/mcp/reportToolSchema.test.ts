@@ -5,7 +5,12 @@ import { z } from "zod";
 
 import { reportTool } from "../../../src/library/reportTool.js";
 import { withToolInputSchema } from "../../../src/integrations/mcp/schemaCompat.js";
-import { CapturingSink, install, lowLevelServerOf, MAJORS, type Major } from "./_majors.js";
+import { ANNOTATION_INPUT_SHAPE, registerAnnotationTool } from "../../../src/integrations/mcp/annotation.js";
+import { ServerCounter, SessionCounter } from "../../../src/integrations/mcp/sessionCounter.js";
+import { createMcpHandler, McpServer as McpServerV2 } from "@modelcontextprotocol/server";
+import { Client as ClientV2, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
+import { createBaton } from "../../../src/integrations/mcp/withBaton.js";
+import { CapturingSink, CFG, install, lowLevelServerOf, MAJORS, nextTurn, type Major } from "./_majors.js";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -22,6 +27,15 @@ function emptySchemas(schema: unknown, path = "$"): string[] {
 /** `context`'s object branch: the field is nullable, so it is `anyOf` an object and null. */
 function contextObject(schema: any): any {
   return schema?.properties?.context?.anyOf?.find((branch: any) => branch.type === "object");
+}
+
+/** A handler table the SDK can use but that is not a `Map`, so Baton installs no request seam. */
+class HandlerTable {
+  constructor(private readonly table: Map<unknown, unknown>) {}
+  get(key: unknown) { return this.table.get(key); }
+  set(key: unknown, value: unknown) { this.table.set(key, value); return this; }
+  has(key: unknown) { return this.table.has(key); }
+  delete(key: unknown) { return this.table.delete(key); }
 }
 
 function mcpServer(major: Major): any {
@@ -59,11 +73,10 @@ it("the library report tool's input schema has no empty subschema", () => {
 });
 
 describe.each(MAJORS)("an McpServer's report tool ($label)", (major) => {
-  it("lists Baton's own rendering of its schema, not the SDK's", async () => {
+  it("gives the SDK no schema to render, and lists Baton's own", async () => {
     const server = mcpServer(major);
     const { annotationToolName } = install(server, new CapturingSink(), { reportMode: "on" });
-    // What the SDK would render from a vendor's zod that reads Baton's schema differently.
-    server._registeredTools[annotationToolName].inputSchema = z.object({ rendered_by_the_vendors_zod: z.string() });
+    expect(server._registeredTools[annotationToolName].inputSchema).toBeUndefined();
     const client = await major.connect(server);
     const { tools } = await client.listTools();
     await client.close();
@@ -75,6 +88,32 @@ describe.each(MAJORS)("an McpServer's report tool ($label)", (major) => {
     const listed = (await plainClient.listTools()).tools;
     await plainClient.close();
     expect(schema).toEqual(listed.find((tool: any) => tool.name === plainName)?.inputSchema);
+  });
+
+  it("refuses bad arguments as the SDK refuses them for a tool with the same schema", async () => {
+    const server = mcpServer(major);
+    major.tool(server, "twin", ANNOTATION_INPUT_SHAPE, () => ({ content: [] }));
+    const { annotationToolName } = install(server, new CapturingSink(), { reportMode: "on" });
+    const client = await major.connect(server);
+    for (const args of [{ user_goal: 5 }, {}, { user_goal: "g", tool_name: 3, context: "x" }, undefined]) {
+      const report = await client.callTool({ name: annotationToolName, arguments: args });
+      const twin = await client.callTool({ name: "twin", arguments: args });
+      expect(report.isError).toBe(true);
+      expect(JSON.stringify(report).replaceAll(annotationToolName, "twin")).toBe(JSON.stringify(twin));
+    }
+    await client.close();
+  });
+
+  it("registers its schema when Baton cannot reach the handler map", async () => {
+    const sink = new CapturingSink();
+    const server = mcpServer(major);
+    server.server._requestHandlers = new HandlerTable(server.server._requestHandlers);
+    const { annotationToolName } = install(server, sink, { reportMode: "on" });
+    expect(server._registeredTools[annotationToolName].inputSchema).toBeDefined();
+    const client = await major.connect(server);
+    const report = await client.callTool({ name: annotationToolName, arguments: { user_goal: "g", what_happened: "w" } });
+    await client.close();
+    expect(report.content).toEqual([{ type: "text", text: JSON.stringify({ ok: true }) }]);
   });
 });
 
@@ -146,4 +185,58 @@ describe("withToolInputSchema", () => {
   it("returns the result as it came without that tool", () => {
     expect(withToolInputSchema(result, "other", {})).toBe(result);
   });
+});
+
+it("an McpServer made per request over 2.x HTTP takes a report", async () => {
+  const sink = new CapturingSink();
+  const baton = createBaton({ ...CFG, sink, reportMode: "on" });
+  const handler = createMcpHandler(() => {
+    const server = new McpServerV2({ name: "vendor", version: "1.0.0" });
+    server.registerTool("lookup", { inputSchema: z.object({ name: z.string() }) }, () => ({ content: [] }));
+    baton.wrap(server);
+    return server;
+  });
+  const client = new ClientV2({ name: "test-client", version: "1.0.0" }, { versionNegotiation: { mode: { pin: "2026-07-28" } } });
+  await client.connect(
+    new StreamableHTTPClientTransport(new URL("http://localhost/mcp"), {
+      fetch: (url, init) => handler.fetch(new Request(url, init)),
+    }),
+  );
+  const result = await client.callTool({
+    name: "vendor_annotate",
+    arguments: { user_goal: "g", what_happened: "w", context: { a: 1 } },
+  });
+  await client.close();
+  await nextTurn();
+  expect(result.content).toEqual([{ type: "text", text: JSON.stringify({ ok: true }) }]);
+  expect(sink.events.find((event) => event.event_type === "annotation")?.payload).toMatchObject({ context: { a: 1 } });
+});
+
+it.each([
+  ["no validateToolInput", {}],
+  ["a validateToolInput that throws something else", { validateToolInput: () => Promise.reject(new TypeError("changed")) }],
+  ["a validateToolInput that returns nothing", { validateToolInput: () => Promise.resolve(undefined) }],
+])("the report tool checks its arguments itself on an McpServer with %s", async (_kind, sdk) => {
+  const handlers: Record<string, (extra: unknown) => Promise<any>> = {};
+  const server = { ...sdk, registerTool: (name: string, _config: unknown, handler: any) => (handlers[name] = handler) };
+  const sink = new CapturingSink();
+  const options = {
+    sink,
+    counter: new ServerCounter(new SessionCounter(), "sdk-x"),
+    tenantId: "t",
+    vendorId: "acme",
+    vendorDisplayName: "Acme",
+    consentToken: "ct",
+    fallbackSessionId: "sdk-x",
+    scrubber: (value: unknown) => value,
+    annotationToolName: "acme_report",
+  };
+  let args: unknown = { user_goal: 5 };
+  registerAnnotationTool(server as never, options, () => args);
+  const bad = await handlers.acme_report!({});
+  args = { user_goal: "g", what_happened: "w" };
+  const report = await handlers.acme_report!({});
+  expect(bad.isError).toBe(true);
+  expect(bad.content[0].text).toMatch(/^Invalid arguments for tool acme_report: /);
+  expect(report.content).toEqual([{ type: "text", text: JSON.stringify({ ok: true }) }]);
 });

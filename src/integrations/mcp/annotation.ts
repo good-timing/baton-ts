@@ -14,6 +14,7 @@
 
 import { z } from "zod";
 import { isBlank } from "../../_text.js";
+import { isRecord } from "../../_object.js";
 import { AnnotationEventSchema } from "../../events.js";
 import { roundMetaCoordinates } from "../../metaCoordinates.js";
 import type { Sink } from "../../sinks.js";
@@ -30,20 +31,6 @@ import { observeClient } from "./clientObserved.js";
 import { resolveSessionId } from "./sessionResolution.js";
 import { scrubOrNull } from "./safeScrub.js";
 import type { SessionCounter } from "./sessionCounter.js";
-
-/** The annotate tool's arguments. Spelled out because `SupportedMcpServer`
- * types `registerTool`'s config as `unknown` — the price of accepting both
- * SDK majors' nominally distinct servers — so nothing infers this from the
- * Zod shape below. The two must be kept in step; the round-trip tests call
- * the tool through a real client, so a drift shows up as a runtime failure
- * rather than passing silently. */
-interface AnnotationArgs extends Record<string, unknown> {
-  user_goal: string;
-  what_happened?: string | null | undefined;
-  tool_name?: string | null | undefined;
-  suggested_improvement?: string | null | undefined;
-  context?: Record<string, unknown> | null | undefined;
-}
 
 export interface RegisterAnnotationToolOptions {
   sink: Sink;
@@ -77,6 +64,9 @@ export const ANNOTATION_INPUT_SHAPE = {
   context: z.record(z.string(), z.unknown()).meta({ additionalProperties: true }).nullable().optional(),
 };
 
+const ANNOTATION_ARGS = z.object(ANNOTATION_INPUT_SHAPE);
+type AnnotationArgs = z.infer<typeof ANNOTATION_ARGS>;
+
 /** SPEC §11.4: an annotation is a report when its account is filled. */
 export function isReport(whatHappened: unknown): whatHappened is string {
   return typeof whatHappened === "string" && !isBlank(whatHappened);
@@ -94,21 +84,39 @@ interface CallToolResultLike {
   isError?: boolean;
 }
 
-/** Register the annotation tool on `server`. Returns the resolved tool name. */
+const INVALID_PARAMS = -32602;
+
+type ToolInputValidator = {
+  validateToolInput(tool: { inputSchema: unknown }, args: unknown, name: string): Promise<unknown>;
+};
+
+/** Registered without a schema when `callArguments` can supply the call's
+ * arguments: the SDK would render the schema with the vendor's zod, which
+ * crashes on Baton's when the copies differ (reportToolSchema.test.ts). */
 export function registerAnnotationTool(
   server: SupportedMcpServer,
   options: RegisterAnnotationToolOptions,
-): string {
+  callArguments?: () => unknown,
+): void {
   const tool = buildAnnotationTool(server, options);
-  server.registerTool(
-    tool.name,
-    { description: tool.description, inputSchema: ANNOTATION_INPUT_SHAPE },
-    tool.handler,
-  );
-  return tool.name;
+  if (callArguments === undefined) {
+    server.registerTool(tool.name, { description: tool.description, inputSchema: ANNOTATION_INPUT_SHAPE }, tool.handler);
+    return;
+  }
+  server.registerTool(tool.name, { description: tool.description }, async (extra: Extra) => {
+    const args = callArguments();
+    const { validateToolInput } = server as Partial<ToolInputValidator>;
+    let parsed: unknown;
+    try {
+      // The SDK's own check, so a refusal reads as it does for any tool with this schema.
+      parsed = await validateToolInput?.call(server, { inputSchema: ANNOTATION_ARGS }, args, tool.name);
+    } catch (err) {
+      if ((err as { code?: unknown } | null)?.code === INVALID_PARAMS) throw err;
+    }
+    // A private SDK method: if it is gone or changed, Baton checks the arguments itself.
+    return isRecord(parsed) ? tool.handler(parsed as AnnotationArgs, extra) : callAnnotationTool(tool, args, extra);
+  });
 }
-
-const ANNOTATION_ARGS = z.object(ANNOTATION_INPUT_SHAPE);
 
 /** The report tool's input schema as Baton lists it on a server of that
  * major: v2 renders draft 2020-12 from the schema itself, 1.x through its own
@@ -122,8 +130,8 @@ export function annotationInputJsonSchema(major: 1 | 2): Record<string, unknown>
 
 const annotationJsonSchemas: Partial<Record<1 | 2, Record<string, unknown>>> = {};
 
-/** `tools/call` for the annotation tool on a server with no tool registry to
- * validate its arguments, so the check `McpServer` makes is made here. */
+/** `tools/call` for the annotation tool where the SDK does not check its
+ * arguments, so the check `McpServer` makes is made here. */
 export function callAnnotationTool(
   tool: AnnotationTool,
   args: unknown,
