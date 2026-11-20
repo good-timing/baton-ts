@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Added
+
+- **The surface snapshot carries each tool's `outputSchema`**, as your
+  `tools/list` serves it, on an `McpServer`, a low-level `Server` and the
+  library path. A tool without one has no key. A server with output schemas
+  sends one new surface hash after the upgrade.
+
 ### Changed
 
 - **The surface snapshot is sent when a client lists your tools**, not only

@@ -197,6 +197,7 @@ import {
   injectGoalParams,
   injectGoalParamsV2,
   toolInputJsonSchema,
+  toolOutputJsonSchema,
   type IntentParamDispositions,
   type IntentParamMode,
   DEFAULT_INTENT_PARAM_MODE,
@@ -238,6 +239,8 @@ interface WrapContext {
   /** Vendor-true JSON Schema for the surface snapshot, in whatever spelling
    * THIS server actually puts on the wire. */
   vendorToolJsonSchema: (name: string, inputSchema: unknown) => Record<string, unknown>;
+  /** A registered tool's `outputSchema` as this server lists it, if it lists one. */
+  vendorOutputJsonSchema: (entry: unknown) => Record<string, unknown> | undefined;
   /** Drop v2's per-tool JSON-Schema memo after we mutate `inputSchema`. */
   bustSchemaMemo: (name: string) => void;
   /** Tool `name` declares its own `user_goal`: take the subagent sentence
@@ -450,15 +453,26 @@ class SurfaceState {
     name: string,
     inputSchemaJson: Record<string, unknown>,
     description: string | undefined,
+    outputSchemaJson?: Record<string, unknown>,
   ): void {
     const before = this.rawTools.get(name);
-    const tool = { name, description: description ?? null, inputSchema: inputSchemaJson };
+    const tool: Record<string, unknown> = { name, description: description ?? null, inputSchema: inputSchemaJson };
+    if (outputSchemaJson !== undefined) tool.outputSchema = outputSchemaJson;
     // A low-level Server's tools are noted on every list it serves.
     if (before !== undefined && before.tool.description === tool.description) {
-      const same = before.tool.inputSchema === inputSchemaJson || JSON.stringify(before.tool.inputSchema) === JSON.stringify(inputSchemaJson);
-      if (same) return;
+      const sameInput = before.tool.inputSchema === inputSchemaJson || JSON.stringify(before.tool.inputSchema) === JSON.stringify(inputSchemaJson);
+      if (sameInput && JSON.stringify(before.tool.outputSchema) === JSON.stringify(outputSchemaJson)) return;
     }
     this.rawTools.set(name, { disabled: before?.disabled ?? false, tool });
+    this.changed();
+  }
+
+  setOutputSchema(name: string, outputSchemaJson: Record<string, unknown> | undefined): void {
+    const entry = this.rawTools.get(name);
+    if (!entry) return;
+    const tool = { ...entry.tool };
+    delete tool.outputSchema;
+    entry.tool = outputSchemaJson === undefined ? tool : { ...tool, outputSchema: outputSchemaJson };
     this.changed();
   }
 
@@ -1018,6 +1032,11 @@ async function sendSurface(ctx: WrapContext, { snapshot, digest }: CapturedSurfa
  * `surfaceAtList.test.ts`, "gives two listings that finish together each its own hash". */
 const LISTED_SURFACES = new WeakMap<object, CapturedSurface>();
 
+/** A copy of `value` the vendor cannot change later, when it is an object. */
+function jsonObjectCopy(value: unknown): Record<string, unknown> | undefined {
+  return isRecord(value) ? (JSON.parse(JSON.stringify(value)) as Record<string, unknown>) : undefined;
+}
+
 function isWholeList(requestParams: Record<string, unknown>, result: unknown): boolean {
   return requestParams.cursor === undefined && !(isRecord(result) && result.nextCursor !== undefined);
 }
@@ -1061,7 +1080,7 @@ function captureAndInject(name: string, entry: unknown, ctx: WrapContext): void 
   if (!entry || typeof entry !== "object") return;
   const mutable = entry as { inputSchema?: unknown; description?: string; executor?: unknown };
   const vendorSchema = ctx.vendorToolJsonSchema(name, mutable.inputSchema);
-  ctx.surfaceState.noteTool(name, vendorSchema, mutable.description);
+  ctx.surfaceState.noteTool(name, vendorSchema, mutable.description, ctx.vendorOutputJsonSchema(entry));
   // From the JSON schema: a v2 schema that is not zod gets no injection, but
   // its `user_goal` still counts.
   if (declaresParam(vendorSchema, USER_GOAL_PARAM_NAME)) ctx.dropSubagentClause(name);
@@ -1234,7 +1253,7 @@ interface KnownTools {
   unread: Set<string>;
 }
 
-type ToolInfo = { name: string; description: unknown; inputSchema: unknown };
+type ToolInfo = { name: string; description: unknown; inputSchema: unknown; outputSchema?: unknown };
 type ReadOptions = { surface: boolean };
 
 /**
@@ -1460,7 +1479,8 @@ function toolInfos(tools: unknown[], skip: (name: string, err: unknown) => void)
     try {
       name = isRecord(tool) ? tool.name : undefined;
       if (typeof name !== "string") continue;
-      infos.push({ name, description: (tool as ToolInfo).description, inputSchema: (tool as ToolInfo).inputSchema });
+      const { description, inputSchema, outputSchema } = tool as ToolInfo;
+      infos.push({ name, description, inputSchema, outputSchema });
     } catch (err) {
       if (typeof name === "string") skip(name, err);
     }
@@ -1476,11 +1496,16 @@ function readToolList(
   surface: boolean,
   skip: (name: string, err: unknown) => void,
 ): void {
-  for (const { name, inputSchema, description } of tools) {
+  for (const { name, inputSchema, description, outputSchema } of tools) {
     try {
       const schema = isRecord(inputSchema) ? inputSchema : null;
       if (surface) {
-        ctx.surfaceState.noteTool(name, schema ?? EMPTY_OBJECT_JSON_SCHEMA, typeof description === "string" ? description : undefined);
+        ctx.surfaceState.noteTool(
+          name,
+          schema ?? EMPTY_OBJECT_JSON_SCHEMA,
+          typeof description === "string" ? description : undefined,
+          jsonObjectCopy(outputSchema),
+        );
       }
       const dispositions = declaredIntentParams(schema);
       if (dispositions[USER_GOAL_PARAM_NAME] === "native") ctx.dropSubagentClause(name);
@@ -2342,6 +2367,7 @@ function wireEntry(name: string, entry: unknown, ctx: WrapContext): void {
     (updatable as { update: (updates: unknown) => void }).update = (updates: unknown) => {
       const u = (updates ?? {}) as {
         paramsSchema?: unknown;
+        outputSchema?: unknown;
         name?: string | null;
         enabled?: boolean;
       };
@@ -2377,6 +2403,8 @@ function wireEntry(name: string, entry: unknown, ctx: WrapContext): void {
       // corrupt disposition tracking).
       if (u.paramsSchema !== undefined) {
         captureAndInject(nameRef.current, entry, ctx);
+      } else if (u.outputSchema !== undefined) {
+        ctx.surfaceState.setOutputSchema(nameRef.current, ctx.vendorOutputJsonSchema(entry));
       }
       if (typeof u.enabled === "boolean") {
         ctx.surfaceState.setToolEnabled(nameRef.current, u.enabled);
@@ -2732,6 +2760,16 @@ function install(
     }
   };
 
+  const vendorOutputJsonSchema = (entry: unknown): Record<string, unknown> | undefined => {
+    try {
+      const tool = entry as { outputSchema?: unknown; outputSchemaJson?: unknown };
+      // v2 keeps the conversion its tools/list sends.
+      return isV2Server ? jsonObjectCopy(tool.outputSchemaJson) : toolOutputJsonSchema(tool.outputSchema);
+    } catch {
+      return undefined;
+    }
+  };
+
   installValidationProbe(server);
   const ctx: WrapContext = {
     sink,
@@ -2754,6 +2792,7 @@ function install(
     captureSettings: config.captureSettings,
     perCaller: undefined,
     vendorToolJsonSchema,
+    vendorOutputJsonSchema,
     bustSchemaMemo,
     dropSubagentClause,
     servedInstructions: () => lowLevel._instructions,

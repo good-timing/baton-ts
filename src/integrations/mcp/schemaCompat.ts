@@ -309,3 +309,14 @@ export function toolInputJsonSchema(
     pipeStrategy: "input",
   });
 }
+
+/** A tool's `outputSchema` as SDK 1.x lists it, or `undefined` where 1.x
+ * lists none. */
+export function toolOutputJsonSchema(outputSchema: unknown): Record<string, unknown> | undefined {
+  const objSchema = outputSchema ? normalizeObjectSchema(outputSchema) : undefined;
+  if (!objSchema) return undefined;
+  return toJsonSchemaCompat(objSchema, {
+    strictUnions: true,
+    pipeStrategy: "output",
+  });
+}
