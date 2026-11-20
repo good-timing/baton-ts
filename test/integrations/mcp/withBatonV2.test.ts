@@ -148,8 +148,8 @@ describe("withBaton on the official SDK v2", () => {
     expect(ran).toBe(true);
     expect(sink.events.map((e) => e.event_type)).toEqual([
       "tool_list_start",
-      "tool_list_end",
       "surface_snapshot",
+      "tool_list_end",
       "tool_call_start",
       "tool_call_end",
     ]);

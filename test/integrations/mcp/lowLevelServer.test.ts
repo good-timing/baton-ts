@@ -137,6 +137,8 @@ function comparable(event: Event): Record<string, unknown> {
   const copy: Record<string, any> = { ...event, payload: { ...event.payload } };
   for (const key of ["event_id", "captured_at", "session_id", "call_id"]) delete copy[key];
   delete copy.payload.duration_ms;
+  // McpServer and a hand-built list render a schema differently, so hash differently.
+  delete copy.payload.surface_hash;
   return copy;
 }
 
@@ -535,7 +537,10 @@ describe.each(MAJORS)("$label: a low-level Server", (major) => {
     await baton.flush();
 
     const snapshots = sink.events.filter((e) => e.event_type === "surface_snapshot") as any[];
-    expect(snapshots.map((e) => e.payload.tools.map((tool: any) => tool.name))).toEqual([["lookup"]]);
+    expect(snapshots.map((e) => e.payload.tools.map((tool: any) => tool.name))).toEqual([
+      ["fails", "lookup", "own_goal", "throws"],
+      ["lookup"],
+    ]);
   });
 
   it("with createBaton, another server's tool with the report tool's name leaves this server's report tool", async () => {

@@ -527,11 +527,13 @@ export const ToolListStartPayloadSchema = z.object({}).strict();
 export type ToolListStartPayload = z.infer<typeof ToolListStartPayloadSchema>;
 
 /** `tools/list` returned. `count` is the length of the `tools` array in that
- * one response, this SDK's own tool included. */
+ * one response, this SDK's own tool included. `surface_hash` is that of the
+ * `surface_snapshot` describing the response, when one was captured. */
 export const ToolListEndPayloadSchema = z
   .object({
     count: z.number().int(),
     ...timingShape,
+    surface_hash: z.string().nullable().optional(),
   })
   .strict();
 export type ToolListEndPayload = z.infer<typeof ToolListEndPayloadSchema>;

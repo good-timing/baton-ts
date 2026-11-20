@@ -16,7 +16,9 @@ describe.each(MAJORS)("tool list events — $label", (major) => {
     return server;
   };
 
-  const typesOf = (sink: CapturingSink): string[] => sink.events.map((e) => e.event_type);
+  // The snapshot a listing sends is surfaceAtList.test.ts's.
+  const listEvents = (sink: CapturingSink) => sink.events.filter((e) => e.event_type !== "surface_snapshot");
+  const typesOf = (sink: CapturingSink): string[] => listEvents(sink).map((e) => e.event_type);
 
   it("a client that only lists the tools leaves a start and an end", async () => {
     const sink = new CapturingSink();
@@ -27,9 +29,9 @@ describe.each(MAJORS)("tool list events — $label", (major) => {
     const listed = (await client.listTools()) as { tools: { name: string }[] };
 
     expect(typesOf(sink)).toEqual(["tool_list_start", "tool_list_end"]);
-    const [start, end] = sink.events;
+    const [start, end] = listEvents(sink);
     expect(start!.payload).toEqual({});
-    expect(Object.keys(end!.payload).sort()).toEqual(["count", "duration_ms"]);
+    expect(Object.keys(end!.payload).sort()).toEqual(["count", "duration_ms", "surface_hash"]);
     expect(listed.tools.map((t) => t.name)).toContain("lookup");
     expect((end!.payload as { count: number }).count).toBe(listed.tools.length);
     expect(end!.session_id).toBe(start!.session_id);
@@ -54,8 +56,8 @@ describe.each(MAJORS)("tool list events — $label", (major) => {
 
     await client.listTools();
 
-    expect(sink.events).toHaveLength(2);
-    expect(JSON.stringify(sink.events.map((e) => e.payload))).not.toContain("lookup");
+    expect(listEvents(sink)).toHaveLength(2);
+    expect(JSON.stringify(listEvents(sink).map((e) => e.payload))).not.toContain("lookup");
   });
 
   it("names the caller and carries no call id", async () => {
@@ -66,8 +68,8 @@ describe.each(MAJORS)("tool list events — $label", (major) => {
 
     await client.listTools();
 
-    expect(sink.events).toHaveLength(2);
-    for (const event of sink.events) {
+    expect(listEvents(sink)).toHaveLength(2);
+    for (const event of listEvents(sink)) {
       expect(event.client_observed, event.event_type).toEqual({
         info: { name: "test-client", version: "1.0.0" },
       });
@@ -91,8 +93,8 @@ describe.each(MAJORS)("tool list events — $label", (major) => {
     await client.listTools();
 
     expect(asked).toEqual([{ toolName: null, arguments: {} }]);
-    expect(sink.events).toHaveLength(2);
-    for (const event of sink.events) {
+    expect(listEvents(sink)).toHaveLength(2);
+    for (const event of listEvents(sink)) {
       expect(event.principal, event.event_type).toEqual({
         id: "employee-1",
         source: "asserted",
@@ -115,7 +117,7 @@ describe.each(MAJORS)("tool list events — $label", (major) => {
 
     expect(listed.tools.map((t) => t.name)).toContain("lookup");
     expect(typesOf(sink)).toEqual(["tool_list_start", "tool_list_end"]);
-    expect(sink.events.map((e) => e.principal)).toEqual([null, null]);
+    expect(listEvents(sink).map((e) => e.principal)).toEqual([null, null]);
   });
 
   it("a failed listing carries the principal too", async () => {
@@ -130,7 +132,7 @@ describe.each(MAJORS)("tool list events — $label", (major) => {
     await expect(client.listTools()).rejects.toThrow(/list is down/);
 
     expect(typesOf(sink)).toEqual(["tool_list_start", "tool_list_error"]);
-    expect(sink.events.map((e) => e.principal?.id)).toEqual(["employee-1", "employee-1"]);
+    expect(listEvents(sink).map((e) => e.principal?.id)).toEqual(["employee-1", "employee-1"]);
   });
 
   it("each list request gets its own pair", async () => {
@@ -191,7 +193,7 @@ describe.each(MAJORS)("tool list events — $label", (major) => {
     await expect(client.listTools()).rejects.toThrow(/list is down/);
 
     expect(typesOf(sink)).toEqual(["tool_list_start", "tool_list_error"]);
-    const error = sink.events[1]!.payload as Record<string, unknown>;
+    const error = listEvents(sink)[1]!.payload as Record<string, unknown>;
     expect(Object.keys(error).sort()).toEqual(["duration_ms", "error_body", "error_type"]);
     expect(error["error_type"]).toBe("Error");
     expect(error["error_body"]).toBe("list is down");
@@ -211,6 +213,6 @@ describe.each(MAJORS)("tool list events — $label", (major) => {
     await expect(client.listTools()).rejects.toThrow(/list is down/);
 
     expect(warnings.seen.some((message) => message.includes("tool_list_error"))).toBe(true);
-    expect((sink.events[1]!.payload as Record<string, unknown>)["error_body"]).toBe("list is down");
+    expect((listEvents(sink)[1]!.payload as Record<string, unknown>)["error_body"]).toBe("list is down");
   });
 });

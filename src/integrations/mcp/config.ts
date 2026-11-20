@@ -227,8 +227,9 @@ export interface BatonConfig {
    * function that returns them. Read once per `withBaton` or `createBaton`.
    * Without it Baton learns the tools from the lists its servers serve, so a
    * process that has served none yet, such as a fresh worker, takes
-   * `user_goal` off every call, even from a tool that declares its own. An
-   * `McpServer` does not read it. */
+   * `user_goal` off every call, even from a tool that declares its own. The
+   * surface snapshot comes only from the lists a server serves, never from
+   * this. An `McpServer` does not read it. */
   tools?: readonly unknown[] | (() => readonly unknown[]);
 }
 

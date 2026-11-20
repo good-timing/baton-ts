@@ -383,11 +383,9 @@ type StrippedParams = Readonly<MutableStrippedParams>;
 const callSlots = new asyncHooks.AsyncLocalStorage<CallSlot>();
 
 /** Tracks the vendor-true (pre-injection) tool surface for this install, for
- * `surface_snapshot` capture. Built from data already in hand at wrap time
- * and lazily hashed+emitted on the next tool call — mirrors the official
- * mcp SDK's Python adapter, which has the same "no tools/list hook"
- * constraint and makes the same lazy-on-first-call choice for the same
- * reason (see `project_sdk_sensor_parity_gap` memory). */
+ * `surface_snapshot` capture. Sent at `tools/list`, and at a tool call for a
+ * client that never lists. An McpServer's tools come from its registry; a
+ * low-level Server's only from the lists it serves. */
 class SurfaceState {
   /** Every tool this install has seen, keyed by its CURRENT name. `disabled`
    * is tracked alongside rather than pruned, so re-enabling costs nothing and
@@ -399,11 +397,27 @@ class SurfaceState {
   >();
   dirty = false;
   servedOverlayId: string | null = null;
+  private listed = false;
 
   constructor(
     private readonly serverMeta: ReturnType<typeof buildServerMeta>,
     readonly sentSurfaces: SentSurfaces,
+    readonly fromRegistry: boolean,
   ) {}
+
+  get hasSurface(): boolean {
+    return this.fromRegistry || this.listed;
+  }
+
+  /** A low-level Server served a list; `whole` when it came in one page, which
+   * then is the surface: `surfaceAtList.test.ts`, "snapshots each list as served". */
+  servedList(names: ReadonlySet<string>, whole: boolean): void {
+    this.listed = true;
+    if (!whole) return;
+    for (const name of [...this.rawTools.keys()]) {
+      if (!names.has(name)) this.pruneTool(name);
+    }
+  }
 
   /** `inputSchemaJson` is already converted — by `ctx.vendorToolJsonSchema`,
    * which picks the spelling THIS SDK major puts on the wire. */
@@ -928,14 +942,13 @@ function stripIntentParams(
   return stripped;
 }
 
-/** Lazy, fail-open surface_snapshot capture — the first tool call after any
- * registration change re-hashes the surface and emits iff the hash is not
- * among the last `SENT_SURFACES_CAP` that `sentSurfaces` has seen. `dirty`
- * is cleared FIRST so a hashing/serialization error (deterministic — would
- * just re-throw identically every call) costs one attempt per surface
- * change, not a retry storm. The write only queues, so a snapshot counts as
- * sent once queued; a sink that later fails to write it counts it `write_failed`. */
+/** Fail-open surface_snapshot capture at a tool call — after any change to
+ * the surface, it re-hashes and sends unless `sendSurface` already has.
+ * `dirty` is cleared FIRST so a hashing/serialization error (deterministic —
+ * would just re-throw identically every call) costs one attempt per surface
+ * change, not a retry storm. */
 async function maybeEmitSurfaceSnapshot(ctx: WrapContext): Promise<void> {
+  if (!ctx.surfaceState.hasSurface) return;
   const overlayId = ctx.perCaller?.serverOverlay?.id ?? null;
   if (overlayId !== ctx.surfaceState.servedOverlayId) {
     ctx.surfaceState.servedOverlayId = overlayId;
@@ -944,16 +957,30 @@ async function maybeEmitSurfaceSnapshot(ctx: WrapContext): Promise<void> {
   if (!ctx.surfaceState.dirty) return;
   ctx.surfaceState.dirty = false;
   let snapshot: Record<string, unknown>;
-  let digest: string;
   try {
     snapshot = ctx.surfaceState.buildSnapshot();
-    digest = surfaceHash(snapshot);
   } catch (err) {
     stderrLine(`baton: surface snapshot capture failed: ${String(err)}`);
     return;
   }
+  await sendSurface(ctx, snapshot);
+}
+
+/** Send `snapshot` unless its hash is among the last `SENT_SURFACES_CAP`
+ * sent, and return the hash; `undefined` when it cannot be hashed. The write
+ * only queues, so a snapshot counts as sent once queued; a sink that later
+ * fails to write it counts it `write_failed`. */
+async function sendSurface(ctx: WrapContext, snapshot: Record<string, unknown>): Promise<string | undefined> {
+  let digest: string;
+  try {
+    digest = surfaceHash(snapshot);
+  } catch (err) {
+    stderrLine(`baton: surface snapshot capture failed: ${String(err)}`);
+    return undefined;
+  }
+  const overlayId = ctx.perCaller?.serverOverlay?.id ?? null;
   const sent = ctx.surfaceState.sentSurfaces;
-  if (sent.wasSent(digest, overlayId)) return;
+  if (sent.wasSent(digest, overlayId)) return digest;
   // Reserved before the write, so two servers sharing `sentSurfaces` cannot both
   // send it: `createBaton.test.ts`, "when the first requests arrive together".
   sent.mark(digest, overlayId);
@@ -973,6 +1000,43 @@ async function maybeEmitSurfaceSnapshot(ctx: WrapContext): Promise<void> {
   // SPEC §11.4.2: present only from a producer that applies overlays.
   if (ctx.captureSettings !== undefined) seam.server_overlay = overlayId;
   await ctx.emitSurface(ctx.fallbackSessionId, digest, { ...snapshot, seam_augmentations: seam });
+  return digest;
+}
+
+/** The surface each low-level `tools/list` request was served, taken as the
+ * list seam answers. Keyed by the request, which every seam passes on as it
+ * came, and not read from `SurfaceState`, because another listing can change
+ * that state before this one's end is sent:
+ * `surfaceAtList.test.ts`, "gives two listings that finish together each its own hash". */
+const LISTED_SURFACES = new WeakMap<object, Record<string, unknown>>();
+
+function noteListedSurface(request: object, ctx: WrapContext): void {
+  try {
+    LISTED_SURFACES.set(request, ctx.surfaceState.buildSnapshot());
+  } catch (err) {
+    stderrLine(`baton: surface snapshot capture failed: ${printable(err)}`);
+  }
+}
+
+function isWholeList(requestParams: Record<string, unknown>, result: unknown): boolean {
+  return requestParams.cursor === undefined && !(isRecord(result) && result.nextCursor !== undefined);
+}
+
+/** Send the surface of one `tools/list` response, and return its hash for
+ * that request's `tool_list_end`. A paged list gets none. */
+async function listedSurfaceHash(ctx: WrapContext, request: unknown, served: unknown): Promise<string | undefined> {
+  try {
+    if (!isRecord(request)) return undefined;
+    let snapshot = LISTED_SURFACES.get(request);
+    const requestParams = isRecord(request.params) ? request.params : {};
+    if (snapshot === undefined && ctx.surfaceState.fromRegistry && isWholeList(requestParams, served)) {
+      snapshot = ctx.surfaceState.buildSnapshot();
+    }
+    return snapshot && (await sendSurface(ctx, snapshot));
+  } catch (err) {
+    stderrLine(`baton: surface snapshot capture failed: ${printable(err)}`);
+    return undefined;
+  }
 }
 
 function declaredIntentParams(vendorSchema: unknown): IntentParamDispositions {
@@ -1177,9 +1241,9 @@ type ReadOptions = { surface: boolean };
 /**
  * `tools/list` and `tools/call` on a low-level `Server`, which has no tool
  * registry: what Baton knows of a tool comes from the `tools` option and from
- * the lists this Baton's servers serve. A server's surface and report-name
- * check use only the `tools` option and its own lists; what other servers
- * served only decides which calls lose `user_goal`.
+ * the lists this Baton's servers serve. A server's surface comes only from its
+ * own lists, and its report-name check from those and the `tools` option; what
+ * other servers served only decides which calls lose `user_goal`.
  *
  * ⚠ Every call is traced. `user_goal` comes off every call, since a client
  * sends it only because Baton listed it, except to a tool that may take its
@@ -1283,7 +1347,8 @@ function installLowLevelToolSeams(
         );
       }
     }
-    read(known.givenTools, { surface: true });
+    takeReportNameIfListed(known.givenTools);
+    read(known.givenTools, { surface: false });
     read([...known.served.values()], { surface: false });
   };
 
@@ -1296,9 +1361,14 @@ function installLowLevelToolSeams(
       const tools = toolInfos(listed, skipTool);
       learn(tools);
       read(tools, { surface: true });
+      const requestParams = (args[0] as { params?: Record<string, unknown> } | undefined)?.params ?? {};
+      const whole = isWholeList(requestParams, result);
+      ctx.surfaceState.servedList(new Set(tools.map((tool) => tool.name)), whole);
       // On the first page, which every client reads.
-      const firstPage = (args[0] as { params?: { cursor?: unknown } } | undefined)?.params?.cursor === undefined;
-      return servedToolList(result as Record<string, unknown>, listed, ctx, firstPage && reportTool ? listedReportTool : undefined);
+      const firstPage = requestParams.cursor === undefined;
+      const served = servedToolList(result as Record<string, unknown>, listed, ctx, firstPage && reportTool ? listedReportTool : undefined);
+      if (whole && isRecord(args[0])) noteListedSurface(args[0], ctx);
+      return served;
     } catch (err) {
       stderrLine(`baton: tools/list capture failed; serving the vendor's own result: ${printable(err)}`);
       return result;
@@ -1431,7 +1501,7 @@ function servedToolList(
   listed: unknown[],
   ctx: WrapContext,
   reportTool: Record<string, unknown> | undefined,
-): unknown {
+): Record<string, unknown> {
   const tools = listed.map((tool) => {
     if (!isRecord(tool) || typeof tool.name !== "string") return tool;
     if (ctx.paramRegistry.get(tool.name)?.[USER_GOAL_PARAM_NAME] !== "injected") return tool;
@@ -1512,6 +1582,8 @@ interface LifecycleSpec {
   startParams: (params: Record<string, unknown>) => Record<string, unknown>;
   /** The result as this caller is served it. */
   rewriteResult?: (ctx: WrapContext, result: unknown, caller: ResolvedCaller) => unknown;
+  /** The hash of the surface this request was served, for the end payload. */
+  surfaceHash?: (ctx: WrapContext, request: unknown, served: unknown) => Promise<string | undefined>;
 }
 
 function installLifecycleSeam(
@@ -1536,9 +1608,11 @@ function installLifecycleSeam(
      * one builder owns the parts that must not drift: the stamp, the clock and
      * the sequence number — which `counter.nextFor` must allocate at EMIT time,
      * not before. */
+    // `unscrubbed` is Baton's own value, which a vendor scrubber must not rewrite.
     const fire = async (
       schema: { parse(value: unknown): Event },
       payload: Record<string, unknown>,
+      unscrubbed: Record<string, unknown> = {},
     ): Promise<void> => {
       if (opened === null) return;
       await emit(ctx.sink, () =>
@@ -1546,7 +1620,7 @@ function installLifecycleSeam(
           ...opened.common,
           sequence_number: ctx.counter.nextFor(opened.session),
           captured_at: new Date().toISOString(),
-          payload: scrubLifecyclePayload(ctx, { ...opened.subject, ...payload }),
+          payload: { ...scrubLifecyclePayload(ctx, { ...opened.subject, ...payload }), ...unscrubbed },
         }),
       );
     };
@@ -1564,10 +1638,16 @@ function installLifecycleSeam(
         opened !== null && spec.rewriteResult !== undefined
           ? spec.rewriteResult(ctx, served, opened.caller)
           : served;
-      await fire(spec.schemas.end, {
-        ...(spec.countKey === undefined ? {} : { count: countOf(result, spec.countKey) }),
-        duration_ms: elapsed(),
-      });
+      const duration = elapsed();
+      const surfaceHash = await spec.surfaceHash?.(ctx, request, served);
+      await fire(
+        spec.schemas.end,
+        {
+          ...(spec.countKey === undefined ? {} : { count: countOf(result, spec.countKey) }),
+          duration_ms: duration,
+        },
+        surfaceHash === undefined ? {} : { surface_hash: surfaceHash },
+      );
       return result;
     } catch (err) {
       await fire(spec.schemas.error, {
@@ -1720,6 +1800,7 @@ const LIFECYCLE_SPECS: readonly LifecycleSpec[] = [
     countKey: "tools",
     startParams: NO_PARAMS,
     rewriteResult: (ctx, result, caller) => ctx.perCaller?.toolsFor(result, caller) ?? result,
+    surfaceHash: listedSurfaceHash,
   },
 ];
 
@@ -2559,7 +2640,7 @@ function install(
   // MUST run before the instructions assignment, or the snapshot would
   // capture Baton's own text instead of the vendor's. See module docstring.
   const serverMeta = buildServerMeta(lowLevel);
-  const surfaceState = new SurfaceState(serverMeta, sentSurfaces);
+  const surfaceState = new SurfaceState(serverMeta, sentSurfaces, shape === "mcpServer");
 
   const emitSurface = async (
     sessionId: string,

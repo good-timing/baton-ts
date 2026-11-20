@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- **The surface snapshot is sent when a client lists your tools**, not only
+  at its first call, and it describes the list your server served. Each
+  `tool_list_end` carries the snapshot's `surface_hash` (SPEC §11.4.5), so the
+  Console can tell which list a session saw when lists differ by user. A
+  paged list gets no hash.
+- **On a low-level `Server`, the `tools` option no longer feeds the
+  snapshot.** A catalog whose descriptions differ from your served list sent
+  a different surface after each restart. `tools` still decides which calls
+  keep `user_goal` and finds a clash with the report tool's name. A process
+  sends no snapshot until it has served a list.
+
 ## 1.3.1: the tool list with zod 4.2 to 4.4.2
 
 ### Fixed
