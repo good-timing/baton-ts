@@ -302,21 +302,16 @@ export function standardInputJsonSchema(schema: unknown): Record<string, unknown
 export function toolInputJsonSchema(
   inputSchema: unknown,
 ): Record<string, unknown> {
-  const objSchema = normalizeObjectSchema(inputSchema);
-  if (!objSchema) return EMPTY_OBJECT_JSON_SCHEMA;
-  return toJsonSchemaCompat(objSchema, {
-    strictUnions: true,
-    pipeStrategy: "input",
-  });
+  return toolJsonSchema(inputSchema, "input") ?? EMPTY_OBJECT_JSON_SCHEMA;
 }
 
 /** A tool's `outputSchema` as SDK 1.x lists it, or `undefined` where 1.x
  * lists none. */
 export function toolOutputJsonSchema(outputSchema: unknown): Record<string, unknown> | undefined {
-  const objSchema = outputSchema ? normalizeObjectSchema(outputSchema) : undefined;
-  if (!objSchema) return undefined;
-  return toJsonSchemaCompat(objSchema, {
-    strictUnions: true,
-    pipeStrategy: "output",
-  });
+  return outputSchema ? toolJsonSchema(outputSchema, "output") : undefined;
+}
+
+function toolJsonSchema(schema: unknown, pipeStrategy: "input" | "output"): Record<string, unknown> | undefined {
+  const objSchema = normalizeObjectSchema(schema);
+  return objSchema ? toJsonSchemaCompat(objSchema, { strictUnions: true, pipeStrategy }) : undefined;
 }

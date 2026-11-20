@@ -11,3 +11,8 @@ export function isPlainObject(value: unknown): value is Record<string, unknown> 
 export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
+
+/** A JSON copy of `value` that its owner cannot change later, when it is a record. */
+export function jsonObjectCopy(value: unknown): Record<string, unknown> | undefined {
+  return isRecord(value) ? (JSON.parse(JSON.stringify(value)) as Record<string, unknown>) : undefined;
+}

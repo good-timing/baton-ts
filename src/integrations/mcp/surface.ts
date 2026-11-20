@@ -74,6 +74,11 @@ export function assembleSurface(
   };
 }
 
+/** A `tools/list` answer is the whole list: the first page, with no next one. */
+export function isWholeList(cursor: unknown, nextCursor: unknown): boolean {
+  return (cursor === undefined || cursor === null) && (nextCursor === undefined || nextCursor === null);
+}
+
 export const SENT_SURFACES_CAP = 256;
 
 /** The last `SENT_SURFACES_CAP` surface hashes sent, least recent dropped

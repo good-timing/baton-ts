@@ -20,7 +20,7 @@ import { INSTRUCTION_PIECES } from "../integrations/mcp/overlays.js";
 import { batonParagraphs, toolsForCaller } from "../integrations/mcp/perCaller.js";
 import { DEFAULT_INTENT_PARAM_MODE, goalTextsServed, takesUserGoalJson } from "../integrations/mcp/schemaCompat.js";
 import { isThenable } from "../integrations/mcp/mcpTypes.js";
-import { buildSeamAugmentations } from "../integrations/mcp/surface.js";
+import { buildSeamAugmentations, isWholeList } from "../integrations/mcp/surface.js";
 import { isRecord } from "../_object.js";
 import { isBlank } from "../_text.js";
 import { printable, stderrLine } from "../warn.js";
@@ -282,7 +282,7 @@ export class Serving {
       annotationToolName: report?.tool.name ?? "",
       injectsGoal: (name) => known.dispositions.get(name)?.[USER_GOAL_PARAM_NAME] === "injected",
     });
-    const whole = firstPage && (result.nextCursor === undefined || result.nextCursor === null) ? surface : null;
+    const whole = isWholeList(request.params.cursor, result.nextCursor) ? surface : null;
     return {
       answer: { ...(answer as Record<string, unknown>), result: listed },
       surface: whole,

@@ -129,7 +129,7 @@ import {
 import { captureDisabled, DisabledSink, logDisabled, logUnconfigured } from "../../optout.js";
 import { capCodePoints, isBlank } from "../../_text.js";
 import { printable, stderrLine, warn } from "../../warn.js";
-import { isRecord } from "../../_object.js";
+import { isRecord, jsonObjectCopy } from "../../_object.js";
 import { emit } from "./emit.js";
 import {
   ERROR_BODY_MAX_CODE_POINTS,
@@ -208,7 +208,7 @@ import {
   EMPTY_OBJECT_JSON_SCHEMA,
 } from "./schemaCompat.js";
 import { PROCESS_DROPS } from "../../drops.js";
-import { assembleSurface, buildServerMeta, buildSeamAugmentations, SentSurfaces, surfaceHash } from "./surface.js";
+import { assembleSurface, buildServerMeta, buildSeamAugmentations, isWholeList, SentSurfaces, surfaceHash } from "./surface.js";
 
 type AnyArgs = unknown[];
 type AnyHandler = (...args: AnyArgs) => unknown;
@@ -385,15 +385,15 @@ type StrippedParams = Readonly<MutableStrippedParams>;
  * calls, so there is no per-install state to keep. */
 const callSlots = new asyncHooks.AsyncLocalStorage<CallSlot>();
 
-/** Tracks the vendor-true (pre-injection) tool surface for this install, for
- * `surface_snapshot` capture. Sent at `tools/list`, and at a tool call for a
- * client that never lists. An McpServer's tools come from its registry; a
- * low-level Server's only from the lists it serves. */
 interface CapturedSurface {
   snapshot: Record<string, unknown>;
   digest: string;
 }
 
+/** Tracks the vendor-true (pre-injection) tool surface for this install, for
+ * `surface_snapshot` capture. Sent at `tools/list`, and at a tool call for a
+ * client that never lists. An McpServer's tools come from its registry; a
+ * low-level Server's only from the lists it serves. */
 class SurfaceState {
   /** Every tool this install has seen, keyed by its CURRENT name. `disabled`
    * is tracked alongside rather than pruned, so re-enabling costs nothing and
@@ -408,24 +408,40 @@ class SurfaceState {
   private listed = false;
   /** `null` when this version of the surface could not be captured. */
   private captured: CapturedSurface | null | undefined;
+  /** The surface each low-level request was served, keyed by the request,
+   * which every seam passes on as it came. Kept apart from the current
+   * surface, which another listing can change before this one's end is sent:
+   * `surfaceAtList.test.ts`, "gives two listings that finish together each its own hash". */
+  private readonly listedSurfaces = new WeakMap<object, CapturedSurface>();
 
   constructor(
     private readonly serverMeta: ReturnType<typeof buildServerMeta>,
     readonly sentSurfaces: SentSurfaces,
-    readonly fromRegistry: boolean,
+    private readonly fromRegistry: boolean,
   ) {}
 
   get hasSurface(): boolean {
     return this.fromRegistry || this.listed;
   }
 
-  /** A low-level Server served a whole list, which then is the surface:
-   * `surfaceAtList.test.ts`, "snapshots each list as served". */
-  servedList(names: ReadonlySet<string>): void {
+  /** A low-level Server served `request` its whole list, which then is the
+   * surface: `surfaceAtList.test.ts`, "snapshots each list as served". */
+  servedList(request: object, names: ReadonlySet<string>): void {
     this.listed = true;
     for (const name of [...this.rawTools.keys()]) {
       if (!names.has(name)) this.pruneTool(name);
     }
+    const surface = this.capture();
+    if (surface !== null) this.listedSurfaces.set(request, surface);
+  }
+
+  /** The surface a `tools/list` request was served, when it got the whole list. */
+  surfaceListed(request: Record<string, unknown>, served: unknown): CapturedSurface | null {
+    const listed = this.listedSurfaces.get(request);
+    if (listed !== undefined) return listed;
+    const cursor = isRecord(request.params) ? request.params.cursor : undefined;
+    const whole = isWholeList(cursor, isRecord(served) ? served.nextCursor : undefined);
+    return this.fromRegistry && whole ? this.capture() : null;
   }
 
   /** The surface as it stands, and its hash; built once per change, so a
@@ -456,24 +472,24 @@ class SurfaceState {
     outputSchemaJson?: Record<string, unknown>,
   ): void {
     const before = this.rawTools.get(name);
-    const tool: Record<string, unknown> = { name, description: description ?? null, inputSchema: inputSchemaJson };
-    if (outputSchemaJson !== undefined) tool.outputSchema = outputSchemaJson;
     // A low-level Server's tools are noted on every list it serves.
-    if (before !== undefined && before.tool.description === tool.description) {
+    if (before !== undefined && before.tool.description === (description ?? null)) {
       const sameInput = before.tool.inputSchema === inputSchemaJson || JSON.stringify(before.tool.inputSchema) === JSON.stringify(inputSchemaJson);
       if (sameInput && JSON.stringify(before.tool.outputSchema) === JSON.stringify(outputSchemaJson)) return;
     }
+    const tool: Record<string, unknown> = { name, description: description ?? null, inputSchema: inputSchemaJson };
+    // Copied, since a queued snapshot outlives the vendor's objects.
+    const outputSchema = jsonObjectCopy(outputSchemaJson);
+    if (outputSchema !== undefined) tool.outputSchema = outputSchema;
     this.rawTools.set(name, { disabled: before?.disabled ?? false, tool });
     this.changed();
   }
 
   setOutputSchema(name: string, outputSchemaJson: Record<string, unknown> | undefined): void {
-    const entry = this.rawTools.get(name);
-    if (!entry) return;
-    const tool = { ...entry.tool };
-    delete tool.outputSchema;
-    entry.tool = outputSchemaJson === undefined ? tool : { ...tool, outputSchema: outputSchemaJson };
-    this.changed();
+    const tool = this.rawTools.get(name)?.tool;
+    if (tool === undefined) return;
+    const description = typeof tool.description === "string" ? tool.description : undefined;
+    this.noteTool(name, tool.inputSchema as Record<string, unknown>, description, outputSchemaJson);
   }
 
   pruneTool(name: string): void {
@@ -1025,35 +1041,15 @@ async function sendSurface(ctx: WrapContext, { snapshot, digest }: CapturedSurfa
   return digest;
 }
 
-/** The surface each low-level `tools/list` request was served, taken as the
- * list seam answers. Keyed by the request, which every seam passes on as it
- * came, and not read from `SurfaceState`, because another listing can change
- * that state before this one's end is sent:
- * `surfaceAtList.test.ts`, "gives two listings that finish together each its own hash". */
-const LISTED_SURFACES = new WeakMap<object, CapturedSurface>();
-
-/** A copy of `value` the vendor cannot change later, when it is an object. */
-function jsonObjectCopy(value: unknown): Record<string, unknown> | undefined {
-  return isRecord(value) ? (JSON.parse(JSON.stringify(value)) as Record<string, unknown>) : undefined;
-}
-
-function isWholeList(requestParams: Record<string, unknown>, result: unknown): boolean {
-  return requestParams.cursor === undefined && !(isRecord(result) && result.nextCursor !== undefined);
-}
-
-/** Send the surface of one `tools/list` response, and return its hash for
- * that request's `tool_list_end`. A paged list gets none. */
-async function listedSurfaceHash(ctx: WrapContext, request: unknown, served: unknown): Promise<string | undefined> {
+/** Send the surface one `tools/list` request was served, and name its hash
+ * on that request's `tool_list_end`. A paged list gets none. */
+async function listedSurfaceFields(ctx: WrapContext, request: unknown, served: unknown): Promise<Record<string, unknown>> {
   try {
-    if (!isRecord(request)) return undefined;
-    const requestParams = isRecord(request.params) ? request.params : {};
-    const surface =
-      LISTED_SURFACES.get(request) ??
-      (ctx.surfaceState.fromRegistry && isWholeList(requestParams, served) ? ctx.surfaceState.capture() : null);
-    return surface === null ? undefined : await sendSurface(ctx, surface);
+    const surface = isRecord(request) ? ctx.surfaceState.surfaceListed(request, served) : null;
+    return surface === null ? {} : { surface_hash: await sendSurface(ctx, surface) };
   } catch (err) {
     stderrLine(`baton: surface snapshot capture failed: ${printable(err)}`);
-    return undefined;
+    return {};
   }
 }
 
@@ -1254,7 +1250,6 @@ interface KnownTools {
 }
 
 type ToolInfo = { name: string; description: unknown; inputSchema: unknown; outputSchema?: unknown };
-type ReadOptions = { surface: boolean };
 
 /**
  * `tools/list` and `tools/call` on a low-level `Server`, which has no tool
@@ -1329,7 +1324,6 @@ function installLowLevelToolSeams(
     if (name !== undefined && tools.some((tool) => tool.name === name)) leaveReportNameToVendor(name);
   };
 
-  const read = (tools: ToolInfo[], { surface }: ReadOptions): void => readToolList(tools, ctx, surface, skipNote);
 
   // Per caller lists may differ: keep every tool, and a version that declares
   // its own `user_goal` over one that does not, so a server reading this map
@@ -1363,8 +1357,7 @@ function installLowLevelToolSeams(
       }
     }
     takeReportNameIfListed(known.givenTools);
-    read(known.givenTools, { surface: false });
-    read([...known.served.values()], { surface: false });
+    readToolList([...known.givenTools, ...known.served.values()], ctx, false, skipNote);
   };
 
   installRequestSeam(lowLevel, TOOLS_LIST_METHOD, LOW_LEVEL_LIST_SEAM, (handler) => async (...args) => {
@@ -1376,15 +1369,14 @@ function installLowLevelToolSeams(
       const tools = toolInfos(listed, skipTool);
       learn(tools);
       takeReportNameIfListed(tools);
-      read(tools, { surface: true });
-      const requestParams = (args[0] as { params?: Record<string, unknown> } | undefined)?.params ?? {};
-      if (isWholeList(requestParams, result)) {
-        ctx.surfaceState.servedList(new Set(tools.map((tool) => tool.name)));
-        const surface = ctx.surfaceState.capture();
-        if (surface !== null && isRecord(args[0])) LISTED_SURFACES.set(args[0], surface);
+      readToolList(tools, ctx, true, skipNote);
+      const request = args[0];
+      const cursor = isRecord(request) && isRecord(request.params) ? request.params.cursor : undefined;
+      if (isRecord(request) && isWholeList(cursor, (result as Record<string, unknown>).nextCursor)) {
+        ctx.surfaceState.servedList(request, new Set(tools.map((tool) => tool.name)));
       }
       // On the first page, which every client reads.
-      const firstPage = requestParams.cursor === undefined;
+      const firstPage = cursor === undefined || cursor === null;
       return servedToolList(result as Record<string, unknown>, listed, ctx, firstPage && reportTool ? listedReportTool : undefined);
     } catch (err) {
       stderrLine(`baton: tools/list capture failed; serving the vendor's own result: ${printable(err)}`);
@@ -1504,7 +1496,7 @@ function readToolList(
           name,
           schema ?? EMPTY_OBJECT_JSON_SCHEMA,
           typeof description === "string" ? description : undefined,
-          jsonObjectCopy(outputSchema),
+          isRecord(outputSchema) ? outputSchema : undefined,
         );
       }
       const dispositions = declaredIntentParams(schema);
@@ -1605,8 +1597,8 @@ interface LifecycleSpec {
   startParams: (params: Record<string, unknown>) => Record<string, unknown>;
   /** The result as this caller is served it. */
   rewriteResult?: (ctx: WrapContext, result: unknown, caller: ResolvedCaller) => unknown;
-  /** The hash of the surface this request was served, for the end payload. */
-  surfaceHash?: (ctx: WrapContext, request: unknown, served: unknown) => Promise<string | undefined>;
+  /** Baton's own fields for the end payload, which the vendor's scrubber must not rewrite. */
+  endFields?: (ctx: WrapContext, request: unknown, served: unknown) => Promise<Record<string, unknown>>;
 }
 
 function installLifecycleSeam(
@@ -1631,7 +1623,6 @@ function installLifecycleSeam(
      * one builder owns the parts that must not drift: the stamp, the clock and
      * the sequence number — which `counter.nextFor` must allocate at EMIT time,
      * not before. */
-    // `unscrubbed` is Baton's own value, which a vendor scrubber must not rewrite.
     const fire = async (
       schema: { parse(value: unknown): Event },
       payload: Record<string, unknown>,
@@ -1662,14 +1653,13 @@ function installLifecycleSeam(
           ? spec.rewriteResult(ctx, served, opened.caller)
           : served;
       const duration = elapsed();
-      const surfaceHash = await spec.surfaceHash?.(ctx, request, served);
       await fire(
         spec.schemas.end,
         {
           ...(spec.countKey === undefined ? {} : { count: countOf(result, spec.countKey) }),
           duration_ms: duration,
         },
-        surfaceHash === undefined ? {} : { surface_hash: surfaceHash },
+        await spec.endFields?.(ctx, request, served),
       );
       return result;
     } catch (err) {
@@ -1823,7 +1813,7 @@ const LIFECYCLE_SPECS: readonly LifecycleSpec[] = [
     countKey: "tools",
     startParams: NO_PARAMS,
     rewriteResult: (ctx, result, caller) => ctx.perCaller?.toolsFor(result, caller) ?? result,
-    surfaceHash: listedSurfaceHash,
+    endFields: listedSurfaceFields,
   },
 ];
 
@@ -2764,7 +2754,8 @@ function install(
     try {
       const tool = entry as { outputSchema?: unknown; outputSchemaJson?: unknown };
       // v2 keeps the conversion its tools/list sends.
-      return isV2Server ? jsonObjectCopy(tool.outputSchemaJson) : toolOutputJsonSchema(tool.outputSchema);
+      if (!isV2Server) return toolOutputJsonSchema(tool.outputSchema);
+      return isRecord(tool.outputSchemaJson) ? tool.outputSchemaJson : undefined;
     } catch {
       return undefined;
     }
